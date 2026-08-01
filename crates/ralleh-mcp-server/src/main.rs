@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use ralleh_ai_router::{AiRouter, CompletionBackend, EchoBackend, HttpCompletionBackend};
+use ralleh_ai_router::{
+    AiRouter, AnthropicMessagesBackend, CompletionBackend, EchoBackend, HttpCompletionBackend,
+};
 use ralleh_audit_store::JsonlFileAuditSink;
 use ralleh_tool_gateway::{ApprovalStore, ToolGateway};
-use ralleh_mcp_server::{build_router, resolve_config_path, AppState, ServerConfig};
+use ralleh_mcp_server::{
+    build_router, resolve_config_path, AppState, ServerConfig, TokenAuthenticator,
+};
 
 /// Binary entrypoint for the Rust MCP/tool-gateway HTTP surface.
 ///
@@ -34,21 +38,12 @@ async fn main() {
     });
     let policy = config.build_policy_engine();
 
-    // Every GatewayEvent produced by the gateway (allowed, denied,
-    // approval-required, handler failure -- all of it) is appended to this
-    // JSONL file before `dispatch` returns, closing the audit-persistence
-    // gap called out in DEVELOPMENT.md: policy decisions were being made
-    // and *discarded* rather than durably recorded. Path is overridable via
-    // `RALLEH_AUDIT_LOG_PATH` for deployments that want the log elsewhere
-    // (e.g. a mounted volume) without a code change.
     let audit_log_path = std::env::var("RALLEH_AUDIT_LOG_PATH")
         .unwrap_or_else(|_| std::env::temp_dir().join("ralleh-audit.jsonl").display().to_string());
     let audit_sink = Arc::new(
         JsonlFileAuditSink::open(&audit_log_path).expect("failed to open audit log for writing"),
     );
 
-    // Pending approvals survive process restarts when backed by this JSON
-    // snapshot (override with RALLEH_APPROVAL_STORE_PATH).
     let approval_store_path = std::env::var("RALLEH_APPROVAL_STORE_PATH").unwrap_or_else(|_| {
         std::env::temp_dir()
             .join("ralleh-approvals.json")
@@ -67,20 +62,42 @@ async fn main() {
         audit_sink.clone(),
         approvals,
     );
-    // EchoBackend is the local dev/test completion backend -- no real
-    // provider credentials required yet. If RALLEH_AI_BASE_URL is set, we
-    // instead wire up a real HttpCompletionBackend speaking the
-    // OpenAI-compatible /chat/completions wire format (covers OpenAI
-    // itself, and self-hosted vllm/ollama/llama.cpp servers), so this
-    // server can be pointed at a real backend without a code change.
+
     let ai_backend: Box<dyn CompletionBackend> = match std::env::var("RALLEH_AI_BASE_URL") {
         Ok(base_url) => {
-            let model = std::env::var("RALLEH_AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-            let api_key = std::env::var("RALLEH_AI_API_KEY").ok();
+            let provider = std::env::var("RALLEH_AI_PROVIDER")
+                .unwrap_or_else(|_| "openai".to_string())
+                .to_ascii_lowercase();
             let backend_name =
-                std::env::var("RALLEH_AI_BACKEND_NAME").unwrap_or_else(|_| "http-backend".to_string());
-            tracing::info!(base_url = %base_url, model = %model, "configuring HttpCompletionBackend");
-            Box::new(HttpCompletionBackend::new(backend_name, base_url, model, api_key))
+                std::env::var("RALLEH_AI_BACKEND_NAME").unwrap_or_else(|_| provider.clone());
+            match provider.as_str() {
+                "anthropic" => {
+                    let model = std::env::var("RALLEH_AI_MODEL")
+                        .unwrap_or_else(|_| "claude-sonnet-4-20250514".to_string());
+                    let api_key = std::env::var("RALLEH_AI_API_KEY").unwrap_or_else(|_| {
+                        panic!("RALLEH_AI_PROVIDER=anthropic requires RALLEH_AI_API_KEY")
+                    });
+                    tracing::info!(base_url = %base_url, model = %model, "configuring AnthropicMessagesBackend");
+                    Box::new(AnthropicMessagesBackend::new(
+                        backend_name,
+                        base_url,
+                        model,
+                        api_key,
+                    ))
+                }
+                _ => {
+                    let model =
+                        std::env::var("RALLEH_AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+                    let api_key = std::env::var("RALLEH_AI_API_KEY").ok();
+                    tracing::info!(base_url = %base_url, model = %model, "configuring HttpCompletionBackend");
+                    Box::new(HttpCompletionBackend::new(
+                        backend_name,
+                        base_url,
+                        model,
+                        api_key,
+                    ))
+                }
+            }
         }
         Err(_) => {
             tracing::info!("RALLEH_AI_BASE_URL not set; falling back to local EchoBackend");
@@ -88,7 +105,19 @@ async fn main() {
         }
     };
     let ai_router = AiRouter::new(ai_backend);
-    let state = AppState::new(gateway, ai_router);
+
+    let auth = TokenAuthenticator::from_env().unwrap_or_else(|e| {
+        panic!("failed to load API token authenticator: {e}");
+    });
+    if auth.is_some() {
+        tracing::info!("API token auth enabled (RALLEH_API_TOKENS[_FILE])");
+    } else {
+        tracing::warn!(
+            "API token auth disabled — tenant/actor claims in request bodies are unauthenticated (threat model T1)"
+        );
+    }
+
+    let state = AppState::with_auth(gateway, ai_router, auth);
     let app = build_router(state);
 
     tracing::info!(

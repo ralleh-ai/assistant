@@ -2,34 +2,30 @@
 
 ## Done recently
 
-- Declarative config, in-process then **durable** approvals, http fetch,
-  cpal mic, **STT trait + MockStt** (`whisper` feature optional), Phase 0
-  **threat model draft**.
+- Config, durable approvals, http fetch, cpal, STT/TTS traits + mocks,
+  optional whisper feature + download script, **Anthropic Messages backend**,
+  **Bearer token caller auth (T1)**, Phase 0 threat model.
 
-## High priority — spine gaps
+## High priority
 
-1. **Exercise `whisper` feature end-to-end** — download a ggml model,
-   `cargo test -p ralleh-audio-core --features whisper`, wire mic → VAD →
-   STT in a small binary/smoke path. Trait surface already exists.
-2. **TTS binding** (Piper/Kokoro Rust bindings per ADR-003).
-3. **Second AI backend** (Anthropic/Google native shape or `llama-cpp-rs`).
-4. **Authenticated callers** — today `tenant_id`/`actor_id` are labels only
-   (see [`THREAT_MODEL.md`](./THREAT_MODEL.md) T1).
+1. **Whisper e2e on a real utterance** — run
+   `scripts/download-whisper-model.ps1`, then
+   `cargo test -p ralleh-audio-core --features whisper -- --ignored whisper_e2e`
+   with `WHISPER_MODEL_PATH` set; wire mic→VAD→STT smoke binary.
+2. **Native TTS engine** (Piper/Kokoro Rust binding) behind a feature,
+   mirroring whisper.
+3. **OIDC / device attestation** — replace shared-secret tokens when the
+   control plane exists.
+4. Harden http-fetch (private-IP / DNS-rebinding).
 
-## Medium priority — breadth
+## Medium priority
 
-5. Harden http-fetch (private-IP / DNS-rebinding controls).
-6. Reconcile crate naming with DEVELOPMENT.md §16.
-7. Commit `Cargo.lock` for reproducible binary builds.
-8. Expand threat model when Tauri / NestJS land.
+5. Reconcile crate naming with DEVELOPMENT.md §16.
+6. Commit `Cargo.lock`.
+7. Expand threat model for Tauri / NestJS.
 
 ## Lower priority
 
-- NestJS control plane, Postgres, Redis, NATS, Temporal — Phase 2+.
-- Tauri/React desktop shell — Phase 1, separate TS codebase.
-- MCP connector runtime — Phase 3.
-
-## Process reminders
-
-- Read DEVELOPMENT.md §22 before privileged-action code.
-- Small validated steps; check DECISIONS.md before re-deciding.
+- NestJS control plane, Postgres, Temporal — Phase 2+.
+- Tauri/React shell — Phase 1.
+- MCP connectors — Phase 3.

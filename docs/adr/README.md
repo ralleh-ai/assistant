@@ -23,3 +23,4 @@ This folder holds ADRs in two categories:
 | [ADR-006](./adr-006-audit-jsonl-not-database.md) | Audit Persistence via Append-Only JSONL, Not a Database | Accepted, **implemented** |
 | [ADR-007](./adr-007-dual-auditsink-traits.md) | Two Distinct `AuditSink` Traits to Preserve One-Way Crate Dependencies | Accepted, **implemented** |
 | [ADR-008](./adr-008-http-completion-backend.md) | OpenAI-Compatible HTTP Wire Format as the First Real Completion Backend | Accepted, **implemented** |
+| [ADR-009](./adr-009-anthropic-messages-backend.md) | Anthropic Messages API as Second Completion Backend | Accepted, **implemented** |

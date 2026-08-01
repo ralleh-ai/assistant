@@ -6,18 +6,18 @@
 //! TypeScript control plane, since this is exactly the
 //! real-time/security-critical hot path the architecture reserves for Rust.
 //!
-//! This is intentionally a thin HTTP shell around `ToolGateway`. It adds no
-//! authorization logic of its own -- every request still passes through
-//! the same policy-gated dispatch path already validated in
-//! `ralleh-tool-gateway`. The server's only responsibilities are: parse the
-//! request, call `dispatch`, translate the resulting `GatewayEvent` into an
-//! HTTP response and status code, and (later) push the event to durable
-//! audit storage.
+//! This is intentionally a thin HTTP shell around `ToolGateway`. When
+//! `RALLEH_API_TOKENS` / `RALLEH_API_TOKENS_FILE` is set, Bearer tokens bind
+//! tenant/actor(/device) claims (threat model T1). Every tool call still
+//! passes through the same policy-gated dispatch path already validated in
+//! `ralleh-tool-gateway`.
 
+pub mod auth;
 pub mod config;
 mod router;
 mod state;
 
+pub use auth::{AuthError, CallerIdentity, TokenAuthenticator};
 pub use config::{resolve_config_path, ConfigError, HandlerKind, ServerConfig, ToolConfig};
 pub use router::build_router;
 pub use state::AppState;

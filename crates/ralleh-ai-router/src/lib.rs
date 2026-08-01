@@ -18,10 +18,12 @@
 //!     through (e.g. "tenant X may only route to backend Y") without
 //!     reworking the router's shape.
 
+mod anthropic;
 mod backend;
 mod request;
 mod router;
 
+pub use anthropic::AnthropicMessagesBackend;
 pub use backend::{CompletionBackend, EchoBackend, HttpCompletionBackend};
 pub use request::{CompletionOutcome, CompletionRequest, CompletionResponse};
 pub use router::{AiRouter, RoutingError};

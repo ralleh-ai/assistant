@@ -1,24 +1,24 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (STT adapters + durable approvals + threat model)
+**As of:** 2026-08-01 (Anthropic backend + caller auth + TTS mock)
 
 ## Build/test state
 
 ```
-cargo test --workspace → 118 passed
-  audio-core 22 | tool-gateway 39 | mcp-server 16 | policy 21
-  ai-router 13 | audit-store 7
+cargo test --workspace → 129 passed
+  ai-router 17 | audio-core 24 | mcp-server 21 | tool-gateway 39
+  policy 21 | audit-store 7
 ```
 
 ## Highlights
 
-- **`SpeechToText` + `MockStt`** in `ralleh-audio-core`; optional
-  `WhisperStt` behind `--features whisper` (ADR-003).
-- **Durable `ApprovalStore::open`** — JSON snapshot; mcp-server defaults
-  to `RALLEH_APPROVAL_STORE_PATH` / temp `ralleh-approvals.json`.
-- **`docs/THREAT_MODEL.md`** — Phase 0 draft for the current Rust spine.
+- **`AnthropicMessagesBackend`** — native `/v1/messages` wire format
+  (`RALLEH_AI_PROVIDER=anthropic`).
+- **Bearer token auth** — `RALLEH_API_TOKENS` / `_FILE`; spoofed tenant → 403
+  (threat model T1 partial close).
+- **`MockTts` / `TextToSpeech`**; whisper e2e via ignored test +
+  `scripts/download-whisper-model.ps1`.
 
 ## Next up
 
-Whisper e2e with a real ggml model; TTS; second AI backend — see
-[`NEXT_STEPS.md`](./NEXT_STEPS.md).
+Real whisper utterance smoke; native TTS engine; OIDC — see NEXT_STEPS.md.

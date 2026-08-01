@@ -183,11 +183,11 @@ mic simply never construct the live source.
 
 **Decision:** `SpeechToText` / `MockStt` ship in default builds.
 `WhisperStt` (`whisper-rs` / whisper.cpp) is gated on `--features whisper`
-because compiling whisper.cpp needs cmake and a long first build, and
-runtime needs a ggml model file.
+because compiling whisper.cpp needs cmake, **libclang** (`LIBCLANG_PATH`),
+and a long first build, plus a ggml model file at runtime.
 
 **Why:** ADR-003 prefers native bindings, but forcing whisper.cpp onto
-every `cargo test` would punish headless/CI hosts. The trait keeps the
-hot path swappable; enabling the feature is the documented opt-in when a
-model is present.
+every `cargo test` would punish headless/CI hosts. Use
+`scripts/download-whisper-model.ps1` and the ignored `whisper_e2e` test
+when validating locally.
 

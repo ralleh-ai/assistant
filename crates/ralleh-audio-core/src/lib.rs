@@ -14,6 +14,7 @@
 mod cpal_source;
 mod source;
 mod stt;
+mod tts;
 mod vad;
 mod wakeword;
 
@@ -22,6 +23,7 @@ pub use source::{AudioFrame, AudioSource, MockAudioSource};
 pub use stt::{MockStt, SpeechToText, SttError, Transcript};
 #[cfg(feature = "whisper")]
 pub use stt::WhisperStt;
+pub use tts::{MockTts, SpeechAudio, TextToSpeech, TtsError};
 pub use vad::{VadConfig, VadState, VoiceActivityDetector};
 pub use wakeword::{
     MockWakeWordMatcher, WakeWordConfig, WakeWordDetector, WakeWordMatcher, WakeWordTrigger,

@@ -1,5 +1,5 @@
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
 use axum::routing::post;
 use axum::Router;
@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use ralleh_ai_router::CompletionOutcome;
 use ralleh_tool_gateway::ToolCallOutcome;
 
+use crate::auth::{AuthError, TokenAuthenticator};
 use crate::state::AppState;
 
 /// Request body for `POST /v1/tools/dispatch`.
@@ -47,6 +48,41 @@ pub fn build_router(state: AppState) -> Router {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+fn authorize_claims(
+    state: &AppState,
+    headers: &HeaderMap,
+    tenant_id: &str,
+    actor_id: &str,
+    device_id: &str,
+) -> Result<(), AuthError> {
+    let Some(auth) = &state.auth else {
+        return Ok(());
+    };
+    let header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let identity = auth.authenticate(header)?;
+    TokenAuthenticator::enforce(&identity, tenant_id, actor_id, device_id)
+}
+
+fn auth_error_response(err: AuthError) -> impl IntoResponse {
+    let status = match err {
+        AuthError::MissingToken | AuthError::MalformedHeader | AuthError::UnknownToken => {
+            StatusCode::UNAUTHORIZED
+        }
+        AuthError::TenantMismatch | AuthError::ActorMismatch | AuthError::DeviceMismatch => {
+            StatusCode::FORBIDDEN
+        }
+    };
+    (
+        status,
+        Json(serde_json::json!({
+            "error": "auth_failed",
+            "message": err.to_string(),
+        })),
+    )
 }
 
 fn outcome_to_response(
@@ -113,8 +149,19 @@ fn outcome_to_response(
 
 async fn dispatch_tool(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<DispatchRequest>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_claims(
+        &state,
+        &headers,
+        &req.tenant_id,
+        &req.actor_id,
+        &req.device_id,
+    ) {
+        return auth_error_response(err).into_response();
+    }
+
     let event = state.gateway.dispatch(
         req.tenant_id,
         req.device_id,
@@ -124,6 +171,7 @@ async fn dispatch_tool(
     );
 
     outcome_to_response(event.capability, &event.outcome, event.approval_request_id)
+        .into_response()
 }
 
 /// Body for approve/reject — identifies who is deciding, scoped to a tenant
@@ -132,13 +180,26 @@ async fn dispatch_tool(
 pub struct ApprovalDecisionRequest {
     pub tenant_id: String,
     pub actor_id: String,
+    /// Required when the API token is device-bound.
+    #[serde(default)]
+    pub device_id: Option<String>,
 }
 
 async fn approve_request(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     Json(req): Json<ApprovalDecisionRequest>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_claims(
+        &state,
+        &headers,
+        &req.tenant_id,
+        &req.actor_id,
+        req.device_id.as_deref().unwrap_or(""),
+    ) {
+        return auth_error_response(err).into_response();
+    }
     match state.gateway.approve(id, &req.tenant_id, &req.actor_id) {
         Ok(event) => {
             outcome_to_response(event.capability, &event.outcome, event.approval_request_id)
@@ -150,9 +211,19 @@ async fn approve_request(
 
 async fn reject_request(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     Json(req): Json<ApprovalDecisionRequest>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_claims(
+        &state,
+        &headers,
+        &req.tenant_id,
+        &req.actor_id,
+        req.device_id.as_deref().unwrap_or(""),
+    ) {
+        return auth_error_response(err).into_response();
+    }
     match state.gateway.reject(id, &req.tenant_id, &req.actor_id) {
         Ok(event) => {
             outcome_to_response(event.capability, &event.outcome, event.approval_request_id)
@@ -197,8 +268,19 @@ pub struct CompletionHttpResponse {
 
 async fn complete(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<CompletionHttpRequest>,
 ) -> impl IntoResponse {
+    if let Err(err) = authorize_claims(
+        &state,
+        &headers,
+        &req.tenant_id,
+        &req.actor_id,
+        &req.device_id,
+    ) {
+        return auth_error_response(err).into_response();
+    }
+
     let request = ralleh_ai_router::CompletionRequest {
         tenant_id: req.tenant_id,
         device_id: req.device_id,
@@ -244,6 +326,7 @@ async fn complete(
             detail,
         }),
     )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -675,5 +758,101 @@ mod tests {
         assert_eq!(record["capability"], "tool.fs.write_text");
         assert_eq!(record["outcome"], "ApprovalRequired");
         assert!(record["approval_request_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn dispatch_requires_matching_bearer_token_when_auth_configured() {
+        use crate::auth::{CallerIdentity, TokenAuthenticator};
+
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            ToolDefinition {
+                capability: "tool.search".to_string(),
+                description: "test".to_string(),
+                default_sensitivity: "public".to_string(),
+            },
+            Box::new(EchoHandler),
+        );
+        let allow_rule = PolicyRule {
+            id: "allow-search".to_string(),
+            tenant_id: None,
+            device_id: None,
+            actor_id: None,
+            capability_prefix: Some("tool.search".to_string()),
+            sensitivity: None,
+            effect: RuleEffect::Allow,
+            reason: "test".to_string(),
+        };
+        let gateway = ToolGateway::new(registry, PolicyEngine::new(vec![allow_rule]));
+        let mut auth = TokenAuthenticator::new();
+        auth.insert(
+            "secret-token",
+            CallerIdentity {
+                tenant_id: "t1".into(),
+                actor_id: "u1".into(),
+                device_id: Some("d1".into()),
+            },
+        );
+        let app = build_router(AppState::with_auth(gateway, test_ai_router(), Some(auth)));
+
+        let payload = serde_json::json!({
+            "tenant_id": "t1",
+            "device_id": "d1",
+            "actor_id": "u1",
+            "capability": "tool.search",
+            "arguments": {}
+        });
+
+        let unauth = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tools/dispatch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+        let spoof = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tools/dispatch")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "tenant_id": "other-tenant",
+                            "device_id": "d1",
+                            "actor_id": "u1",
+                            "capability": "tool.search",
+                            "arguments": {}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spoof.status(), StatusCode::FORBIDDEN);
+
+        let ok = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tools/dispatch")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
     }
 }

@@ -78,18 +78,16 @@ Relevant environment variables (all optional, all have sane defaults):
 - `RALLEH_APPROVAL_STORE_PATH` — JSON snapshot of pending/resolved
   approvals so `RequireApproval` work survives restarts. Default
   `<temp_dir>/ralleh-approvals.json`.
-- `RALLEH_AI_BASE_URL` — if set, boots a real `HttpCompletionBackend`
-  against this OpenAI-compatible API root (e.g.
-  `https://api.openai.com/v1` or `http://localhost:11434/v1` for a local
-  Ollama server). If unset, falls back to `EchoBackend` (no network calls,
-  no credentials needed).
-- `RALLEH_AI_MODEL` — model name, only relevant if `RALLEH_AI_BASE_URL` is
-  set. Default `gpt-4o-mini`.
-- `RALLEH_AI_API_KEY` — bearer token, only relevant if
-  `RALLEH_AI_BASE_URL` is set. Optional — some local/self-hosted backends
-  don't require one.
-- `RALLEH_AI_BACKEND_NAME` — cosmetic identifier surfaced in responses/
-  audit records, default `http-backend`.
+- `RALLEH_AI_BASE_URL` — if set, boots a real completion backend.
+- `RALLEH_AI_PROVIDER` — `openai` (default, OpenAI-compatible chat
+  completions) or `anthropic` (native Messages API).
+- `RALLEH_AI_MODEL` — model name; defaults depend on provider.
+- `RALLEH_AI_API_KEY` — bearer / `x-api-key`; required for `anthropic`.
+- `RALLEH_AI_BACKEND_NAME` — cosmetic id in responses/audit.
+- `RALLEH_API_TOKENS` — enable caller auth:
+  `token:tenant:actor[:device];...` (see threat model T1).
+- `RALLEH_API_TOKENS_FILE` — JSON token file (preferred over inline env).
+- `WHISPER_MODEL_PATH` — ggml model path for ignored whisper e2e tests.
 
 ## Git remote
 

@@ -36,15 +36,17 @@ full NestJS control plane or Tauri shell.
                     local FS / egress          provider HTTP
 ```
 
-Caller-supplied `tenant_id` / `actor_id` are **not authenticated** yet —
-they are trusted labels for policy evaluation only. Real authn (OIDC /
-device attestation) is Phase 2 control-plane work.
+Caller-supplied `tenant_id` / `actor_id` are authenticated when
+`RALLEH_API_TOKENS` or `RALLEH_API_TOKENS_FILE` is set (shared-secret Bearer
+tokens bound to tenant/actor[/device]). Without tokens configured, the
+server still accepts body claims as labels only (dev mode) and logs a
+warning. Real OIDC / device attestation remains Phase 2.
 
 ## Key threats and mitigations (current code)
 
 | ID | Threat | Severity | Mitigation today | Gap |
 |---|---|---|---|---|
-| T1 | Cross-tenant capability use | High | Policy rules + tests for tenant scoping; approve requires matching tenant | No cryptographic tenant auth |
+| T1 | Cross-tenant capability use | High | Policy tenant scoping; **Bearer tokens bind tenant/actor(/device) when configured** | No OIDC/device attestation yet |
 | T2 | Path traversal via fs tools | High | Canonicalize + sandbox root in handlers (independent of policy) | — |
 | T3 | SSRF via http fetch | High | Hostname allowlist, no redirects, http(s) only, no userinfo | No DNS-rebinding / private-IP blocklist yet |
 | T4 | Unapproved destructive write | High | `RequireApproval` + parked invocation; approve is one-shot | Approvals not yet cryptographically bound to approver identity |

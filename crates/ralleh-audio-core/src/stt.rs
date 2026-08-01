@@ -193,4 +193,19 @@ mod tests {
             Err(SttError::EmptyAudio)
         ));
     }
+
+    /// Opt-in e2e against a real ggml model:
+    ///   set WHISPER_MODEL_PATH=/path/to/ggml-tiny.en.bin
+    ///   cargo test -p ralleh-audio-core --features whisper -- --ignored whisper_e2e
+    #[cfg(feature = "whisper")]
+    #[test]
+    #[ignore = "requires WHISPER_MODEL_PATH pointing at a ggml model file"]
+    fn whisper_e2e_transcribes_or_marks_no_speech() {
+        let path = std::env::var("WHISPER_MODEL_PATH").expect("WHISPER_MODEL_PATH");
+        let stt = WhisperStt::open(path).expect("open whisper model");
+        // One second of near-silence at 16 kHz — should not panic; typically no_speech.
+        let samples = vec![0.0_f32; 16_000];
+        let t = stt.transcribe(&samples, 16_000).expect("transcribe");
+        assert!(t.no_speech || t.text.len() < 64);
+    }
 }
