@@ -1,0 +1,16 @@
+[package]
+name = "ralleh-tool-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ralleh-policy-core = { path = "../ralleh-policy-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

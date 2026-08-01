@@ -1,0 +1,17 @@
+[package]
+name = "ralleh-ai-router"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+ralleh-policy-core = { path = "../ralleh-policy-core" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+wiremock = "0.6"

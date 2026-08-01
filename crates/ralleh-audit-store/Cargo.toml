@@ -1,0 +1,17 @@
+[package]
+name = "ralleh-audit-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ralleh-tool-gateway = { path = "../ralleh-tool-gateway" }
+ralleh-ai-router = { path = "../ralleh-ai-router" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
