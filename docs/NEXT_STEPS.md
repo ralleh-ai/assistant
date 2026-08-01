@@ -6,38 +6,36 @@ of effort, not strictly by DEVELOPMENT.md phase order.
 
 ## Done since last session
 
-- **Policy/registry config loading** (was #1). `ralleh-mcp-server` now
-  loads tools + ordered policy rules from a declarative TOML/JSON file
-  (`config/default.toml` by default, override with `RALLEH_CONFIG`).
-  Handler implementations stay in code; the config names which known
-  handlers to wire. See `crates/ralleh-mcp-server/src/config.rs`.
+- **Policy/registry config loading.** `ralleh-mcp-server` loads tools +
+  ordered policy rules from a declarative TOML/JSON file
+  (`config/default.toml` / `RALLEH_CONFIG`). See
+  `crates/ralleh-mcp-server/src/config.rs`.
+- **Approval-flow (minimal in-process).** `RequireApproval` parks an
+  `ApprovalRequest` in `ralleh-tool-gateway`'s `ApprovalStore`;
+  `POST /v1/approvals/:id/approve` executes the original invocation
+  (skipping policy re-eval), `.../reject` denies it. Tenant-scoped,
+  one-shot, audited. Not yet durable (in-memory only) — Postgres/Temporal
+  remain Phase 2/4.
 
 ## High priority — spine gaps
 
-1. **Approval-flow implementation.** `PolicyEngine`/`ToolGateway` correctly
-   *stop* execution and report `ApprovalRequired`, but there is no mechanism
-   yet for an approval to actually be granted and the original request
-   re-executed. DEVELOPMENT.md's data model (§13) has `ApprovalRequest` as
-   an entity — none of that persistence/workflow exists yet. This is
-   arguably a Phase 4 (Temporal/workflow) concern, but a minimal
-   in-process version could be built much sooner to prove the concept.
-   Especially relevant now that `tool.fs.write_text` is
-   `RequireApproval`-gated via config — the HTTP surface returns the
-   approval-required outcome but nothing can yet grant it and resume.
-2. **Second/third real tool handler beyond filesystem read/write** — to
+1. **Second/third real tool handler beyond filesystem read/write** — to
    prove the gateway pattern generalizes. Good candidates: a "web search"
    tool wrapping an existing search API (low policy risk, easy to make
    `Allow`-gated), or a simple HTTP-fetch tool with an explicit egress
    allowlist (directly exercises DEVELOPMENT.md §11.1's "egress controls").
    New handlers need a `HandlerKind` variant in the config loader plus an
    entry in `config/default.toml` (or a deployment-specific config).
-3. **Real audio I/O in `ralleh-audio-core`.** Currently 100% synthetic. Per
+2. **Real audio I/O in `ralleh-audio-core`.** Currently 100% synthetic. Per
    DEVELOPMENT.md §2.3/§17/Phase 1: wire real microphone capture (likely
    `cpal`), then a real STT binding (`whisper-rs`/whisper.cpp preferred per
    ADR-003), keeping the existing VAD/wake-word state machines as-is since
    they're already tested against the `AudioSource` trait abstraction —
    swapping `MockSource` for a real capture source shouldn't require
    touching VAD/wake-word logic at all if the trait boundary is respected.
+3. **Durable approvals** — swap the in-memory `ApprovalStore` for a
+   persisted backend once Phase 2 control-plane storage exists, without
+   changing the approve/reject HTTP contract.
 
 ## Medium priority — breadth
 

@@ -133,10 +133,14 @@ DEVELOPMENT.md §2.3/§17/Phase 1 have not been started. See
 scoping fields use `#[serde(default)]`). Validation rejects duplicate
 capabilities and empty rule reasons. See [`DECISIONS.md`](./DECISIONS.md).
 
-**8+ tests** in the HTTP router (including the end-to-end
-`write_text_capability_is_gated_dispatched_and_audited_end_to_end`
-integration test) plus config-loader unit tests covering TOML/JSON parse,
-duplicate-capability rejection, and empty-reason rejection.
+**Approval flow:** on `ApprovalRequired`, the gateway parks the invocation
+in an in-process `ApprovalStore` and returns `approval_request_id` in the
+HTTP detail. `POST /v1/approvals/:id/approve` executes the parked call
+(skips policy re-eval); `.../reject` marks it rejected. Tenant mismatch →
+403; already-resolved → 409.
+
+**14 tests** in mcp-server (HTTP + config + approve-write e2e) and **30**
+in tool-gateway (including approval store / approve / reject / cross-tenant).
 
 ## Design principle used throughout
 

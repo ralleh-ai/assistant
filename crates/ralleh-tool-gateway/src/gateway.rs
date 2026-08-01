@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use uuid::Uuid;
 
 use ralleh_policy_core::{PolicyEngine, PolicyOutcome, PolicyRequest};
 
+use crate::approval::{ApprovalError, ApprovalStatus, ApprovalStore};
 use crate::event::{GatewayEvent, ToolCallOutcome};
 use crate::handler::ToolInvocation;
 use crate::registry::ToolRegistry;
@@ -35,17 +37,16 @@ impl AuditSink for NoopAuditSink {
 /// `ToolRegistry` (what tools exist) and a `PolicyEngine` (what's allowed),
 /// and guarantees:
 ///   - Unknown capabilities never reach the policy engine or a handler.
-///   - A handler only ever runs after policy explicitly returned `Allowed`.
+///   - A handler only ever runs after policy explicitly returned `Allowed`
+///     *or* after a previously parked `ApprovalRequired` call was approved.
 ///   - Every call — whatever the outcome — produces exactly one
 ///     `GatewayEvent`, which is *always* handed to the configured
-///     `AuditSink` before `dispatch` returns, independent of whether the
-///     caller inspects the returned event at all. This is what actually
-///     closes the audit-persistence gap: producing the record was never
-///     the hard part, guaranteeing it gets recorded is.
+///     `AuditSink` before `dispatch` / `approve` / `reject` returns.
 pub struct ToolGateway {
     registry: ToolRegistry,
     policy: PolicyEngine,
     audit_sink: Arc<dyn AuditSink>,
+    approvals: Arc<ApprovalStore>,
 }
 
 impl ToolGateway {
@@ -54,6 +55,7 @@ impl ToolGateway {
             registry,
             policy,
             audit_sink: Arc::new(NoopAuditSink),
+            approvals: Arc::new(ApprovalStore::new()),
         }
     }
 
@@ -72,18 +74,23 @@ impl ToolGateway {
             registry,
             policy,
             audit_sink,
+            approvals: Arc::new(ApprovalStore::new()),
         }
+    }
+
+    /// Shared handle to the in-process approval store (useful for tests and
+    /// for HTTP layers that want to introspect a pending request).
+    pub fn approvals(&self) -> Arc<ApprovalStore> {
+        self.approvals.clone()
     }
 
     /// Dispatch one tool call end-to-end: registry lookup -> policy
     /// evaluation -> (conditionally) handler execution -> audit event ->
     /// persist to the configured audit sink.
     ///
-    /// This never panics on a "normal" failure path (unknown capability,
-    /// policy denial, handler error) — those are all represented as
-    /// `ToolCallOutcome` variants in the returned event, not as `Err`. The
-    /// only way this fails to produce a usable result is a bug, which is
-    /// exactly the property an audit-critical chokepoint needs.
+    /// On `ApprovalRequired`, the original invocation is parked in the
+    /// approval store and `GatewayEvent::approval_request_id` is set so a
+    /// later `approve` / `reject` can resume or cancel it.
     pub fn dispatch(
         &self,
         tenant_id: impl Into<String>,
@@ -98,15 +105,16 @@ impl ToolGateway {
         let capability = capability.into();
 
         let Some(definition) = self.registry.definition(&capability) else {
-            return GatewayEvent {
+            return self.finish(GatewayEvent {
                 capability,
                 tenant_id,
                 device_id,
                 actor_id,
                 policy_decision: None,
                 outcome: ToolCallOutcome::UnknownCapability,
+                approval_request_id: None,
                 occurred_at: Utc::now(),
-            };
+            });
         };
 
         let policy_request = match PolicyRequest::new(
@@ -118,55 +126,158 @@ impl ToolGateway {
         ) {
             Ok(req) => req,
             Err(_) => {
-                // Should be unreachable in practice (registry definitions
-                // are trusted config), but defense in depth: an invalid
-                // request must never be silently allowed through.
-                return GatewayEvent {
+                return self.finish(GatewayEvent {
                     capability,
                     tenant_id,
                     device_id,
                     actor_id,
                     policy_decision: None,
                     outcome: ToolCallOutcome::Denied,
+                    approval_request_id: None,
                     occurred_at: Utc::now(),
-                };
+                });
             }
         };
 
         let decision = self.policy.evaluate(&policy_request);
 
-        let outcome = match decision.outcome {
-            PolicyOutcome::Denied => ToolCallOutcome::Denied,
-            PolicyOutcome::ApprovalRequired => ToolCallOutcome::ApprovalRequired,
-            PolicyOutcome::Allowed => match self.registry.handler(&capability) {
-                None => ToolCallOutcome::NoHandlerRegistered,
-                Some(handler) => {
-                    let invocation = ToolInvocation {
-                        capability: capability.clone(),
-                        tenant_id: tenant_id.clone(),
-                        device_id: device_id.clone(),
-                        actor_id: actor_id.clone(),
-                        arguments,
-                    };
-                    match handler.invoke(&invocation) {
-                        Ok(result) => ToolCallOutcome::Succeeded {
-                            result_summary: result.summary,
-                        },
-                        Err(error) => ToolCallOutcome::Failed { error },
-                    }
-                }
-            },
+        let (outcome, approval_request_id) = match decision.outcome {
+            PolicyOutcome::Denied => (ToolCallOutcome::Denied, None),
+            PolicyOutcome::ApprovalRequired => {
+                let pending = self.approvals.create_pending(
+                    tenant_id.clone(),
+                    device_id.clone(),
+                    actor_id.clone(),
+                    capability.clone(),
+                    arguments,
+                    decision.decision_id,
+                    decision.reason.clone(),
+                );
+                (ToolCallOutcome::ApprovalRequired, Some(pending.id))
+            }
+            PolicyOutcome::Allowed => (
+                self.invoke_handler(
+                    &capability,
+                    &tenant_id,
+                    &device_id,
+                    &actor_id,
+                    arguments,
+                ),
+                None,
+            ),
         };
 
-        let event = GatewayEvent {
+        self.finish(GatewayEvent {
             capability,
             tenant_id,
             device_id,
             actor_id,
             policy_decision: Some(decision),
             outcome,
+            approval_request_id,
             occurred_at: Utc::now(),
-        };
+        })
+    }
+
+    /// Grant a previously parked approval and execute the original
+    /// invocation. Skips policy re-evaluation on purpose: re-running the
+    /// engine would just hit `RequireApproval` again. Tenant isolation is
+    /// still enforced — `tenant_id` must match the pending request.
+    pub fn approve(
+        &self,
+        approval_id: Uuid,
+        tenant_id: impl AsRef<str>,
+        decided_by: impl Into<String>,
+    ) -> Result<GatewayEvent, ApprovalError> {
+        let decided_by = decided_by.into();
+        let pending = self.approvals.claim(
+            approval_id,
+            tenant_id.as_ref(),
+            decided_by.clone(),
+            ApprovalStatus::Approved,
+        )?;
+
+        let outcome = self.invoke_handler(
+            &pending.capability,
+            &pending.tenant_id,
+            &pending.device_id,
+            &pending.actor_id,
+            pending.arguments.clone(),
+        );
+        // Consume the approval whether the handler succeeded or failed —
+        // an approved invocation is one-shot either way.
+        self.approvals.mark_executed(approval_id)?;
+
+        Ok(self.finish(GatewayEvent {
+            capability: pending.capability,
+            tenant_id: pending.tenant_id,
+            device_id: pending.device_id,
+            // Record the *approver* as the actor on the execute event so
+            // audit can answer "who authorized this to actually run".
+            actor_id: decided_by,
+            policy_decision: None,
+            outcome,
+            approval_request_id: Some(approval_id),
+            occurred_at: Utc::now(),
+        }))
+    }
+
+    /// Permanently reject a pending approval. The handler is never invoked.
+    pub fn reject(
+        &self,
+        approval_id: Uuid,
+        tenant_id: impl AsRef<str>,
+        decided_by: impl Into<String>,
+    ) -> Result<GatewayEvent, ApprovalError> {
+        let decided_by = decided_by.into();
+        let pending = self.approvals.claim(
+            approval_id,
+            tenant_id.as_ref(),
+            decided_by.clone(),
+            ApprovalStatus::Rejected,
+        )?;
+
+        Ok(self.finish(GatewayEvent {
+            capability: pending.capability,
+            tenant_id: pending.tenant_id,
+            device_id: pending.device_id,
+            actor_id: decided_by,
+            policy_decision: None,
+            outcome: ToolCallOutcome::ApprovalRejected,
+            approval_request_id: Some(approval_id),
+            occurred_at: Utc::now(),
+        }))
+    }
+
+    fn invoke_handler(
+        &self,
+        capability: &str,
+        tenant_id: &str,
+        device_id: &str,
+        actor_id: &str,
+        arguments: serde_json::Value,
+    ) -> ToolCallOutcome {
+        match self.registry.handler(capability) {
+            None => ToolCallOutcome::NoHandlerRegistered,
+            Some(handler) => {
+                let invocation = ToolInvocation {
+                    capability: capability.to_string(),
+                    tenant_id: tenant_id.to_string(),
+                    device_id: device_id.to_string(),
+                    actor_id: actor_id.to_string(),
+                    arguments,
+                };
+                match handler.invoke(&invocation) {
+                    Ok(result) => ToolCallOutcome::Succeeded {
+                        result_summary: result.summary,
+                    },
+                    Err(error) => ToolCallOutcome::Failed { error },
+                }
+            }
+        }
+    }
+
+    fn finish(&self, event: GatewayEvent) -> GatewayEvent {
         self.audit_sink.record(&event);
         event
     }
@@ -273,9 +384,6 @@ mod tests {
             ToolCallOutcome::Failed { error } => assert_eq!(error, "upstream unavailable"),
             other => panic!("expected Failed, got {other:?}"),
         }
-        // Critically: this must be distinguishable from a policy denial in
-        // audit logs, since the failure modes have very different
-        // implications (integration bug vs. security control working).
         assert!(event.policy_decision.is_some());
         assert_eq!(
             event.policy_decision.unwrap().outcome,
@@ -305,19 +413,127 @@ mod tests {
             serde_json::Value::Null,
         );
         assert_eq!(event.outcome, ToolCallOutcome::ApprovalRequired);
+        let approval_id = event.approval_request_id.expect("pending approval id");
+        assert_eq!(
+            gateway.approvals().get(approval_id).unwrap().status,
+            ApprovalStatus::Pending
+        );
+    }
+
+    #[test]
+    fn approve_executes_parked_invocation_without_rechecking_policy() {
+        let registry = registry_with_echo("tool.finance.transfer", "confidential");
+        let approval_rule = PolicyRule {
+            id: "approval-finance".to_string(),
+            tenant_id: None,
+            device_id: None,
+            actor_id: None,
+            capability_prefix: Some("tool.finance".to_string()),
+            sensitivity: None,
+            effect: RuleEffect::RequireApproval,
+            reason: "financial actions require human approval".to_string(),
+        };
+        let gateway = ToolGateway::new(registry, PolicyEngine::new(vec![approval_rule]));
+        let parked = gateway.dispatch(
+            "t1",
+            "d1",
+            "u1",
+            "tool.finance.transfer",
+            serde_json::json!({"amount": 10}),
+        );
+        let approval_id = parked.approval_request_id.unwrap();
+
+        let executed = gateway.approve(approval_id, "t1", "approver-1").unwrap();
+        match executed.outcome {
+            ToolCallOutcome::Succeeded { result_summary } => {
+                assert_eq!(result_summary, "echo:tool.finance.transfer");
+            }
+            other => panic!("expected Succeeded after approve, got {other:?}"),
+        }
+        assert_eq!(executed.actor_id, "approver-1");
+        assert_eq!(executed.approval_request_id, Some(approval_id));
+        assert_eq!(
+            gateway.approvals().get(approval_id).unwrap().status,
+            ApprovalStatus::Executed
+        );
+
+        // One-shot: a second approve must fail.
+        assert!(matches!(
+            gateway.approve(approval_id, "t1", "approver-2"),
+            Err(ApprovalError::NotPending(_, _))
+        ));
+    }
+
+    #[test]
+    fn reject_never_invokes_handler_and_is_one_shot() {
+        let registry = registry_with_echo("tool.finance.transfer", "confidential");
+        let approval_rule = PolicyRule {
+            id: "approval-finance".to_string(),
+            tenant_id: None,
+            device_id: None,
+            actor_id: None,
+            capability_prefix: Some("tool.finance".to_string()),
+            sensitivity: None,
+            effect: RuleEffect::RequireApproval,
+            reason: "financial actions require human approval".to_string(),
+        };
+        let gateway = ToolGateway::new(registry, PolicyEngine::new(vec![approval_rule]));
+        let parked = gateway.dispatch(
+            "t1",
+            "d1",
+            "u1",
+            "tool.finance.transfer",
+            serde_json::Value::Null,
+        );
+        let approval_id = parked.approval_request_id.unwrap();
+
+        let rejected = gateway.reject(approval_id, "t1", "rejector-1").unwrap();
+        assert_eq!(rejected.outcome, ToolCallOutcome::ApprovalRejected);
+        assert_eq!(
+            gateway.approvals().get(approval_id).unwrap().status,
+            ApprovalStatus::Rejected
+        );
+        assert!(matches!(
+            gateway.approve(approval_id, "t1", "approver-1"),
+            Err(ApprovalError::NotPending(_, _))
+        ));
+    }
+
+    #[test]
+    fn approve_rejects_cross_tenant_attempt() {
+        let registry = registry_with_echo("tool.finance.transfer", "confidential");
+        let approval_rule = PolicyRule {
+            id: "approval-finance".to_string(),
+            tenant_id: None,
+            device_id: None,
+            actor_id: None,
+            capability_prefix: Some("tool.finance".to_string()),
+            sensitivity: None,
+            effect: RuleEffect::RequireApproval,
+            reason: "financial actions require human approval".to_string(),
+        };
+        let gateway = ToolGateway::new(registry, PolicyEngine::new(vec![approval_rule]));
+        let parked = gateway.dispatch(
+            "tenant-a",
+            "d1",
+            "u1",
+            "tool.finance.transfer",
+            serde_json::Value::Null,
+        );
+        let approval_id = parked.approval_request_id.unwrap();
+        assert!(matches!(
+            gateway.approve(approval_id, "tenant-b", "approver-1"),
+            Err(ApprovalError::TenantMismatch)
+        ));
+        assert_eq!(
+            gateway.approvals().get(approval_id).unwrap().status,
+            ApprovalStatus::Pending
+        );
     }
 
     #[test]
     fn allowed_capability_without_registered_handler_is_reported_distinctly() {
-        // Register a definition with no handler, to simulate a
-        // configuration bug where policy exists but no implementation does.
         let mut registry = ToolRegistry::new();
-        // ToolRegistry currently only exposes `register` which takes both
-        // a definition and a handler together, so we simulate the
-        // "definition without handler" case is impossible by construction
-        // in this crate's public API — that itself is a safety property
-        // worth asserting: you cannot register a capability without also
-        // providing its handler.
         registry.register(
             ToolDefinition {
                 capability: "tool.search".to_string(),

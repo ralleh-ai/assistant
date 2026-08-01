@@ -11,7 +11,12 @@ pub enum ToolCallOutcome {
     /// Policy denied the call; the handler was never invoked.
     Denied,
     /// Policy requires human approval; the handler was never invoked.
+    /// The matching pending request id (if any) is on `GatewayEvent::
+    /// approval_request_id`.
     ApprovalRequired,
+    /// A previously pending approval was explicitly rejected; the handler
+    /// was never invoked.
+    ApprovalRejected,
     /// Policy allowed the call and the handler executed successfully.
     Succeeded { result_summary: String },
     /// Policy allowed the call but the handler itself returned an error.
@@ -37,5 +42,11 @@ pub struct GatewayEvent {
     /// `None` when the capability was unknown and policy was never consulted.
     pub policy_decision: Option<PolicyDecision>,
     pub outcome: ToolCallOutcome,
+    /// Set when this event created or resolved an `ApprovalRequest`
+    /// (parked on `ApprovalRequired`, or carried through on a later
+    /// approve/reject/execute). `#[serde(default)]` keeps older JSONL
+    /// audit lines that predate this field deserializable.
+    #[serde(default)]
+    pub approval_request_id: Option<uuid::Uuid>,
     pub occurred_at: chrono::DateTime<chrono::Utc>,
 }

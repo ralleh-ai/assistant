@@ -18,6 +18,7 @@
 //! that every dispatch is *routed through* `ralleh-policy-core` and refuses
 //! to run anything the policy engine didn't explicitly allow.
 
+mod approval;
 mod event;
 mod fs_read_handler;
 mod fs_write_handler;
@@ -25,6 +26,7 @@ pub mod gateway;
 mod handler;
 mod registry;
 
+pub use approval::{ApprovalError, ApprovalRequest, ApprovalStatus, ApprovalStore};
 pub use event::{GatewayEvent, ToolCallOutcome};
 pub use fs_read_handler::{sandbox_root as fs_read_sandbox_root, FsReadTextError, FsReadTextHandler};
 pub use fs_write_handler::{sandbox_root as fs_write_sandbox_root, FsWriteTextError, FsWriteTextHandler};

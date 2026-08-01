@@ -138,3 +138,17 @@ constructs the matching Rust type.
   partial rule entries in TOML (id + effect + reason + one matcher) load
   cleanly without forcing every wildcard field to be written as null.
 
+## In-process approval store, not Temporal/Postgres (yet)
+
+**Decision:** when policy returns `RequireApproval`, `ToolGateway` parks
+the original invocation in an in-memory `ApprovalStore` and returns an
+`approval_request_id`. `approve` / `reject` resolve it; approve skips
+policy re-evaluation (which would just re-hit RequireApproval) and
+invokes the handler once. Approvals are tenant-scoped and one-shot.
+
+**Why:** NEXT_STEPS explicitly allowed a minimal in-process proof before
+Phase 4 Temporal/workflow work. The HTTP contract matches DEVELOPMENT.md
+§14.1 (`POST /v1/approvals/:id/approve|reject`). Swapping the store for a
+durable backend later shouldn't need to change that wire shape — only the
+`ApprovalStore` implementation.
+

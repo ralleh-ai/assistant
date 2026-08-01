@@ -184,6 +184,7 @@ mod tests {
             actor_id: "u1".to_string(),
             policy_decision: None,
             outcome: ToolCallOutcome::UnknownCapability,
+            approval_request_id: None,
             occurred_at: chrono::Utc::now(),
         })
     }

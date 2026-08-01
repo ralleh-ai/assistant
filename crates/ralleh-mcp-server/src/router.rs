@@ -32,13 +32,15 @@ pub struct DispatchResponse {
 }
 
 /// Builds the Axum router for the MCP surface. Currently exposes tool
-/// dispatch, AI completion routing, and a health check; more endpoints
-/// (registry introspection, audit query) are natural additions once this
-/// shape is proven.
+/// dispatch, approval resolve, AI completion routing, and a health check.
+/// Routes for approvals match DEVELOPMENT.md §14.1
+/// (`POST /v1/approvals/:id/approve|reject`).
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", axum::routing::get(healthz))
         .route("/v1/tools/dispatch", post(dispatch_tool))
+        .route("/v1/approvals/:id/approve", post(approve_request))
+        .route("/v1/approvals/:id/reject", post(reject_request))
         .route("/v1/completions", post(complete))
         .with_state(state)
 }
@@ -47,19 +49,12 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn dispatch_tool(
-    State(state): State<AppState>,
-    Json(req): Json<DispatchRequest>,
-) -> impl IntoResponse {
-    let event = state.gateway.dispatch(
-        req.tenant_id,
-        req.device_id,
-        req.actor_id,
-        req.capability.clone(),
-        req.arguments,
-    );
-
-    let (status, outcome_label, detail) = match &event.outcome {
+fn outcome_to_response(
+    capability: String,
+    outcome: &ToolCallOutcome,
+    approval_request_id: Option<uuid::Uuid>,
+) -> (StatusCode, Json<DispatchResponse>) {
+    let (status, outcome_label, mut detail) = match outcome {
         ToolCallOutcome::Succeeded { result_summary } => (
             StatusCode::OK,
             "succeeded",
@@ -74,6 +69,11 @@ async fn dispatch_tool(
             StatusCode::ACCEPTED,
             "approval_required",
             serde_json::json!({ "reason": "this action requires human approval" }),
+        ),
+        ToolCallOutcome::ApprovalRejected => (
+            StatusCode::FORBIDDEN,
+            "approval_rejected",
+            serde_json::json!({ "reason": "the pending approval was rejected" }),
         ),
         ToolCallOutcome::Failed { error } => (
             StatusCode::BAD_GATEWAY,
@@ -92,13 +92,89 @@ async fn dispatch_tool(
         ),
     };
 
+    if let Some(id) = approval_request_id {
+        if let Some(obj) = detail.as_object_mut() {
+            obj.insert(
+                "approval_request_id".to_string(),
+                serde_json::json!(id.to_string()),
+            );
+        }
+    }
+
     (
         status,
         Json(DispatchResponse {
-            capability: event.capability,
+            capability,
             outcome: outcome_label.to_string(),
             detail,
         }),
+    )
+}
+
+async fn dispatch_tool(
+    State(state): State<AppState>,
+    Json(req): Json<DispatchRequest>,
+) -> impl IntoResponse {
+    let event = state.gateway.dispatch(
+        req.tenant_id,
+        req.device_id,
+        req.actor_id,
+        req.capability.clone(),
+        req.arguments,
+    );
+
+    outcome_to_response(event.capability, &event.outcome, event.approval_request_id)
+}
+
+/// Body for approve/reject — identifies who is deciding, scoped to a tenant
+/// so cross-tenant approval attempts are rejected by the gateway.
+#[derive(Debug, Deserialize)]
+pub struct ApprovalDecisionRequest {
+    pub tenant_id: String,
+    pub actor_id: String,
+}
+
+async fn approve_request(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    Json(req): Json<ApprovalDecisionRequest>,
+) -> impl IntoResponse {
+    match state.gateway.approve(id, &req.tenant_id, &req.actor_id) {
+        Ok(event) => {
+            outcome_to_response(event.capability, &event.outcome, event.approval_request_id)
+                .into_response()
+        }
+        Err(err) => approval_error_response(err).into_response(),
+    }
+}
+
+async fn reject_request(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    Json(req): Json<ApprovalDecisionRequest>,
+) -> impl IntoResponse {
+    match state.gateway.reject(id, &req.tenant_id, &req.actor_id) {
+        Ok(event) => {
+            outcome_to_response(event.capability, &event.outcome, event.approval_request_id)
+                .into_response()
+        }
+        Err(err) => approval_error_response(err).into_response(),
+    }
+}
+
+fn approval_error_response(err: ralleh_tool_gateway::ApprovalError) -> impl IntoResponse {
+    use ralleh_tool_gateway::ApprovalError;
+    let (status, code) = match &err {
+        ApprovalError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+        ApprovalError::NotPending(_, _) => (StatusCode::CONFLICT, "not_pending"),
+        ApprovalError::TenantMismatch => (StatusCode::FORBIDDEN, "tenant_mismatch"),
+    };
+    (
+        status,
+        Json(serde_json::json!({
+            "error": code,
+            "message": err.to_string(),
+        })),
     )
 }
 
@@ -441,14 +517,85 @@ mod tests {
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let body = body_json(response).await;
         assert_eq!(body["outcome"], "approval_required");
+        assert!(body["detail"]["approval_request_id"].as_str().is_some());
     }
 
-    /// End-to-end: HTTP request -> router -> ToolGateway::dispatch ->
-    /// policy -> real FsWriteTextHandler -> real filesystem write, with a
-    /// real JsonlFileAuditSink recording the resulting GatewayEvent. This
-    /// is the test that actually proves this session's three pieces of
-    /// work (write handler, approval-gated policy, audit persistence) hang
-    /// together end-to-end rather than just in isolation per-crate.
+    #[tokio::test]
+    async fn approve_then_executes_parked_write_end_to_end() {
+        use ralleh_tool_gateway::FsWriteTextHandler;
+
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            ToolDefinition {
+                capability: "tool.fs.write_text".to_string(),
+                description: "test write".to_string(),
+                default_sensitivity: "internal".to_string(),
+            },
+            Box::new(FsWriteTextHandler::new(sandbox.path()).unwrap()),
+        );
+        let approval_rule = PolicyRule {
+            id: "approval-fs-write".to_string(),
+            tenant_id: None,
+            device_id: None,
+            actor_id: None,
+            capability_prefix: Some("tool.fs.write_text".to_string()),
+            sensitivity: None,
+            effect: RuleEffect::RequireApproval,
+            reason: "test".to_string(),
+        };
+        let gateway = ToolGateway::new(registry, PolicyEngine::new(vec![approval_rule]));
+        let app = build_router(AppState::new(gateway, test_ai_router()));
+
+        let dispatch_payload = serde_json::json!({
+            "tenant_id": "t1",
+            "device_id": "d1",
+            "actor_id": "u1",
+            "capability": "tool.fs.write_text",
+            "arguments": {"path": "note.txt", "contents": "approved write"}
+        });
+        let parked = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tools/dispatch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(dispatch_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(parked.status(), StatusCode::ACCEPTED);
+        let parked_body = body_json(parked).await;
+        let approval_id = parked_body["detail"]["approval_request_id"]
+            .as_str()
+            .expect("approval id");
+        assert!(!sandbox.path().join("note.txt").exists());
+
+        let approve_payload = serde_json::json!({
+            "tenant_id": "t1",
+            "actor_id": "approver-1"
+        });
+        let approved = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/approvals/{approval_id}/approve"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(approve_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(approved.status(), StatusCode::OK);
+        let approved_body = body_json(approved).await;
+        assert_eq!(approved_body["outcome"], "succeeded");
+        assert_eq!(
+            std::fs::read_to_string(sandbox.path().join("note.txt")).unwrap(),
+            "approved write"
+        );
+    }
     #[tokio::test]
     async fn write_text_capability_is_gated_dispatched_and_audited_end_to_end() {
         use ralleh_audit_store::JsonlFileAuditSink;
@@ -514,6 +661,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let body = body_json(response).await;
         assert_eq!(body["outcome"], "approval_required");
+        assert!(body["detail"]["approval_request_id"].as_str().is_some());
         assert!(!sandbox.path().join("note.txt").exists());
 
         // But the attempt itself must still be durably audited -- an
@@ -526,5 +674,6 @@ mod tests {
         assert_eq!(record["kind"], "tool_dispatch");
         assert_eq!(record["capability"], "tool.fs.write_text");
         assert_eq!(record["outcome"], "ApprovalRequired");
+        assert!(record["approval_request_id"].as_str().is_some());
     }
 }
