@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use ralleh_policy_core::{PolicyEngine, PolicyRule};
 use ralleh_tool_gateway::{
-    FsReadTextHandler, FsWriteTextHandler, ToolDefinition, ToolRegistry,
+    FsReadTextHandler, FsWriteTextHandler, HttpFetchHandler, ToolDefinition, ToolRegistry,
 };
 use serde::Deserialize;
 
@@ -42,6 +42,10 @@ pub struct ToolConfig {
     pub default_sensitivity: String,
     /// Which built-in handler implementation to wire up.
     pub handler: HandlerKind,
+    /// Egress allowlist for `http_fetch` (exact hostnames). Ignored by
+    /// filesystem handlers. Required non-empty when `handler = http_fetch`.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
 }
 
 /// Known handler implementations the server knows how to construct.
@@ -55,6 +59,7 @@ pub struct ToolConfig {
 pub enum HandlerKind {
     FsReadText,
     FsWriteText,
+    HttpFetch,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -73,11 +78,10 @@ pub enum ConfigError {
     },
     #[error("unsupported config format for {path} (expected .toml or .json)")]
     UnsupportedFormat { path: PathBuf },
-    #[error("failed to initialize handler for capability '{capability}': {source}")]
+    #[error("failed to initialize handler for capability '{capability}': {message}")]
     HandlerInit {
         capability: String,
-        #[source]
-        source: std::io::Error,
+        message: String,
     },
     #[error("config validation failed: {0}")]
     Validation(String),
@@ -136,6 +140,12 @@ impl ServerConfig {
                     tool.capability
                 )));
             }
+            if tool.handler == HandlerKind::HttpFetch && tool.allowed_hosts.is_empty() {
+                return Err(ConfigError::Validation(format!(
+                    "tool '{}' (http_fetch) requires a non-empty allowed_hosts egress allowlist",
+                    tool.capability
+                )));
+            }
         }
         for rule in &self.rules {
             if rule.id.trim().is_empty() {
@@ -181,7 +191,7 @@ impl ServerConfig {
                     FsReadTextHandler::new(sandbox_root).map_err(|source| {
                         ConfigError::HandlerInit {
                             capability: tool.capability.clone(),
-                            source,
+                            message: source.to_string(),
                         }
                     })?,
                 ),
@@ -189,7 +199,15 @@ impl ServerConfig {
                     FsWriteTextHandler::new(sandbox_root).map_err(|source| {
                         ConfigError::HandlerInit {
                             capability: tool.capability.clone(),
-                            source,
+                            message: source.to_string(),
+                        }
+                    })?,
+                ),
+                HandlerKind::HttpFetch => Box::new(
+                    HttpFetchHandler::new(tool.allowed_hosts.clone()).map_err(|source| {
+                        ConfigError::HandlerInit {
+                            capability: tool.capability.clone(),
+                            message: source.to_string(),
                         }
                     })?,
                 ),
@@ -408,5 +426,61 @@ reason = ""
         fs::write(&path, "tools: []\n").unwrap();
         let err = ServerConfig::load_from_path(&path).unwrap_err();
         assert!(matches!(err, ConfigError::UnsupportedFormat { .. }));
+    }
+
+    #[test]
+    fn rejects_http_fetch_without_allowed_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        fs::write(
+            &path,
+            r#"
+[[tools]]
+capability = "tool.http.fetch"
+description = "fetch"
+default_sensitivity = "internal"
+handler = "http_fetch"
+"#,
+        )
+        .unwrap();
+        let err = ServerConfig::load_from_path(&path).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
+    }
+
+    #[test]
+    fn loads_http_fetch_with_allowlist() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = dir.path().join("sandbox");
+        fs::create_dir_all(&sandbox).unwrap();
+        let path = dir.path().join("server.toml");
+        fs::write(
+            &path,
+            format!(
+                r#"
+sandbox_root = "{}"
+
+[[tools]]
+capability = "tool.http.fetch"
+description = "fetch"
+default_sensitivity = "internal"
+handler = "http_fetch"
+allowed_hosts = ["example.com"]
+
+[[rules]]
+id = "allow-fetch"
+capability_prefix = "tool.http.fetch"
+effect = "Allow"
+reason = "ok"
+"#,
+                sandbox.display().to_string().replace('\\', "/")
+            ),
+        )
+        .unwrap();
+
+        let config = ServerConfig::load_from_path(&path).unwrap();
+        assert_eq!(config.tools[0].handler, HandlerKind::HttpFetch);
+        assert_eq!(config.tools[0].allowed_hosts, vec!["example.com"]);
+        let registry = config.build_registry(&sandbox).unwrap();
+        assert!(registry.is_registered("tool.http.fetch"));
     }
 }

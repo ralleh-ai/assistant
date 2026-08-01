@@ -27,6 +27,16 @@ description = "Write a UTF-8 text file into the server's sandboxed directory."
 default_sensitivity = "internal"
 handler = "fs_write_text"
 
+# Allowlisted HTTP GET — egress is denied unless the URL host is listed.
+# Edit `allowed_hosts` for your environment; an empty list fails config
+# validation (fail closed). See DEVELOPMENT.md §8.5 SSRF/egress controls.
+[[tools]]
+capability = "tool.http.fetch"
+description = "Fetch a URL over HTTP(S) from an explicit egress allowlist."
+default_sensitivity = "internal"
+handler = "http_fetch"
+allowed_hosts = ["example.com", "www.example.com"]
+
 [[rules]]
 id = "default-allow-fs-read"
 capability_prefix = "tool.fs.read_text"
@@ -41,3 +51,9 @@ id = "default-approval-fs-write"
 capability_prefix = "tool.fs.write_text"
 effect = "RequireApproval"
 reason = "default development policy: sandboxed fs writes require approval"
+
+[[rules]]
+id = "default-allow-http-fetch"
+capability_prefix = "tool.http.fetch"
+effect = "Allow"
+reason = "default development policy: allowlisted HTTP GETs are permitted (egress enforced by handler)"
