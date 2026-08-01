@@ -7,6 +7,8 @@
 //! wake-word logic.
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Result of one transcription attempt.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -95,7 +97,7 @@ mod whisper_engine {
     }
 
     impl WhisperStt {
-        fn open(model_path: impl AsRef<Path>) -> Result<Self, SttError> {
+        pub fn open(model_path: impl AsRef<Path>) -> Result<Self, SttError> {
             let model_path = model_path.as_ref().to_path_buf();
             let ctx = whisper_rs::WhisperContext::new_with_params(
                 &model_path,
@@ -161,6 +163,85 @@ mod whisper_engine {
 #[cfg(feature = "whisper")]
 pub use whisper_engine::WhisperStt;
 
+/// Process-backed whisper.cpp CLI (`whisper-cli`) for hosts where in-process
+/// `whisper-rs` cannot bindgen (notably Windows MSVC). Same ggml models.
+///
+/// Env for ignored e2e: `WHISPER_CLI_PATH`, `WHISPER_MODEL_PATH`.
+#[derive(Debug, Clone)]
+pub struct WhisperCliStt {
+    cli_path: PathBuf,
+    model_path: PathBuf,
+}
+
+impl WhisperCliStt {
+    pub fn new(cli_path: impl AsRef<Path>, model_path: impl AsRef<Path>) -> Self {
+        Self {
+            cli_path: cli_path.as_ref().to_path_buf(),
+            model_path: model_path.as_ref().to_path_buf(),
+        }
+    }
+
+    /// From `WHISPER_CLI_PATH` + `WHISPER_MODEL_PATH`.
+    pub fn from_env() -> Result<Self, SttError> {
+        let cli = std::env::var("WHISPER_CLI_PATH")
+            .map_err(|_| SttError::Engine("WHISPER_CLI_PATH not set".into()))?;
+        let model = std::env::var("WHISPER_MODEL_PATH")
+            .map_err(|_| SttError::Engine("WHISPER_MODEL_PATH not set".into()))?;
+        Ok(Self::new(cli, model))
+    }
+
+    /// Transcribe an existing WAV file (16-bit PCM preferred).
+    pub fn transcribe_file(&self, wav_path: impl AsRef<Path>) -> Result<Transcript, SttError> {
+        let output = Command::new(&self.cli_path)
+            .arg("-m")
+            .arg(&self.model_path)
+            .arg("-f")
+            .arg(wav_path.as_ref())
+            .arg("-nt") // no timestamps in stdout
+            .arg("-np") // no prints to stderr progress (still some logs)
+            .output()
+            .map_err(|e| SttError::Engine(format!("spawn whisper-cli: {e}")))?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(SttError::Engine(format!(
+                "whisper-cli exited {}: {err}",
+                output.status
+            )));
+        }
+        let text = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = text.trim().to_string();
+        let no_speech = text.is_empty();
+        Ok(Transcript {
+            text,
+            confidence: None,
+            no_speech,
+        })
+    }
+}
+
+impl SpeechToText for WhisperCliStt {
+    fn transcribe(&self, samples: &[f32], sample_rate_hz: u32) -> Result<Transcript, SttError> {
+        if samples.is_empty() {
+            return Err(SttError::EmptyAudio);
+        }
+        let dir = std::env::temp_dir();
+        let wav_path = dir.join(format!(
+            "ralleh-whisper-{}.wav",
+            std::process::id()
+        ));
+        crate::wav::write_pcm16_mono(&wav_path, samples, sample_rate_hz)
+            .map_err(|e| SttError::Engine(e.to_string()))?;
+        let result = self.transcribe_file(&wav_path);
+        let _ = std::fs::remove_file(&wav_path);
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,18 +275,46 @@ mod tests {
         ));
     }
 
-    /// Opt-in e2e against a real ggml model:
+    /// Opt-in e2e against a real ggml model via in-process whisper-rs:
     ///   set WHISPER_MODEL_PATH=/path/to/ggml-tiny.en.bin
-    ///   cargo test -p ralleh-audio-core --features whisper -- --ignored whisper_e2e
+    ///   cargo test -p ralleh-audio-core --features whisper -- --ignored whisper_rs_e2e
     #[cfg(feature = "whisper")]
     #[test]
-    #[ignore = "requires WHISPER_MODEL_PATH pointing at a ggml model file"]
-    fn whisper_e2e_transcribes_or_marks_no_speech() {
+    #[ignore = "requires WHISPER_MODEL_PATH + working whisper-rs bindgen"]
+    fn whisper_rs_e2e_transcribes_or_marks_no_speech() {
         let path = std::env::var("WHISPER_MODEL_PATH").expect("WHISPER_MODEL_PATH");
         let stt = WhisperStt::open(path).expect("open whisper model");
-        // One second of near-silence at 16 kHz — should not panic; typically no_speech.
         let samples = vec![0.0_f32; 16_000];
         let t = stt.transcribe(&samples, 16_000).expect("transcribe");
         assert!(t.no_speech || t.text.len() < 64);
+    }
+
+    /// Opt-in e2e via whisper.cpp CLI + real ggml model (works on Windows):
+    ///   ./scripts/download-whisper-cli.ps1
+    ///   ./scripts/download-whisper-model.ps1
+    ///   $env:WHISPER_CLI_PATH = ...\whisper-cli.exe
+    ///   $env:WHISPER_MODEL_PATH = ...\ggml-tiny.en.bin
+    ///   cargo test -p ralleh-audio-core -- --ignored whisper_cli_e2e
+    #[test]
+    #[ignore = "requires WHISPER_CLI_PATH + WHISPER_MODEL_PATH"]
+    fn whisper_cli_e2e_silence_and_jfk() {
+        let stt = WhisperCliStt::from_env().expect("from_env");
+        let silence = vec![0.0_f32; 16_000];
+        let quiet = stt.transcribe(&silence, 16_000).expect("silence");
+        assert!(quiet.no_speech || quiet.text.len() < 80);
+
+        // Prefer repo sample if present (scripts download it next to the model).
+        let jfk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../models/jfk.wav");
+        if jfk.is_file() {
+            let uttered = stt.transcribe_file(&jfk).expect("jfk");
+            assert!(!uttered.no_speech, "expected speech for jfk.wav");
+            let lower = uttered.text.to_lowercase();
+            assert!(
+                lower.contains("ask") || lower.contains("americans") || lower.contains("country"),
+                "unexpected transcript: {}",
+                uttered.text
+            );
+        }
     }
 }

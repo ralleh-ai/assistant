@@ -1,24 +1,23 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (Anthropic backend + caller auth + TTS mock)
+**As of:** 2026-08-01 (Whisper CLI ggml e2e + Piper CLI TTS)
 
 ## Build/test state
 
 ```
-cargo test --workspace → 129 passed
-  ai-router 17 | audio-core 24 | mcp-server 21 | tool-gateway 39
+cargo test --workspace → 130 passed, 2 ignored (CLI e2e)
+  ai-router 17 | audio-core 25 (+2 ignored) | mcp-server 21 | tool-gateway 39
   policy 21 | audit-store 7
 ```
 
 ## Highlights
 
-- **`AnthropicMessagesBackend`** — native `/v1/messages` wire format
-  (`RALLEH_AI_PROVIDER=anthropic`).
-- **Bearer token auth** — `RALLEH_API_TOKENS` / `_FILE`; spoofed tenant → 403
-  (threat model T1 partial close).
-- **`MockTts` / `TextToSpeech`**; whisper e2e via ignored test +
-  `scripts/download-whisper-model.ps1`.
+- **`WhisperCliStt`** — real ggml e2e via whisper.cpp CLI (Windows-friendly;
+  in-process `whisper-rs` still blocked on MSVC bindgen).
+- **`PiperCliTts`** — real ONNX voice e2e via Piper CLI.
+- **Anthropic backend** + **Bearer auth (T1)** + mocks remain as before.
 
 ## Next up
 
-Real whisper utterance smoke; native TTS engine; OIDC — see NEXT_STEPS.md.
+OIDC/device attestation; http-fetch private-IP harden; in-process whisper on
+Linux CI — see NEXT_STEPS.md.

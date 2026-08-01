@@ -1,13 +1,15 @@
 # ADR-003: Rust-Native AI Bindings Preferred Over Python Sidecars
 
-**Status:** Accepted (planning-time decision, copied from DEVELOPMENT.md §20) — **not yet implemented**
+**Status:** Accepted — **partially implemented** (adapters + CLI e2e;
+in-process bindings still feature-gated / platform-limited)
 
 ## Decision
 
 Prefer native Rust bindings (`whisper-rs`, `llama-cpp-rs`, Rust Piper/Kokoro
 bindings) for STT/TTS/local-LLM engines. Fall back to Python or cloud
 sidecar processes only when no mature Rust binding covers a required
-model/feature.
+model/feature. Official vendor CLIs (`whisper-cli`, `piper`) are an
+allowed interim for e2e and Windows hosts where bindgen fails.
 
 ## Reason
 
@@ -20,8 +22,8 @@ default.
 
 ## Implementation status
 
-STT adapter surface started: `SpeechToText` + `MockStt` always on;
-`WhisperStt` (`whisper-rs`) is available behind the `whisper` cargo
-feature and still needs a ggml model + e2e smoke on a real utterance.
-TTS / local-LLM bindings are not started. `HttpCompletionBackend` remains
-a remote HTTP client (ADR-008), not an in-process model.
+STT: `SpeechToText` + `MockStt`; `WhisperCliStt` (ggml via whisper.cpp CLI,
+validated on Windows with `jfk.wav`); `WhisperStt` behind `--features
+whisper` (Linux/bindgen hosts). TTS: `TextToSpeech` + `MockTts`;
+`PiperCliTts` (ONNX via Piper CLI). Local LLM bindings not started.
+`HttpCompletionBackend` / Anthropic remain remote HTTP (ADR-008 / ADR-009).

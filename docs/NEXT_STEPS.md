@@ -3,20 +3,20 @@
 ## Done recently
 
 - Config, durable approvals, http fetch, cpal, STT/TTS traits + mocks,
-  optional whisper feature + download script, **Anthropic Messages backend**,
-  **Bearer token caller auth (T1)**, Phase 0 threat model.
+  Anthropic Messages backend, Bearer token caller auth (T1),
+  **WhisperCliStt ggml e2e** (JFK sample), **PiperCliTts** e2e,
+  Phase 0 threat model.
 
 ## High priority
 
-1. **Whisper e2e on a real utterance** — run
-   `scripts/download-whisper-model.ps1`, then
-   `cargo test -p ralleh-audio-core --features whisper -- --ignored whisper_e2e`
-   with `WHISPER_MODEL_PATH` set; wire mic→VAD→STT smoke binary.
-2. **Native TTS engine** (Piper/Kokoro Rust binding) behind a feature,
-   mirroring whisper.
-3. **OIDC / device attestation** — replace shared-secret tokens when the
+1. **In-process whisper on Linux CI** — `--features whisper` +
+   `whisper_rs_e2e` where bindgen works; keep `WhisperCliStt` as Windows
+   fallback.
+2. **OIDC / device attestation** — replace shared-secret tokens when the
    control plane exists.
-4. Harden http-fetch (private-IP / DNS-rebinding).
+3. Harden http-fetch (private-IP / DNS-rebinding).
+4. Optional native `piper-rs` / Kokoro behind a cargo feature (CLI path
+   already covers real-model validation).
 
 ## Medium priority
 

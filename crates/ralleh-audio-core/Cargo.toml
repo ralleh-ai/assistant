@@ -15,6 +15,8 @@ whisper = ["dep:whisper-rs"]
 serde.workspace = true
 thiserror.workspace = true
 cpal = "0.15"
+# 0.13: in-process whisper.cpp. On Windows MSVC, bindgen often fails
+# (opaque whisper_full_params); use WhisperCliStt + tools/whisper instead.
 whisper-rs = { version = "0.13", optional = true }
 
 [dev-dependencies]

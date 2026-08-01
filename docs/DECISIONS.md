@@ -179,15 +179,30 @@ Keeping `cpal` unconditional avoids a matrix of feature flags for a
 dependency that compiles cleanly on Windows/macOS/Linux. Hosts without a
 mic simply never construct the live source.
 
-## STT: trait + mock always; whisper-rs behind a feature
+## STT: trait + mock always; whisper-rs behind a feature; CLI fallback
 
 **Decision:** `SpeechToText` / `MockStt` ship in default builds.
 `WhisperStt` (`whisper-rs` / whisper.cpp) is gated on `--features whisper`
 because compiling whisper.cpp needs cmake, **libclang** (`LIBCLANG_PATH`),
 and a long first build, plus a ggml model file at runtime.
+`WhisperCliStt` shells out to official `whisper-cli` binaries and is always
+available — preferred on Windows MSVC where bindgen currently fails
+(opaque `whisper_full_params` size asserts).
 
 **Why:** ADR-003 prefers native bindings, but forcing whisper.cpp onto
-every `cargo test` would punish headless/CI hosts. Use
-`scripts/download-whisper-model.ps1` and the ignored `whisper_e2e` test
-when validating locally.
+every `cargo test` would punish headless/CI hosts, and native bindgen is
+not reliable on this Windows toolchain yet. Use
+`scripts/download-whisper-model.ps1` + `scripts/download-whisper-cli.ps1`
+and the ignored `whisper_cli_e2e` test for real ggml validation.
+
+## TTS: trait + mock always; Piper CLI for real voices
+
+**Decision:** `TextToSpeech` / `MockTts` always on; `PiperCliTts` wraps the
+official Piper Windows/Linux CLI + ONNX voice (`scripts/download-piper.ps1`).
+In-crate `piper-rs` remains a follow-up.
+
+**Why:** Same escape-hatch pattern as Whisper CLI — validates the adapter
+surface and real-model I/O without pulling ONNX Runtime / espeak into every
+default build.
+
 

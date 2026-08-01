@@ -1,9 +1,10 @@
-# Download a small ggml Whisper model for optional --features whisper e2e.
+# Download a small ggml Whisper model for optional whisper e2e.
 # Usage (PowerShell):
 #   ./scripts/download-whisper-model.ps1
-# Then:
-#   $env:WHISPER_MODEL_PATH = (Resolve-Path .\models\ggml-tiny.en.bin)
-#   cargo test -p ralleh-audio-core --features whisper -- --ignored whisper_e2e
+#   ./scripts/download-whisper-cli.ps1   # Windows-friendly CLI path
+# Then either:
+#   $env:WHISPER_CLI_PATH / WHISPER_MODEL_PATH → whisper_cli_e2e (no cargo feature)
+#   or --features whisper + WHISPER_MODEL_PATH → whisper_rs_e2e (Linux/bindgen)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -20,4 +21,4 @@ if (Test-Path $OutFile) {
 Write-Host "Downloading $Url ..."
 Invoke-WebRequest -Uri $Url -OutFile $OutFile
 Write-Host "Saved $OutFile"
-Write-Host "Set WHISPER_MODEL_PATH to that path and run the ignored whisper_e2e test with --features whisper."
+Write-Host "Prefer WhisperCliStt e2e on Windows (see download-whisper-cli.ps1)."

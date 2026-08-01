@@ -54,8 +54,8 @@ warning. Real OIDC / device attestation remains Phase 2.
 | T6 | Prompt injection → tool misuse | Med | Tools still policy-gated; writes need approval | No output fencing / digest before model injection yet |
 | T7 | Approval replay after restart | Med | Durable JSON approval store (status transitions persist) | File not integrity-protected |
 | T8 | Egress to unexpected hosts | Med | Empty `allowed_hosts` fails config validation | Operators must keep allowlists tight |
-| T9 | Mic / transcript leakage | Med | Mic optional; STT mock only by default | Whisper feature + retention policy TBD |
-| T10 | Supply-chain / native STT | Low | `whisper` feature off by default | Model files / build toolchain when enabled |
+| T9 | Mic / transcript leakage | Med | Mic optional; STT mock by default; CLI STT opt-in | Retention policy TBD |
+| T10 | Supply-chain / native STT | Low | `whisper` feature off; CLI binaries gitignored under `tools/` | Model/tool download scripts; verify checksums later |
 
 ## Non-goals for this draft
 
