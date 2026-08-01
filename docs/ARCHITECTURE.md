@@ -63,6 +63,7 @@ who, from where, what capability, human confirmation needed?
 **Real (non-mocked) handlers implemented:**
 - `FsReadTextHandler` — sandboxed UTF-8 text file reader. Canonicalizes paths, rejects traversal outside a configured root.
 - `FsWriteTextHandler` — sandboxed UTF-8 text file writer. Same sandboxing approach (canonicalizes the *parent* directory since the target file may not exist yet). Refuses to overwrite existing files unless `overwrite: true` is explicitly passed. Does not auto-create parent directories.
+- `HttpFetchHandler` — HTTP(S) GET with an explicit hostname egress allowlist, redirects disabled, userinfo rejected (DEVELOPMENT.md §8.5 SSRF/egress).
 
 **24 tests** cover both handlers (traversal rejection, missing args, overwrite semantics, sandbox boundary enforcement) plus gateway-level tests (deny-by-default, approval-required never invokes handler, cross-tenant isolation holds through the full dispatch path, handler failure reported distinctly from policy denial).
 
@@ -99,16 +100,16 @@ who, from where, what capability, human confirmation needed?
 **Purpose:** DEVELOPMENT.md §9 "Voice Pipeline" primitives — VAD, wake-word detection, audio source abstraction. This is the *only* crate in the workspace that has not yet been connected to anything real (no microphone capture, no STT/TTS bindings) — it currently operates purely on synthetic/mock audio frames to prove the state-machine logic.
 
 **Key types:**
-- `AudioSource` trait + `MockSource` test double.
-- VAD state machine: silence → maybe-speech → speech → maybe-silence → silence, with debouncing (a single loud frame doesn't immediately confirm speech; a brief dip during speech doesn't immediately drop back to silence).
-- Wake-word detector: acoustic pattern matching against utterance bounds (too-short/too-long rejected), with a cooldown period preventing immediate retrigger.
+- `AudioSource` trait + `MockAudioSource` test double + `CpalMicSource` live mic (`cpal` default input).
+- `FrameAssembler` — pure PCM→`AudioFrame` chunking used by the mic source (unit-tested without hardware).
+- VAD state machine: silence → maybe-speech → speech → maybe-silence → silence, with debouncing.
+- Wake-word detector: acoustic pattern matching against utterance bounds, with cooldown.
 
-**17 tests** cover VAD state transitions and wake-word triggering/cooldown/bounds-checking.
+**19 tests** cover VAD, wake-word, mock source, frame assembly, and
+`CpalMicSource::try_open_default` (returns `None` when no input device).
 
-This crate is a **pure logic layer** today — real audio I/O (`cpal` or
-similar), real STT (`whisper-rs`), and real TTS (Piper/Kokoro bindings) per
-DEVELOPMENT.md §2.3/§17/Phase 1 have not been started. See
-[`NEXT_STEPS.md`](./NEXT_STEPS.md).
+Real STT (`whisper-rs`) / TTS bindings per DEVELOPMENT.md Phase 1 are
+not started. See [`NEXT_STEPS.md`](./NEXT_STEPS.md).
 
 ## `ralleh-mcp-server`
 

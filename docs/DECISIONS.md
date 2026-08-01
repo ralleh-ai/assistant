@@ -152,3 +152,28 @@ Phase 4 Temporal/workflow work. The HTTP contract matches DEVELOPMENT.md
 durable backend later shouldn't need to change that wire shape — only the
 `ApprovalStore` implementation.
 
+## HTTP fetch: egress allowlist in the handler, not only in policy
+
+**Decision:** `HttpFetchHandler` refuses any URL whose host is not on an
+explicit `allowed_hosts` list configured at construction (and required
+non-empty in `config/default.toml`). Redirects are disabled; only
+`http`/`https` are accepted; userinfo in URLs is rejected.
+
+**Why:** DEVELOPMENT.md §8.5 calls out "SSRF and egress controls for web
+fetch/search." Policy gating (`Allow` on `tool.http.fetch`) answers
+*whether* the capability may be used; the handler still enforces *where*
+egress is allowed — same layering as fs sandbox roots. An empty allowlist
+fails closed at config load time rather than registering a no-op tool.
+
+## `cpal` mic source always compiled; open is best-effort
+
+**Decision:** `CpalMicSource` is a first-class `AudioSource` in
+`ralleh-audio-core` (not feature-gated). `try_open_default()` returns
+`Ok(None)` when the host has no input device so headless CI stays green.
+
+**Why:** the desktop transition environment can exercise real capture; the
+`AudioSource` trait boundary already meant VAD/wake-word needed no changes.
+Keeping `cpal` unconditional avoids a matrix of feature flags for a
+dependency that compiles cleanly on Windows/macOS/Linux. Hosts without a
+mic simply never construct the live source.
+

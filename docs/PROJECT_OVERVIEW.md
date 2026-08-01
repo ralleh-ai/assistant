@@ -49,7 +49,9 @@ DEVELOPMENT.md plan.
 
 - No Tauri desktop shell / React UI (Phase 1 deliverable per DEVELOPMENT.md §15, not started).
 - No NestJS control plane, no Postgres/pgvector, no Redis, no NATS, no Temporal (Phase 2+).
-- No real audio capture, no real STT/TTS engine bindings (`whisper-rs`, Piper/Kokoro) — `ralleh-audio-core` currently operates on mock/synthetic audio frames for VAD/wake-word logic testing only.
+- No real STT/TTS engine bindings (`whisper-rs`, Piper/Kokoro) yet —
+  `ralleh-audio-core` now has live mic capture via `CpalMicSource` in
+  addition to `MockAudioSource`; STT/TTS remain follow-ups.
 - No MCP connector runtime, no first-party SaaS connectors (Slack/Jira/GitHub/Google Workspace) — Phase 3.
 - No SSO/SCIM/RBAC/multi-tenant control plane — the policy engine supports tenant/device/actor scoping in its data model, but there is no actual multi-tenant control plane wired around it yet.
 - Approval-flow has a minimal in-process implementation (`ApprovalStore` +

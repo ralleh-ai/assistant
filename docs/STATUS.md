@@ -1,39 +1,29 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (desktop environment — config loading + approval flow)
+**As of:** 2026-08-01 (http fetch + cpal mic source)
 
 ## Build/test state
 
 ```
-cargo build   → clean (same 2 pre-existing dead_code warnings on EchoHandler /
-                AlwaysFailHandler test doubles)
-cargo test    → 102 passed, 0 failed, 0 ignored
+cargo test --workspace → all crates green
+  (audio-core 19, tool-gateway 37, mcp-server 16, …)
 ```
-
-Per-crate test counts:
 
 | Crate | Tests | Notes |
 |---|---|---|
-| `ralleh-policy-core` | 21 | rule matching, tenant isolation, default-deny, validation |
-| `ralleh-audio-core` | 17 | VAD state machine, wake-word detection/cooldown |
-| `ralleh-tool-gateway` | 30 | fs handlers + gateway + approval store/approve/reject |
-| `ralleh-mcp-server` | 14 | HTTP routes + config loader + approve-write e2e |
-| `ralleh-ai-router` | 13 | EchoBackend / HttpCompletionBackend / AiRouter |
-| `ralleh-audit-store` | 7 | sink implementations, concurrency safety |
-| **Total** | **102** | |
+| `ralleh-policy-core` | 21 | |
+| `ralleh-audio-core` | 19 | VAD/wake-word + FrameAssembler + cpal try_open |
+| `ralleh-tool-gateway` | 37 | fs + http fetch + approvals + gateway |
+| `ralleh-mcp-server` | 16 | HTTP + config + approve e2e |
+| `ralleh-ai-router` | 13 | |
+| `ralleh-audit-store` | 7 | |
 
-## What's real vs. test-double, per crate
+## Highlights
 
-- **`ralleh-policy-core`**: fully real.
-- **`ralleh-tool-gateway`**: real fs read/write handlers; in-process
-  `ApprovalStore` parks `RequireApproval` calls and resumes on approve.
-- **`ralleh-audit-store`**: `JsonlFileAuditSink` is real.
-- **`ralleh-ai-router`**: `HttpCompletionBackend` real; `EchoBackend` default unless `RALLEH_AI_BASE_URL` is set.
-- **`ralleh-audio-core`**: entirely synthetic (`MockSource` only).
-- **`ralleh-mcp-server`**: config-driven registry/policy; approval HTTP
-  routes at `POST /v1/approvals/:id/approve|reject`.
+- **`tool.http.fetch`**: allowlisted egress GET (`HttpFetchHandler`).
+- **`CpalMicSource`**: live mic via `cpal`; `try_open_default()` → `None` on headless hosts.
+- Approvals + declarative config remain as previously landed.
 
 ## Next up
 
-See [`NEXT_STEPS.md`](./NEXT_STEPS.md) — top of the backlog is now a
-**second real tool handler** (search or allowlisted HTTP fetch).
+STT binding (`whisper-rs`), durable approvals, second AI backend, threat model — see [`NEXT_STEPS.md`](./NEXT_STEPS.md).
