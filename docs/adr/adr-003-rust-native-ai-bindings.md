@@ -20,10 +20,8 @@ default.
 
 ## Implementation status
 
-Not started for STT/TTS/local-LLM. The one real "AI backend" built so far
-(`HttpCompletionBackend` in `ralleh-ai-router`, see ADR-008) is a remote
-HTTP client, not a local/native binding — it doesn't fall under this ADR's
-scope directly, since it's calling a *cloud or self-hosted server*, not
-embedding a model in-process. When local STT/TTS/LLM work starts (see
-[`../NEXT_STEPS.md`](../NEXT_STEPS.md) item 4), this ADR's "native binding
-first" preference should govern the choice.
+STT adapter surface started: `SpeechToText` + `MockStt` always on;
+`WhisperStt` (`whisper-rs`) is available behind the `whisper` cargo
+feature and still needs a ggml model + e2e smoke on a real utterance.
+TTS / local-LLM bindings are not started. `HttpCompletionBackend` remains
+a remote HTTP client (ADR-008), not an in-process model.

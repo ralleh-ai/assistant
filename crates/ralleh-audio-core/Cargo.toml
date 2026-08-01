@@ -4,9 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Native whisper.cpp via whisper-rs (ADR-003). Off by default: compiling
+# whisper.cpp needs cmake + a long first build, and runtime needs a ggml
+# model file. Enable with: cargo test -p ralleh-audio-core --features whisper
+whisper = ["dep:whisper-rs"]
+
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
 cpal = "0.15"
+whisper-rs = { version = "0.13", optional = true }
 
 [dev-dependencies]

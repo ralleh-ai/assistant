@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ralleh_ai_router::{AiRouter, CompletionBackend, EchoBackend, HttpCompletionBackend};
 use ralleh_audit_store::JsonlFileAuditSink;
-use ralleh_tool_gateway::ToolGateway;
+use ralleh_tool_gateway::{ApprovalStore, ToolGateway};
 use ralleh_mcp_server::{build_router, resolve_config_path, AppState, ServerConfig};
 
 /// Binary entrypoint for the Rust MCP/tool-gateway HTTP surface.
@@ -47,7 +47,26 @@ async fn main() {
         JsonlFileAuditSink::open(&audit_log_path).expect("failed to open audit log for writing"),
     );
 
-    let gateway = ToolGateway::with_audit_sink(registry, policy, audit_sink.clone());
+    // Pending approvals survive process restarts when backed by this JSON
+    // snapshot (override with RALLEH_APPROVAL_STORE_PATH).
+    let approval_store_path = std::env::var("RALLEH_APPROVAL_STORE_PATH").unwrap_or_else(|_| {
+        std::env::temp_dir()
+            .join("ralleh-approvals.json")
+            .display()
+            .to_string()
+    });
+    let approvals = Arc::new(
+        ApprovalStore::open(&approval_store_path)
+            .unwrap_or_else(|e| panic!("failed to open approval store {approval_store_path}: {e}")),
+    );
+    tracing::info!(path = %approval_store_path, "approval store ready");
+
+    let gateway = ToolGateway::with_audit_sink_and_approvals(
+        registry,
+        policy,
+        audit_sink.clone(),
+        approvals,
+    );
     // EchoBackend is the local dev/test completion backend -- no real
     // provider credentials required yet. If RALLEH_AI_BASE_URL is set, we
     // instead wire up a real HttpCompletionBackend speaking the
@@ -76,6 +95,7 @@ async fn main() {
         %addr,
         sandbox = %sandbox_dir.display(),
         audit_log = %audit_sink.path().display(),
+        approval_store = %approval_store_path,
         config = %config_path.display(),
         "starting ralleh-mcp-server"
     );

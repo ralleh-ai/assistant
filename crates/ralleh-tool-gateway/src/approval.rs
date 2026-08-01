@@ -1,15 +1,15 @@
-//! In-process approval requests for tool calls that policy gated with
-//! `RequireApproval`.
+//! Approval requests for tool calls gated with `RequireApproval`.
 //!
-//! This is the minimal spine called for by `docs/NEXT_STEPS.md`: when
-//! `ToolGateway::dispatch` stops on `ApprovalRequired`, it parks the
-//! original invocation here so a later `approve` / `reject` can either
-//! resume execution (without re-hitting the RequireApproval rule) or
-//! permanently deny it. Persistence is in-memory — good enough to prove
-//! the workflow; a durable store (Postgres / Temporal) is a Phase 2/4
-//! concern per DEVELOPMENT.md.
+//! When `ToolGateway::dispatch` stops on `ApprovalRequired`, it parks the
+//! original invocation here so a later `approve` / `reject` can resume or
+//! deny it. The store is optionally durable: `ApprovalStore::open(path)`
+//! snapshots the full map to a JSON file after every mutation so pending
+//! approvals survive process restarts (Postgres/Temporal remain Phase 2/4).
 
 use std::collections::HashMap;
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
@@ -29,12 +29,7 @@ pub enum ApprovalStatus {
 }
 
 /// A parked tool invocation waiting on human confirmation.
-///
-/// Mirrors DEVELOPMENT.md §13's `ApprovalRequest` entity at the fields
-/// this in-process spine actually needs. Extra control-plane fields
-/// (workflow linkage, UI deep-links, etc.) can layer on later without
-/// changing the gateway's approve/reject contract.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ApprovalRequest {
     pub id: Uuid,
     pub tenant_id: String,
@@ -62,15 +57,116 @@ pub enum ApprovalError {
     TenantMismatch,
 }
 
-/// Thread-safe, process-local store of pending/resolved approvals.
-#[derive(Debug, Default)]
+/// Thread-safe store of pending/resolved approvals.
+///
+/// Construct with [`ApprovalStore::new`] (memory-only) or
+/// [`ApprovalStore::open`] (load + persist a JSON snapshot on every change).
+#[derive(Debug)]
 pub struct ApprovalStore {
     inner: Mutex<HashMap<Uuid, ApprovalRequest>>,
+    /// When set, every mutating operation atomically rewrites this path.
+    path: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct ApprovalSnapshot {
+    requests: Vec<ApprovalRequest>,
+}
+
+impl Default for ApprovalStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ApprovalStore {
+    /// In-memory only — nothing survives process exit.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            path: None,
+        }
+    }
+
+    /// Open (or create) a durable store at `path`. Existing file contents
+    /// are loaded; missing file starts empty. Subsequent mutations rewrite
+    /// the file atomically (`*.tmp` + rename).
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
+        let map = if path.is_file() {
+            let raw = fs::read_to_string(&path)?;
+            if raw.trim().is_empty() {
+                HashMap::new()
+            } else {
+                let snap: ApprovalSnapshot = serde_json::from_str(&raw).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("corrupt approval store {}: {e}", path.display()),
+                    )
+                })?;
+                snap.requests.into_iter().map(|r| (r.id, r)).collect()
+            }
+        } else {
+            HashMap::new()
+        };
+
+        let store = Self {
+            inner: Mutex::new(map),
+            path: Some(path.clone()),
+        };
+        // Ensure the file exists even when empty so operators can see it.
+        store.persist()?;
+        Ok(store)
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.lock().expect("approval store mutex poisoned").len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn persist(&self) -> io::Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let map = self.inner.lock().expect("approval store mutex poisoned");
+        self.persist_map(path, &map)
+    }
+
+    fn persist_map(&self, path: &Path, map: &HashMap<Uuid, ApprovalRequest>) -> io::Result<()> {
+        let snap = ApprovalSnapshot {
+            requests: map.values().cloned().collect(),
+        };
+        let tmp = path.with_extension("json.tmp");
+        {
+            let mut f = fs::File::create(&tmp)?;
+            serde_json::to_writer_pretty(&mut f, &snap)?;
+            f.write_all(b"\n")?;
+            f.sync_all()?;
+        }
+        fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    fn persist_or_expect(&self) {
+        if let Err(e) = self.persist() {
+            panic!(
+                "failed to persist approval store to {}: {e}",
+                self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+            );
+        }
     }
 
     /// Park a new pending approval for a gated invocation.
@@ -98,10 +194,11 @@ impl ApprovalStore {
             decided_at: None,
             decided_by: None,
         };
-        self.inner
-            .lock()
-            .expect("approval store mutex poisoned")
-            .insert(request.id, request.clone());
+        {
+            let mut map = self.inner.lock().expect("approval store mutex poisoned");
+            map.insert(request.id, request.clone());
+        }
+        self.persist_or_expect();
         request
     }
 
@@ -116,7 +213,7 @@ impl ApprovalStore {
     /// Atomically claim a pending approval for the given tenant, marking it
     /// Approved (or Rejected). Returns the request as it stood *before* the
     /// status flip so the caller can still read the original arguments and
-    /// invoke the handler. Fails if missing, wrong tenant, or not pending.
+    /// invoke the handler.
     pub fn claim(
         &self,
         id: Uuid,
@@ -128,29 +225,36 @@ impl ApprovalStore {
             matches!(next, ApprovalStatus::Approved | ApprovalStatus::Rejected),
             "claim() only accepts Approved or Rejected as the next status"
         );
-        let mut map = self.inner.lock().expect("approval store mutex poisoned");
-        let entry = map.get_mut(&id).ok_or(ApprovalError::NotFound(id))?;
-        if entry.tenant_id != tenant_id {
-            return Err(ApprovalError::TenantMismatch);
-        }
-        if entry.status != ApprovalStatus::Pending {
-            return Err(ApprovalError::NotPending(id, entry.status));
-        }
-        let snapshot = entry.clone();
-        entry.status = next;
-        entry.decided_at = Some(Utc::now());
-        entry.decided_by = Some(decided_by.into());
+        let snapshot = {
+            let mut map = self.inner.lock().expect("approval store mutex poisoned");
+            let entry = map.get_mut(&id).ok_or(ApprovalError::NotFound(id))?;
+            if entry.tenant_id != tenant_id {
+                return Err(ApprovalError::TenantMismatch);
+            }
+            if entry.status != ApprovalStatus::Pending {
+                return Err(ApprovalError::NotPending(id, entry.status));
+            }
+            let snapshot = entry.clone();
+            entry.status = next;
+            entry.decided_at = Some(Utc::now());
+            entry.decided_by = Some(decided_by.into());
+            snapshot
+        };
+        self.persist_or_expect();
         Ok(snapshot)
     }
 
     /// Mark an already-Approved request as Executed after the handler ran.
     pub fn mark_executed(&self, id: Uuid) -> Result<(), ApprovalError> {
-        let mut map = self.inner.lock().expect("approval store mutex poisoned");
-        let entry = map.get_mut(&id).ok_or(ApprovalError::NotFound(id))?;
-        if entry.status != ApprovalStatus::Approved {
-            return Err(ApprovalError::NotPending(id, entry.status));
+        {
+            let mut map = self.inner.lock().expect("approval store mutex poisoned");
+            let entry = map.get_mut(&id).ok_or(ApprovalError::NotFound(id))?;
+            if entry.status != ApprovalStatus::Approved {
+                return Err(ApprovalError::NotPending(id, entry.status));
+            }
+            entry.status = ApprovalStatus::Executed;
         }
-        entry.status = ApprovalStatus::Executed;
+        self.persist_or_expect();
         Ok(())
     }
 }
@@ -224,6 +328,51 @@ mod tests {
         assert_eq!(
             store.get(created.id).unwrap().status,
             ApprovalStatus::Pending
+        );
+    }
+
+    #[test]
+    fn durable_store_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approvals.json");
+
+        let id = {
+            let store = ApprovalStore::open(&path).unwrap();
+            let created = seed(&store);
+            assert!(path.is_file());
+            created.id
+        };
+
+        let reopened = ApprovalStore::open(&path).unwrap();
+        let got = reopened.get(id).unwrap();
+        assert_eq!(got.status, ApprovalStatus::Pending);
+        assert_eq!(got.capability, "tool.fs.write_text");
+        assert_eq!(got.tenant_id, "tenant-a");
+    }
+
+    #[test]
+    fn durable_store_persists_status_transitions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approvals.json");
+        let store = ApprovalStore::open(&path).unwrap();
+        let created = seed(&store);
+        store
+            .claim(
+                created.id,
+                "tenant-a",
+                "approver-1",
+                ApprovalStatus::Rejected,
+            )
+            .unwrap();
+
+        let reopened = ApprovalStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.get(created.id).unwrap().status,
+            ApprovalStatus::Rejected
+        );
+        assert_eq!(
+            reopened.get(created.id).unwrap().decided_by.as_deref(),
+            Some("approver-1")
         );
     }
 }

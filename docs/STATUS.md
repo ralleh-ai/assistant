@@ -1,29 +1,24 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (http fetch + cpal mic source)
+**As of:** 2026-08-01 (STT adapters + durable approvals + threat model)
 
 ## Build/test state
 
 ```
-cargo test --workspace → all crates green
-  (audio-core 19, tool-gateway 37, mcp-server 16, …)
+cargo test --workspace → 118 passed
+  audio-core 22 | tool-gateway 39 | mcp-server 16 | policy 21
+  ai-router 13 | audit-store 7
 ```
-
-| Crate | Tests | Notes |
-|---|---|---|
-| `ralleh-policy-core` | 21 | |
-| `ralleh-audio-core` | 19 | VAD/wake-word + FrameAssembler + cpal try_open |
-| `ralleh-tool-gateway` | 37 | fs + http fetch + approvals + gateway |
-| `ralleh-mcp-server` | 16 | HTTP + config + approve e2e |
-| `ralleh-ai-router` | 13 | |
-| `ralleh-audit-store` | 7 | |
 
 ## Highlights
 
-- **`tool.http.fetch`**: allowlisted egress GET (`HttpFetchHandler`).
-- **`CpalMicSource`**: live mic via `cpal`; `try_open_default()` → `None` on headless hosts.
-- Approvals + declarative config remain as previously landed.
+- **`SpeechToText` + `MockStt`** in `ralleh-audio-core`; optional
+  `WhisperStt` behind `--features whisper` (ADR-003).
+- **Durable `ApprovalStore::open`** — JSON snapshot; mcp-server defaults
+  to `RALLEH_APPROVAL_STORE_PATH` / temp `ralleh-approvals.json`.
+- **`docs/THREAT_MODEL.md`** — Phase 0 draft for the current Rust spine.
 
 ## Next up
 
-STT binding (`whisper-rs`), durable approvals, second AI backend, threat model — see [`NEXT_STEPS.md`](./NEXT_STEPS.md).
+Whisper e2e with a real ggml model; TTS; second AI backend — see
+[`NEXT_STEPS.md`](./NEXT_STEPS.md).

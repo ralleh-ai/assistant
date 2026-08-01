@@ -75,6 +75,9 @@ Relevant environment variables (all optional, all have sane defaults):
 - `RALLEH_MCP_ADDR` — bind address, default `127.0.0.1:8787`.
 - `RALLEH_AUDIT_LOG_PATH` — where the JSONL audit log is written, default
   `<temp_dir>/ralleh-audit.jsonl`.
+- `RALLEH_APPROVAL_STORE_PATH` — JSON snapshot of pending/resolved
+  approvals so `RequireApproval` work survives restarts. Default
+  `<temp_dir>/ralleh-approvals.json`.
 - `RALLEH_AI_BASE_URL` — if set, boots a real `HttpCompletionBackend`
   against this OpenAI-compatible API root (e.g.
   `https://api.openai.com/v1` or `http://localhost:11434/v1` for a local

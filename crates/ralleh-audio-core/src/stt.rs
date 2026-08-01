@@ -1,0 +1,196 @@
+//! Speech-to-text adapter surface for the voice pipeline.
+//!
+//! Mirrors the `AudioSource` / `CompletionBackend` pattern: a small trait,
+//! a deterministic mock for tests, and (behind the `whisper` feature) a
+//! native `whisper-rs` binding per ADR-003. Pipeline code depends only on
+//! `SpeechToText` so STT engines can be swapped without touching VAD or
+//! wake-word logic.
+
+use serde::{Deserialize, Serialize};
+
+/// Result of one transcription attempt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Transcript {
+    pub text: String,
+    /// Engine-reported confidence in \[0, 1\] when available.
+    pub confidence: Option<f32>,
+    /// True when the engine judged the audio as non-speech (hallucination
+    /// guard — DEVELOPMENT.md calls out no-speech thresholds explicitly).
+    pub no_speech: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SttError {
+    #[error("STT engine error: {0}")]
+    Engine(String),
+    #[error("unsupported sample rate {0} Hz (expected {1} Hz)")]
+    UnsupportedSampleRate(u32, u32),
+    #[error("empty audio buffer")]
+    EmptyAudio,
+}
+
+/// Something that turns PCM mono samples into text.
+pub trait SpeechToText: Send + Sync {
+    fn transcribe(&self, samples: &[f32], sample_rate_hz: u32) -> Result<Transcript, SttError>;
+}
+
+/// Deterministic STT double for headless tests: returns a configured phrase
+/// when RMS energy clears a threshold, otherwise `no_speech`.
+#[derive(Debug, Clone)]
+pub struct MockStt {
+    phrase: String,
+    energy_threshold: f32,
+    confidence: f32,
+}
+
+impl MockStt {
+    pub fn new(phrase: impl Into<String>) -> Self {
+        Self {
+            phrase: phrase.into(),
+            energy_threshold: 0.05,
+            confidence: 0.95,
+        }
+    }
+
+    pub fn with_energy_threshold(mut self, threshold: f32) -> Self {
+        self.energy_threshold = threshold;
+        self
+    }
+}
+
+impl SpeechToText for MockStt {
+    fn transcribe(&self, samples: &[f32], _sample_rate_hz: u32) -> Result<Transcript, SttError> {
+        if samples.is_empty() {
+            return Err(SttError::EmptyAudio);
+        }
+        let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+        let rms = (sum_sq / samples.len() as f32).sqrt();
+        if rms < self.energy_threshold {
+            return Ok(Transcript {
+                text: String::new(),
+                confidence: Some(1.0),
+                no_speech: true,
+            });
+        }
+        Ok(Transcript {
+            text: self.phrase.clone(),
+            confidence: Some(self.confidence),
+            no_speech: false,
+        })
+    }
+}
+
+#[cfg(feature = "whisper")]
+mod whisper_engine {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    /// Native whisper.cpp binding via `whisper-rs` (ADR-003).
+    ///
+    /// Expects a ggml model file on disk (e.g. `ggml-base.en.bin`). Sample
+    /// rate must be 16 kHz mono PCM — resample upstream if needed.
+    pub struct WhisperStt {
+        ctx: whisper_rs::WhisperContext,
+        model_path: PathBuf,
+    }
+
+    impl WhisperStt {
+        fn open(model_path: impl AsRef<Path>) -> Result<Self, SttError> {
+            let model_path = model_path.as_ref().to_path_buf();
+            let ctx = whisper_rs::WhisperContext::new_with_params(
+                &model_path,
+                whisper_rs::WhisperContextParameters::default(),
+            )
+            .map_err(|e| SttError::Engine(e.to_string()))?;
+            Ok(Self { ctx, model_path })
+        }
+
+        pub fn model_path(&self) -> &Path {
+            &self.model_path
+        }
+    }
+
+    impl SpeechToText for WhisperStt {
+        fn transcribe(
+            &self,
+            samples: &[f32],
+            sample_rate_hz: u32,
+        ) -> Result<Transcript, SttError> {
+            if samples.is_empty() {
+                return Err(SttError::EmptyAudio);
+            }
+            if sample_rate_hz != 16_000 {
+                return Err(SttError::UnsupportedSampleRate(sample_rate_hz, 16_000));
+            }
+
+            let mut state = self
+                .ctx
+                .create_state()
+                .map_err(|e| SttError::Engine(e.to_string()))?;
+            let params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy {
+                best_of: 1,
+            });
+            state
+                .full(params, samples)
+                .map_err(|e| SttError::Engine(e.to_string()))?;
+
+            let n = state
+                .full_n_segments()
+                .map_err(|e| SttError::Engine(e.to_string()))?;
+            let mut text = String::new();
+            for i in 0..n {
+                let seg = state
+                    .full_get_segment_text(i)
+                    .map_err(|e| SttError::Engine(e.to_string()))?;
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(seg.trim());
+            }
+            let text = text.trim().to_string();
+            let no_speech = text.is_empty();
+            Ok(Transcript {
+                text,
+                confidence: None,
+                no_speech,
+            })
+        }
+    }
+}
+
+#[cfg(feature = "whisper")]
+pub use whisper_engine::WhisperStt;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_returns_phrase_for_speech_energy() {
+        let stt = MockStt::new("hello ralleh");
+        let samples: Vec<f32> = (0..320)
+            .map(|i| if i % 2 == 0 { 0.4 } else { -0.4 })
+            .collect();
+        let t = stt.transcribe(&samples, 16_000).unwrap();
+        assert!(!t.no_speech);
+        assert_eq!(t.text, "hello ralleh");
+    }
+
+    #[test]
+    fn mock_marks_silence_as_no_speech() {
+        let stt = MockStt::new("hello");
+        let samples = vec![0.0_f32; 320];
+        let t = stt.transcribe(&samples, 16_000).unwrap();
+        assert!(t.no_speech);
+        assert!(t.text.is_empty());
+    }
+
+    #[test]
+    fn mock_rejects_empty_buffer() {
+        let stt = MockStt::new("x");
+        assert!(matches!(
+            stt.transcribe(&[], 16_000),
+            Err(SttError::EmptyAudio)
+        ));
+    }
+}

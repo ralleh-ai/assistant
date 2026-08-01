@@ -141,16 +141,18 @@ constructs the matching Rust type.
 ## In-process approval store, not Temporal/Postgres (yet)
 
 **Decision:** when policy returns `RequireApproval`, `ToolGateway` parks
-the original invocation in an in-memory `ApprovalStore` and returns an
+the original invocation in an `ApprovalStore` and returns an
 `approval_request_id`. `approve` / `reject` resolve it; approve skips
-policy re-evaluation (which would just re-hit RequireApproval) and
-invokes the handler once. Approvals are tenant-scoped and one-shot.
+policy re-evaluation. Approvals are tenant-scoped and one-shot.
+`ApprovalStore::open(path)` persists a JSON snapshot after every mutation
+(default path via `RALLEH_APPROVAL_STORE_PATH` in mcp-server); 
+`ApprovalStore::new()` remains available for pure in-memory tests.
 
-**Why:** NEXT_STEPS explicitly allowed a minimal in-process proof before
-Phase 4 Temporal/workflow work. The HTTP contract matches DEVELOPMENT.md
-§14.1 (`POST /v1/approvals/:id/approve|reject`). Swapping the store for a
-durable backend later shouldn't need to change that wire shape — only the
-`ApprovalStore` implementation.
+**Why:** NEXT_STEPS allowed a minimal in-process proof before Phase 4
+Temporal work; durability against restart is the next spine gap and does
+not require Postgres yet. Snapshot-replace (tmp + rename) matches the
+resource-conscious JSONL audit choice. Postgres/Temporal can still replace
+the store later without changing the HTTP contract.
 
 ## HTTP fetch: egress allowlist in the handler, not only in policy
 
@@ -176,4 +178,16 @@ fails closed at config load time rather than registering a no-op tool.
 Keeping `cpal` unconditional avoids a matrix of feature flags for a
 dependency that compiles cleanly on Windows/macOS/Linux. Hosts without a
 mic simply never construct the live source.
+
+## STT: trait + mock always; whisper-rs behind a feature
+
+**Decision:** `SpeechToText` / `MockStt` ship in default builds.
+`WhisperStt` (`whisper-rs` / whisper.cpp) is gated on `--features whisper`
+because compiling whisper.cpp needs cmake and a long first build, and
+runtime needs a ggml model file.
+
+**Why:** ADR-003 prefers native bindings, but forcing whisper.cpp onto
+every `cargo test` would punish headless/CI hosts. The trait keeps the
+hot path swappable; enabling the feature is the documented opt-in when a
+model is present.
 

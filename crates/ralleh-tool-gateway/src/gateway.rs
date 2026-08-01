@@ -70,11 +70,27 @@ impl ToolGateway {
         policy: PolicyEngine,
         audit_sink: Arc<dyn AuditSink>,
     ) -> Self {
+        Self::with_audit_sink_and_approvals(
+            registry,
+            policy,
+            audit_sink,
+            Arc::new(ApprovalStore::new()),
+        )
+    }
+
+    /// Like `with_audit_sink`, but installs a caller-supplied approval
+    /// store (typically `ApprovalStore::open(...)` for durability).
+    pub fn with_audit_sink_and_approvals(
+        registry: ToolRegistry,
+        policy: PolicyEngine,
+        audit_sink: Arc<dyn AuditSink>,
+        approvals: Arc<ApprovalStore>,
+    ) -> Self {
         Self {
             registry,
             policy,
             audit_sink,
-            approvals: Arc::new(ApprovalStore::new()),
+            approvals,
         }
     }
 
