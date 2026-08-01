@@ -1,0 +1,25 @@
+# Architecture Decision Records
+
+This folder holds ADRs in two categories:
+
+1. **Planning-time ADRs** (ADR-001 through ADR-005) — copied verbatim from
+   [`../DEVELOPMENT.md`](../DEVELOPMENT.md) §20 for convenience, so they're
+   discoverable in the conventional `docs/adr/` location without needing to
+   go hunting through the full planning doc. The full document remains the
+   source of truth if these ever drift.
+2. **Implementation-time ADRs** (ADR-006 onward) — decisions made while
+   actually building the code, not previously recorded as formal ADRs
+   anywhere. These are also summarized less formally in
+   [`../DECISIONS.md`](../DECISIONS.md); the ADR files here give them the
+   same structured treatment as the planning-time ones for consistency.
+
+| ID | Title | Status |
+|---|---|---|
+| [ADR-001](./adr-001-rust-typescript-split.md) | Polyglot Split — Rust for Hot-Path/Security-Critical, TypeScript for Business Logic | Accepted (planning) |
+| [ADR-002](./adr-002-tauri-desktop-shell.md) | Tauri v2 Desktop Edge Client, Rust-First Core | Accepted (planning, not yet implemented) |
+| [ADR-003](./adr-003-rust-native-ai-bindings.md) | Rust-Native AI Bindings Preferred Over Python Sidecars | Accepted (planning, not yet implemented) |
+| [ADR-004](./adr-004-rust-policy-engine.md) | Rust Policy Engine Core, Policy-Mediated Tool Execution | Accepted, **implemented** |
+| [ADR-005](./adr-005-mcp-not-mcp-blind.md) | MCP-Compatible but Not MCP-Blind | Accepted (planning, not yet implemented) |
+| [ADR-006](./adr-006-audit-jsonl-not-database.md) | Audit Persistence via Append-Only JSONL, Not a Database | Accepted, **implemented** |
+| [ADR-007](./adr-007-dual-auditsink-traits.md) | Two Distinct `AuditSink` Traits to Preserve One-Way Crate Dependencies | Accepted, **implemented** |
+| [ADR-008](./adr-008-http-completion-backend.md) | OpenAI-Compatible HTTP Wire Format as the First Real Completion Backend | Accepted, **implemented** |
