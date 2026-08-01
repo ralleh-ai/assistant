@@ -52,4 +52,4 @@ DEVELOPMENT.md plan.
 - No real audio capture, no real STT/TTS engine bindings (`whisper-rs`, Piper/Kokoro) — `ralleh-audio-core` currently operates on mock/synthetic audio frames for VAD/wake-word logic testing only.
 - No MCP connector runtime, no first-party SaaS connectors (Slack/Jira/GitHub/Google Workspace) — Phase 3.
 - No SSO/SCIM/RBAC/multi-tenant control plane — the policy engine supports tenant/device/actor scoping in its data model, but there is no actual multi-tenant control plane wired around it yet.
-- Policy rules are currently **hardcoded in `main.rs`**, not loaded from a config file or database — this is a known, deliberate gap for the current stage (see [`NEXT_STEPS.md`](./NEXT_STEPS.md)).
+- Approval-flow is not implemented yet: `RequireApproval` correctly *stops* execution, but nothing can grant an approval and resume the original request (see [`NEXT_STEPS.md`](./NEXT_STEPS.md)).

@@ -63,11 +63,15 @@ not a sign of a problem.
 ## Running the server locally
 
 ```bash
+# from the repo root (so config/default.toml resolves), or set RALLEH_CONFIG
 cargo run -p ralleh-mcp-server
 ```
 
 Relevant environment variables (all optional, all have sane defaults):
 
+- `RALLEH_CONFIG` — path to the declarative server config (TOML or JSON).
+  Default: `config/default.toml` relative to the process cwd. See that
+  file for the tool registry + policy rules shape.
 - `RALLEH_MCP_ADDR` — bind address, default `127.0.0.1:8787`.
 - `RALLEH_AUDIT_LOG_PATH` — where the JSONL audit log is written, default
   `<temp_dir>/ralleh-audit.jsonl`.

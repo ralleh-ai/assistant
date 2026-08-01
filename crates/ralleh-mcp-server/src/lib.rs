@@ -14,8 +14,10 @@
 //! HTTP response and status code, and (later) push the event to durable
 //! audit storage.
 
+pub mod config;
 mod router;
 mod state;
 
+pub use config::{resolve_config_path, ConfigError, HandlerKind, ServerConfig, ToolConfig};
 pub use router::build_router;
 pub use state::AppState;

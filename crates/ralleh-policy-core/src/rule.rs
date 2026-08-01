@@ -25,15 +25,20 @@ pub struct PolicyRule {
     /// Stable identifier for this rule, surfaced in decisions/audit logs.
     pub id: String,
     /// Restrict this rule to a specific tenant; `None` = any tenant.
+    #[serde(default)]
     pub tenant_id: Option<String>,
     /// Restrict this rule to a specific device; `None` = any device.
+    #[serde(default)]
     pub device_id: Option<String>,
     /// Restrict this rule to a specific actor; `None` = any actor.
+    #[serde(default)]
     pub actor_id: Option<String>,
     /// Match requests whose `capability` starts with this prefix.
     /// e.g. "tool.github." matches "tool.github.create_issue".
+    #[serde(default)]
     pub capability_prefix: Option<String>,
     /// Restrict this rule to a specific sensitivity label; `None` = any.
+    #[serde(default)]
     pub sensitivity: Option<String>,
     /// What happens when this rule matches.
     pub effect: RuleEffect,

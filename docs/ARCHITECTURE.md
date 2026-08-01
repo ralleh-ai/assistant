@@ -120,22 +120,23 @@ DEVELOPMENT.md §2.3/§17/Phase 1 have not been started. See
 - `POST /v1/completions` — HTTP-facing entrypoint to `AiRouter::complete`.
 
 **Wiring in `main.rs`:**
-- Registers `FsReadTextHandler` under `tool.fs.read_text`, sandboxed to a temp directory, gated by an `Allow` policy rule.
-- Registers `FsWriteTextHandler` under `tool.fs.write_text`, same sandbox, gated by a `RequireApproval` policy rule (writes are a materially different risk tier than reads — deliberate).
+- Loads declarative config via `ServerConfig` (`config/default.toml` by
+  default, or `RALLEH_CONFIG`). The shipped default registers
+  `FsReadTextHandler` / `FsWriteTextHandler` and the Allow /
+  RequireApproval policy split (writes are a materially different risk
+  tier than reads — deliberate; see DECISIONS.md).
 - Boots a `JsonlFileAuditSink` writing to `RALLEH_AUDIT_LOG_PATH` (env var, defaults to a temp-dir path), passed into `ToolGateway::with_audit_sink`.
 - AI backend selection: if `RALLEH_AI_BASE_URL` env var is set, boots a real `HttpCompletionBackend` (model/API key/backend-name configurable via `RALLEH_AI_MODEL`/`RALLEH_AI_API_KEY`/`RALLEH_AI_BACKEND_NAME`); otherwise falls back to `EchoBackend`.
 
-**Important known limitation:** all policy rules and handler registrations
-are **hardcoded in `main.rs`**. There is no config-file or database-backed
-policy/registry loading yet. This is fine for proving the spine works
-end-to-end, but is explicitly a gap before this could be considered anywhere
-near the Phase 2 "Control Plane MVP" described in DEVELOPMENT.md §15.
+**Config module (`config.rs`):** TOML or JSON; tools name a known
+`HandlerKind`; rules deserialize straight into `PolicyRule` (optional
+scoping fields use `#[serde(default)]`). Validation rejects duplicate
+capabilities and empty rule reasons. See [`DECISIONS.md`](./DECISIONS.md).
 
-**8 tests**, including one true end-to-end integration test
-(`write_text_capability_is_gated_dispatched_and_audited_end_to_end`) that
-exercises the full HTTP → gateway → policy → real handler → real audit sink
-chain in a single test, rather than trusting per-crate unit tests to compose
-correctly.
+**8+ tests** in the HTTP router (including the end-to-end
+`write_text_capability_is_gated_dispatched_and_audited_end_to_end`
+integration test) plus config-loader unit tests covering TOML/JSON parse,
+duplicate-capability rejection, and empty-reason rejection.
 
 ## Design principle used throughout
 

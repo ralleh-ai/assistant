@@ -74,7 +74,11 @@ if [ ! -x "${SERVER_BIN}" ]; then
 fi
 
 log "Starting ralleh-mcp-server on 127.0.0.1:${SMOKE_PORT} for smoke test..."
-RALLEH_MCP_ADDR="127.0.0.1:${SMOKE_PORT}" "${SERVER_BIN}" &
+# Explicit config path so the smoke test works even if bootstrap was
+# invoked from a directory other than the repo root.
+RALLEH_MCP_ADDR="127.0.0.1:${SMOKE_PORT}" \
+  RALLEH_CONFIG="${REPO_ROOT}/config/default.toml" \
+  "${SERVER_BIN}" &
 SERVER_PID=$!
 
 # Ensure the server is always killed, even if the health check fails.

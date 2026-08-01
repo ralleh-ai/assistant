@@ -1,0 +1,43 @@
+# Ralleh MCP server — default development configuration
+#
+# Loaded by `ralleh-mcp-server` at boot (see `RALLEH_CONFIG` to point at a
+# different file). This replaces the previous hardcoded registry + policy
+# wiring in `main.rs` and is the declarative form DEVELOPMENT.md §8.3
+# calls for.
+#
+# Semantics reminder:
+# - Policy rules are evaluated in order; first match wins.
+# - No matching rule ⇒ deny (deny-by-default).
+# - `handler` names a built-in implementation the server knows how to
+#   construct; adding a new real tool means adding a handler in code and
+#   a matching variant in the config loader, then opting in here.
+
+# Optional. If omitted, defaults to `<temp>/ralleh-mcp-server-sandbox`.
+# sandbox_root = "/var/lib/ralleh/sandbox"
+
+[[tools]]
+capability = "tool.fs.read_text"
+description = "Read a UTF-8 text file from the server's sandboxed directory."
+default_sensitivity = "internal"
+handler = "fs_read_text"
+
+[[tools]]
+capability = "tool.fs.write_text"
+description = "Write a UTF-8 text file into the server's sandboxed directory."
+default_sensitivity = "internal"
+handler = "fs_write_text"
+
+[[rules]]
+id = "default-allow-fs-read"
+capability_prefix = "tool.fs.read_text"
+effect = "Allow"
+reason = "default development policy: sandboxed fs reads are allowed"
+
+# Writes are gated separately from reads and, unlike reads, require
+# approval by default: mutating the sandbox is a materially different
+# risk than reading from it (DEVELOPMENT.md §11.1 / DECISIONS.md).
+[[rules]]
+id = "default-approval-fs-write"
+capability_prefix = "tool.fs.write_text"
+effect = "RequireApproval"
+reason = "default development policy: sandboxed fs writes require approval"

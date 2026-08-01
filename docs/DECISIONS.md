@@ -114,3 +114,27 @@ as a bare `sandbox_root`.
 existed side by side — confirmed via grep that no external code depended
 on the old unqualified name before renaming, so this was a safe,
 non-breaking rename.
+
+## Declarative config: TOML/JSON, not YAML; handlers named, not embedded
+
+**Decision:** `ralleh-mcp-server` loads registry + policy from a file
+(`config/default.toml` by default, `RALLEH_CONFIG` to override). Supported
+formats are TOML (preferred) and JSON. YAML is *not* supported yet.
+Handler *implementations* are not deserialized from config — config entries
+name a `HandlerKind` (`fs_read_text`, `fs_write_text`, …) and the loader
+constructs the matching Rust type.
+
+**Why:**
+- DEVELOPMENT.md §8.3 asks for declarative policy rules (YAML/JSON)
+  loaded by the Rust evaluator. TOML is the idiomatic Rust config format
+  and is listed alongside YAML/JSON in `NEXT_STEPS.md`; JSON is free
+  because `serde_json` was already a workspace dependency. YAML would
+  pull in another crate for little gain on a still-small config surface.
+- `Box<dyn ToolHandler>` cannot be meaningfully deserialized — the
+  sandboxing/IO logic lives in code. Naming known handlers keeps the
+  config declarative for operators while keeping privileged implementation
+  details reviewable in PRs.
+- `PolicyRule`'s optional scoping fields gained `#[serde(default)]` so
+  partial rule entries in TOML (id + effect + reason + one matcher) load
+  cleanly without forcing every wildcard field to be written as null.
+
