@@ -1,10 +1,11 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-02 (Phase 2 §1–§6 complete; Phase 3 §1 (real Idle +
-VAD → Listening), §3.2 (router + tool gateway → `thinking` /
-`tool_use`), §3.3 (`speaking` on TTS synthesis), §3.4 (sparse
-`attention` pulses + opt-in scan sweep), and §3.5 (policy denials →
-`error`) landed — every presence mode now has a real work source)
+**As of:** 2026-08-02 (Phase 2 §1–§6 complete; **Phase 3 complete**
+— §1 real Idle + VAD → Listening, §3.2 router + tool gateway
+→ `thinking` / `tool_use`, §3.3 `speaking` engagement + live
+`audio_level` scalar pump, §3.4 sparse `attention` pulses + opt-in
+scan sweep, §3.5 policy denials → `error`. Every presence mode has
+a real work source and every scalar has a real driver.)
 
 ## Build/test state
 

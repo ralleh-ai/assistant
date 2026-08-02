@@ -135,14 +135,19 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
        chips. Real HTTP / LLM backends slot in behind
        `CompletionBackend` in Phase 4; the mode-signal path does not
        change.
-    3. **`speaking` engagement wired to TTS (2026-08-02)** — the
-       Tauri `voice_smoke` handler now fires
+    3. **`speaking` engagement + live `audio_level` pump
+       (2026-08-02).** The Tauri `voice_smoke` handler fires
        `Presence::pulse_speaking(duration_ms)` on a successful
-       synthesis, holding the mode for the wall-clock length of the
-       generated audio. What's still missing is real cpal playback +
-       chunked-RMS `audio_level` feed *during* the pulse; that
-       comes when TTS moves off the mock backend and is a small
-       companion pump.
+       synthesis and spawns `presence_speaking::spawn` on the
+       same wall-clock. The pump chunks the TTS PCM at ~30 Hz,
+       computes per-window RMS, EMA-smooths it, and pushes
+       `Command::SetSignalsScalars` — the same wire path the mic
+       pump uses. The mode engagement gives the shell "speaking";
+       the scalar envelope gives it a syllable-following level.
+       Pump handles empty / zero-rate inputs as no-ops and caps
+       wall-clock at 30 s. When real cpal playback lands, the
+       pump moves from `Vec<f32>` to a ringbuffer tap on the
+       output stream with no change to the wire shape.
     4. **Sparse secondary events landed (2026-08-02).**
        `Presence::pulse_attention(duration_ms)` fires
        `PresenceMode::Attention` for a short hold (~450 ms default,

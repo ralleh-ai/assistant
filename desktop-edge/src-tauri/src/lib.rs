@@ -9,6 +9,7 @@ mod mic;
 mod os_caps;
 mod presence;
 mod presence_mic;
+mod presence_speaking;
 mod settings;
 
 use std::sync::Mutex;
@@ -25,7 +26,9 @@ use settings::PresencePosition;
 use presence_mic::MicPump;
 use ralleh_ai_router::{CompletionOutcome, CompletionResponse};
 use ralleh_tool_gateway::ToolCallOutcome;
-use ralleh_audio_core::{run_mock_voice_pipeline, MockVoicePipelineResult};
+use ralleh_audio_core::{
+    run_mock_voice_pipeline, MockTts, MockVoicePipelineResult, TextToSpeech,
+};
 use settings::{load_settings, save_settings, settings_path_display, EdgeSettings};
 
 const EDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -105,6 +108,19 @@ fn voice_smoke(presence: State<'_, Presence>) -> Result<MockVoicePipelineResult,
             let ms = ((r.tts_samples as u64) * 1_000)
                 .checked_div(r.sample_rate_hz.max(1) as u64)
                 .unwrap_or(0);
+            // §3.3 follow-up: pump a live `audio_level` for the
+            // duration of the pulse. Re-synthesizing the transcript
+            // is cheap on `MockTts` (a synchronous constant-tone
+            // generator) and keeps `run_mock_voice_pipeline`'s
+            // serialized result surface unchanged. When real TTS +
+            // cpal playback land, this branch moves to a ringbuffer
+            // tap on the output stream — same pump, same cadence.
+            if let (Some(tx), Ok(audio)) = (
+                presence.sender_clone(),
+                MockTts::new().synthesize(&r.transcript),
+            ) {
+                presence_speaking::spawn(audio.samples, audio.sample_rate_hz, tx);
+            }
             presence.pulse_speaking(ms);
         }
         Err(_) => presence.pulse_error(),
