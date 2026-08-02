@@ -36,6 +36,17 @@ stamp clearance, then optionally **Listen once**. Developer smoke IPC
 (`core_ping`, `voice_smoke`, `clipboard_smoke`, `mic_smoke`) remains for
 CLI/tests — not on the core home screen.
 
+## Environment variables
+
+- `RALLEH_PRESENCE_BIN` / `PRESENCE_DROPLET` / `PRESENCE_TRANSPARENT` —
+  see `../presence-prototype/README.md` for the presence-runtime
+  side (child process, window chrome, transparency + click-through).
+- `RALLEH_SCAN_SWEEP_MS` — opt-in interval (ms) for the sparse
+  scan-sweep attention pulse. Missing / `0` / unparseable disables
+  it; a minimum of 5000 ms is enforced. The sweep only fires while
+  `AssistantState::is_idle()` is true, so it never competes with
+  real thinking / tool-use / speaking activity.
+
 ## Layout
 
 ```text

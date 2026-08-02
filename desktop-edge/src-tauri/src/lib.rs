@@ -363,6 +363,11 @@ async fn assistant_think(
     // scope: its `Drop` fires the mode-release even on early return
     // via `?`, panic, or a task cancellation.
     let router = state.router.clone();
+    // Two drop-scoped guards — order matters at drop only insofar as
+    // both fire; a slot in `in_flight` is released ~immediately
+    // after the mode-release on the wire, which is what the scan
+    // sweep wants to see before it starts firing attention pulses.
+    let _work = state.begin_work();
     let _hold = presence.hold_mode(PresenceMode::Thinking);
 
     match router.route(&request).await {
@@ -395,9 +400,9 @@ fn assistant_tool_ping(
     let settings = load_settings(&app)?;
     let gateway = state.gateway.clone();
     // Synchronous dispatch — `ToolGateway::dispatch` is sync today,
-    // so no need to spawn or await. The hold is still an RAII guard
-    // for symmetry with `assistant_think`; drops at end of scope
-    // and on any early return via `?`.
+    // so no need to spawn or await. Both guards drop at end of
+    // scope, including on any early return via `?`.
+    let _work = state.begin_work();
     let _hold = presence.hold_mode(PresenceMode::ToolUse);
 
     let event = gateway.dispatch(
@@ -422,6 +427,20 @@ fn assistant_tool_ping(
             ))
         }
     }
+}
+
+/// Sparse "look here" pulse (§3.4). Fires `Attention` for a short
+/// hold — used by the notification / inbound-stream surface and by
+/// the dev panel's Notify chip. Held-hold defaults to 450 ms, which
+/// sits inside the runtime's 300–900 ms transition window and reads
+/// as one deliberate glance rather than a fidget.
+#[tauri::command]
+fn assistant_notify_inbound(
+    duration_ms: Option<u64>,
+    presence: State<'_, Presence>,
+) -> Result<(), String> {
+    presence.pulse_attention(duration_ms.unwrap_or(450));
+    Ok(())
 }
 
 #[tauri::command]
@@ -495,6 +514,89 @@ fn presence_event_listener(app: AppHandle) -> EventListener {
 /// `bool` — sending `false` on a fresh install matches the runtime
 /// default and costs one envelope, which is cheaper than tracking
 /// an "explicitly set" sentinel.
+/// Sparse scan sweep (§3.4). Optionally fires a short attention
+/// pulse at a fixed interval, but only when `AssistantState` reports
+/// zero in-flight work — so it never competes with real activity.
+///
+/// Opt-in via `RALLEH_SCAN_SWEEP_MS` (interval in milliseconds).
+/// Missing / unparseable / zero disables the sweep entirely, which
+/// is the default: firing an attention pulse on a fresh dev build
+/// with no operator context would train the eye to ignore attention
+/// events, which is the exact opposite of what sparse means.
+///
+/// A minimum interval of 5000 ms is enforced to keep the visual
+/// language honest — a scan sweep is not a heartbeat.
+fn spawn_scan_sweep(
+    presence: &Presence,
+    in_flight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    const SWEEP_ENV: &str = "RALLEH_SCAN_SWEEP_MS";
+    const MIN_INTERVAL_MS: u64 = 5_000;
+    const PULSE_MS: u64 = 350;
+
+    let interval_ms = match std::env::var(SWEEP_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        Some(0) | None => return,
+        Some(v) => v.max(MIN_INTERVAL_MS),
+    };
+
+    // The sweep only needs a `Sender<Envelope>` to fire pulses, but
+    // `Presence::pulse_attention` already knows how to spawn its own
+    // detached release thread — so we clone the whole `Presence` by
+    // pulling out its sender through a public shim. Rather than
+    // widen the API for one caller, use the existing `pulse_attention`
+    // method by cloning the `Presence` reference via a lightweight
+    // handle: `Presence` itself is not Clone, so instead we grab a
+    // `Sender<Envelope>` and reconstruct the two-envelope sequence
+    // here. This keeps `Presence` opaque to the scan sweep.
+    let Some(tx) = presence.sender_clone() else {
+        // Presence disabled — nothing to sweep against.
+        log::debug!("scan sweep skipped: presence disabled");
+        return;
+    };
+
+    log::info!(
+        "scan sweep enabled every {}ms (min {}ms enforced)",
+        interval_ms,
+        MIN_INTERVAL_MS
+    );
+
+    std::thread::Builder::new()
+        .name("presence-scan-sweep".into())
+        .spawn(move || {
+            use presence_ipc::{Command, Envelope};
+            let interval = std::time::Duration::from_millis(interval_ms);
+            let pulse_hold = std::time::Duration::from_millis(PULSE_MS);
+            loop {
+                std::thread::sleep(interval);
+                if in_flight.load(std::sync::atomic::Ordering::Acquire) != 0 {
+                    // Something real is happening — skip this beat
+                    // rather than layering attention on top of it.
+                    continue;
+                }
+                let engage = Envelope::wrap(Command::SetMode {
+                    mode: presence_ipc::PresenceMode::Attention,
+                    engaged: true,
+                });
+                if tx.send(engage).is_err() {
+                    log::info!("scan sweep exiting: presence pipe closed");
+                    return;
+                }
+                std::thread::sleep(pulse_hold);
+                let release = Envelope::wrap(Command::SetMode {
+                    mode: presence_ipc::PresenceMode::Attention,
+                    engaged: false,
+                });
+                if tx.send(release).is_err() {
+                    return;
+                }
+            }
+        })
+        .expect("spawn presence-scan-sweep thread");
+}
+
 fn restore_presence_state(app: &AppHandle, presence: &Presence) {
     let Ok(settings) = load_settings(app) else {
         return;
@@ -546,6 +648,10 @@ where
 pub fn run() {
     let mic_pump: MicPumpState = Mutex::new(None);
     let assistant_state = AssistantState::with_defaults();
+    // Handle captured before `manage` transfers ownership — the
+    // scan-sweep thread (spawned inside `setup`) needs to observe
+    // idleness without holding `State<AssistantState>`.
+    let assistant_in_flight = assistant_state.in_flight_handle();
 
     tauri::Builder::default()
         .manage(mic_pump)
@@ -556,10 +662,15 @@ pub fn run() {
         // else about the previous lifecycle carries over: on shutdown
         // Tauri drops the managed `Presence`, which closes stdin and
         // kills the child (see `presence::Presence::drop`).
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
             let presence = Presence::spawn_from_env(presence_event_listener(handle.clone()));
             restore_presence_state(&handle, &presence);
+            // Scan sweep (§3.4). Opt-in via env var so a normal
+            // launch stays silent — the visual grammar treats
+            // attention as *sparse*, and firing it on a fresh dev
+            // build would train the operator to ignore it.
+            spawn_scan_sweep(&presence, assistant_in_flight.clone());
             app.manage(presence);
             Ok(())
         })
@@ -584,6 +695,7 @@ pub fn run() {
             presence_mic_stop,
             assistant_think,
             assistant_tool_ping,
+            assistant_notify_inbound,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

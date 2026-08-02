@@ -242,6 +242,23 @@ impl Presence {
         self.pulse_mode(presence_ipc::PresenceMode::Speaking, hold);
     }
 
+    /// Fires `PresenceMode::Attention` for `duration_ms` then
+    /// releases. Sparse events (`§3.4` — scan sweeps, inbound
+    /// streams, notifications) hit this rather than a sustained
+    /// mode: a bright pulse that settles back to whatever the shell
+    /// was doing before is exactly the "look here, briefly" signal
+    /// the anti-patterns list calls for.
+    ///
+    /// Same clamp as `pulse_speaking` — below ~200 ms the attack
+    /// and release overlap into a blur rather than a distinct
+    /// glance. Callers passing longer holds should be aware that
+    /// attention layers over any concurrent mode, so a long hold on
+    /// top of `speaking` reads as loud rather than as one event.
+    pub fn pulse_attention(&self, duration_ms: u64) {
+        let hold = duration_ms.max(200);
+        self.pulse_mode(presence_ipc::PresenceMode::Attention, hold);
+    }
+
     /// Engages `mode` and returns a guard that releases it on drop.
     /// The sustained counterpart to `pulse_*` — used by the router
     /// and tool-gateway wrappers where the visual must hold for the

@@ -112,9 +112,14 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
        the RMS integrator and engages `PresenceMode::Listening`
        on the debounced `Speech` boundary. Releases the mode on
        both silence *and* pump stop, so a click-off cleans up.
-       Remaining sub-step of §3.1 is `idle` becoming a real
-       "no assistant work in flight" signal rather than the mic-off
-       default — needs the router integration below.
+       **Idle = "no work in flight" landed (2026-08-02).**
+       `AssistantState` now holds an `Arc<AtomicUsize>` in-flight
+       counter with a `WorkGuard` RAII handle; every command that
+       engages a sustained mode (`assistant_think`,
+       `assistant_tool_ping`) holds one alongside its `ModeHold`.
+       `is_idle()` / `in_flight_handle()` expose the observation
+       surface — consumed today by the §3.4 scan sweep, and by
+       future status-line / telemetry observers.
     2. **Router + tool gateway embedded in the shell (2026-08-02).**
        `desktop-edge/src-tauri/src/assistant.rs` owns an
        `AiRouter` (default `EchoBackend`) and a `ToolGateway`
@@ -138,7 +143,18 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
        chunked-RMS `audio_level` feed *during* the pulse; that
        comes when TTS moves off the mock backend and is a small
        companion pump.
-    4. Add sparse secondary events (scan sweeps, inbound streams).
+    4. **Sparse secondary events landed (2026-08-02).**
+       `Presence::pulse_attention(duration_ms)` fires
+       `PresenceMode::Attention` for a short hold (~450 ms default,
+       clamped ≥200 ms). Two entry points: `assistant_notify_inbound`
+       Tauri command (dev-panel "Notify" chip; ready for a real
+       notification source), and an opt-in scan-sweep background
+       thread gated by `RALLEH_SCAN_SWEEP_MS`. The sweep only fires
+       when `AssistantState::is_idle()` returns true, so attention
+       never layers on top of thinking / tool-use / speaking —
+       preserving the "sparse" side of the anti-patterns list. A
+       minimum 5 s interval is enforced regardless of the env var:
+       a scan sweep is not a heartbeat.
     5. ~~Map policy `Denied` / handler `Failed` outcomes to
        `error`.~~ **landed (2026-08-02)** — the three Tauri smoke
        commands (`voice_smoke`, `clipboard_smoke`, `mic_smoke`) fire

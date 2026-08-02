@@ -176,6 +176,17 @@ export function assistantToolPing(): Promise<string> {
   return invoke<string>("assistant_tool_ping");
 }
 
+/**
+ * Fire a sparse `attention` pulse (Phase 3 §3.4). Optional
+ * `durationMs` overrides the ~450 ms default; the shell clamps to a
+ * lower floor so anything below ~200 ms still produces a visible
+ * pulse. Use for inbound notifications, one-shot "look here"
+ * signals, and demoing the scan-sweep pattern from the dev panel.
+ */
+export function assistantNotifyInbound(durationMs?: number): Promise<void> {
+  return invoke("assistant_notify_inbound", { durationMs });
+}
+
 export const PALETTES: { id: PaletteId; label: string }[] = [
   { id: "teal", label: "Teal" },
   { id: "lime", label: "Lime" },

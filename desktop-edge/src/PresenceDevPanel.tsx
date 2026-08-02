@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+    assistantNotifyInbound,
     assistantThink,
     assistantToolPing,
     PRESENCE_MODES,
@@ -179,6 +180,15 @@ export function PresenceDevPanel() {
         }
     }, []);
 
+    const onNotify = useCallback(async () => {
+        setAssistantError(null);
+        try {
+            await assistantNotifyInbound();
+        } catch (err) {
+            setAssistantError(String(err));
+        }
+    }, []);
+
     const onToolPing = useCallback(async () => {
         setAssistantError(null);
         setToolBusy(true);
@@ -324,6 +334,14 @@ export function PresenceDevPanel() {
                     title="Dispatch through ToolGateway; engages `tool_use`"
                 >
                     {toolBusy ? "Tool call ●" : "Tool call"}
+                </button>
+                <button
+                    type="button"
+                    className="presence-dev-chip"
+                    onClick={onNotify}
+                    title="Fire a sparse attention pulse (inbound event)"
+                >
+                    Notify
                 </button>
             </div>
             {assistantError && (

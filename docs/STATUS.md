@@ -1,9 +1,10 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-02 (Phase 2 §1–§6 complete; Phase 3 §1 (VAD →
-Listening), §3.2 (router + tool gateway → `thinking` / `tool_use`),
-§3.3 (`speaking` on TTS synthesis), and §3.5 (policy denials → `error`)
-landed — every mode except `attention` now has a real work source)
+**As of:** 2026-08-02 (Phase 2 §1–§6 complete; Phase 3 §1 (real Idle +
+VAD → Listening), §3.2 (router + tool gateway → `thinking` /
+`tool_use`), §3.3 (`speaking` on TTS synthesis), §3.4 (sparse
+`attention` pulses + opt-in scan sweep), and §3.5 (policy denials →
+`error`) landed — every presence mode now has a real work source)
 
 ## Build/test state
 
