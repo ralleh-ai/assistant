@@ -175,6 +175,14 @@ impl Default for ShellDrive {
 pub struct EntityParams {
     pub time: f32,
     pub dt: f32,
+    /// Fraction of real `dt` that advances `time`. `1.0` at rest; drops in
+    /// reduced-motion mode so every time-based deformation on this entity
+    /// (fold evolution, lobe migration, pulse travel, breathing, spin)
+    /// slows together. Springs still integrate at real `dt`, because the
+    /// point of a reduced-motion path is less *animation*, not laggier
+    /// physics — a spring updated at 1/10th rate is a spring that visibly
+    /// swims.
+    pub time_scale: f32,
     pub center: Vec3,
     /// Overall scale of the entity's volume.
     pub scale: f32,
@@ -218,6 +226,7 @@ impl EntityParams {
         Self {
             time: 0.0,
             dt: 0.0,
+            time_scale: 1.0,
             center,
             scale,
             intensity: 0.0,

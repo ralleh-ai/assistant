@@ -23,6 +23,17 @@ weighted in, which is why the folds are still recognisably there in all of
 them. Stills undersell `speaking` in particular: most of what it carries is
 brightness tracking the voice from one frame to the next.
 
+| `listening` — brighter, slightly larger | `attention` — bright pulse | `error` — dimmed and pulled in |
+|---|---|---|
+| ![The shell brighter and gently expanded, otherwise the resting fold](screenshot-listening.png) | ![The shell noticeably brighter and larger, a notice-me signature](screenshot-attention.png) | ![The shell dimmed and slightly contracted](screenshot-error.png) |
+
+These three are *material* modes: they change intensity, expansion, and
+colour on the same shell without raising a geometry term. Listening is the
+gentlest — anything louder would read as the shell pretending to work — and
+attention is deliberately the brightest state the presence ever reaches.
+Error is a *negative* mode, so a denial visibly wilts whatever activity was
+in progress rather than adding another colour on top of it.
+
 ## What this proves
 
 Two composable entities, rendered with a pure Rust stack (`winit` + `wgpu`
@@ -261,6 +272,12 @@ the debug panel is collapsed.
   overlaps are the part worth looking at; a radio group would hide the
   model's central claim. The panel shows the resolved term weights beneath
   them.
+- **N** / **A** / **E** — toggle `listening` / `attention` / `error`. These
+  are *material* modes: they change brightness, expansion, and colour on the
+  shell without raising a shell term, so `Mode` reads e.g. `thinking +
+  listening` but `drive` stays at `lobes 1.00 · pulse 0.00 · neck 0.00`. A
+  material mode raising a term would be exactly the failure `§5.1` rules
+  out — the shell reshaping itself to hear rather than to think.
 - **Esc** — quit.
 - Debug panel (top-left, `egui`): active entity/point counts, presence
   (fade) values, a palette selector, and sliders for `intensity` /

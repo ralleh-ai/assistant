@@ -630,11 +630,31 @@ To add a new mode (§4.3):
 To add a new scene:
 
 1. Decide the intent and the visual character.
-2. Write a new `SurfaceShape` and reuse `SurfaceBehavior` (§5.2/5.3).
-3. Only write a new behavior when the *motion model* differs, not when the form does.
-4. Register the scene with a stable ID.
-5. Map the relevant assistant modes or signals to the scene in the Scene Director.
-6. Define at least one reasonable transition path back to Idle.
+2. Write a new `SurfaceShape` in `presence-prototype/src/sim/shapes.rs`
+   (§5.2). Reuse `SurfaceBehavior` (§5.3) unless the *motion model*
+   genuinely differs — a new form does not need a new behavior.
+3. Add an `EntityKind` variant in `scene/entity.rs` if the scene is a new
+   kind of thing rather than a variant of an existing one. Purely visual
+   variants of an existing kind can reuse it.
+4. Register the scene in `scene/registry.rs::SceneRegistry::with_builtin_scenes`
+   with a stable `SceneId`, its `EntityKind`, `priority`, and `default_active`.
+   The `builtins_match_the_scene_director` test in `scene/director.rs`
+   will fail until step 5 is done — that is intentional, the failing test
+   is the reminder.
+5. Instantiate the scene in `scene/director.rs::SceneDirector::new` as a
+   sibling of `assistant_cloud` / `loading_ring`. Point the entity's
+   `SurfaceGenerator` at the new shape's `domain()`, wrap the shape in
+   `SurfaceBehavior`, and pass it through the `EntityInstance` constructor.
+   Wire the quality tier's point budget/deform stride the same way the
+   existing entities do (see `set_quality_tier` for the runtime path).
+6. Map the relevant assistant modes or signals to the scene in the same
+   file, alongside the existing `set_ring_wanted` / mode toggles.
+7. Define at least one reasonable transition path back to Idle — for
+   most scenes this is the `presence` fade already provided by
+   `EntityInstance` and driven by the `TRANSITION_SECONDS` constant.
+8. Add a test that engaging the scene subdues siblings appropriately
+   (see `loading_dampens_active_modes_without_stopping_them` for the
+   pattern), and add a screenshot to `presence-prototype/README.md`.
 
 **Point budgets.** This section previously said a complex scene should
 rarely need more than ~8–12k points. That number was written against a

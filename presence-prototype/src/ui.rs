@@ -223,6 +223,26 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
                 "   fold {:.2} · lobes {:.2} · pulse {:.2} · neck {:.2}",
                 drive.fold, drive.lobes, drive.pulse, drive.neck
             ));
+            ui.label(format!(
+                "   activity_scale {:.2} (dampen while Loading composites)",
+                director.activity_scale()
+            ));
+            ui.checkbox(&mut director.reduced_motion, "reduced motion — [R]");
+
+            ui.horizontal(|ui| {
+                ui.label("quality:");
+                let mut selected = director.tier();
+                egui::ComboBox::from_id_salt("quality")
+                    .selected_text(selected.label())
+                    .show_ui(ui, |ui| {
+                        for tier in crate::scene::QualityTier::ALL {
+                            ui.selectable_value(&mut selected, tier, tier.label());
+                        }
+                    });
+                if selected != director.tier() {
+                    director.set_quality_tier(selected);
+                }
+            });
             ui.separator();
 
             ui.heading("Signals (dev override)");
@@ -302,6 +322,10 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
                     );
                 });
             ui.separator();
-            ui.label("Keys: [L] loading · [T] thinking · [S] speaking · [U] tool_use · [Esc] quit");
+            ui.label(
+                "Keys: [L] loading · [T] thinking · [S] speaking · [U] tool_use \
+                 · [N] listening · [A] attention · [E] error · [R] reduced motion \
+                 · [Q] cycle quality · [Esc] quit",
+            );
         });
 }

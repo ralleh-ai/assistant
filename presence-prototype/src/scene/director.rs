@@ -11,6 +11,7 @@ use glam::Vec3;
 
 use crate::scene::entity::{EntityInstance, EntityKind};
 use crate::scene::mode::{step_toward, ModeLayer, PresenceMode};
+use crate::scene::quality::QualityTier;
 use crate::sim::shapes::{
     PresenceShell, ResonancePlate, SurfaceBehavior, SurfaceGenerator, SurfaceShape,
 };
@@ -30,8 +31,16 @@ const IDLE_SWIRL: f32 = 0.0;
 const IDLE_EXPAND: f32 = 0.0;
 const IDLE_COOL: f32 = 0.0;
 
-/// How long a presence fade (entity appearing/disappearing) takes, within
-/// the 400-1200ms range `docs/PRESENCE_SCENES.md` §6.1 recommends.
+/// How long a presence fade (entity appearing/disappearing) takes.
+///
+/// Inside the same `TRANSITION_WINDOW_SECONDS` the mode weights use, so an
+/// entity coming or going has the same visual cadence as a mode engaging
+/// or releasing — a shell speeding up its terms twice as fast as it fades
+/// itself in would read as two motion languages spliced together. This is
+/// at the slow end of the window on purpose: an entity vanishing is a
+/// bigger event than a mode weight sliding, and the fade has to be
+/// unmistakably deliberate rather than glitchy. Guarded by
+/// `presence_fade_is_within_the_transition_window`.
 const TRANSITION_SECONDS: f32 = 0.7;
 
 /// What the idle shell fades to while Loading is showing.
@@ -49,26 +58,42 @@ const TRANSITION_SECONDS: f32 = 0.7;
 /// state.
 const SUBDUED_PRESENCE: f32 = 0.45;
 
-/// Points in the idle shell.
+/// How much the *modes* are pulled back toward the resting shell while
+/// Loading is active. `presence` alone (above) fades the shell's brightness,
+/// but leaves its geometry — a lobe or a pendant would still visibly deform
+/// the silhouette at half brightness and steal attention from the plate.
 ///
-/// Well above the 8-12k the design documents originally suggested, and the
-/// reason is the switch from a volume to a surface: 12,000 points spread over a
-/// skin resolve as countable dots, because a surface concentrates them where
-/// they are individually visible instead of hiding most of them behind the
-/// front of a volume. The number is set by measurement — see
-/// `presence-prototype/README.md`'s performance section.
-const IDLE_POINT_BUDGET: usize = 80_000;
+/// This scales the additive mode contributions (intensity, expand, cool, and
+/// the shell-drive weights) toward the resting values, so activity persists
+/// *inside* the subdued shell rather than dominating it. Guide §5.2 asks for
+/// exactly this — "automatically subdue the shell intensity" when Loading is
+/// composited with activity — and P0.4 asks for the general rule the
+/// SceneDirector enforces on its own.
+///
+/// Not zero: a shell that stops thinking the moment Loading appears would
+/// read as the work being *paused* to load rather than continuing behind the
+/// wait. The plate is signalling progress on top of the still-running task.
+const LOADING_ACTIVITY_SCALE: f32 = 0.55;
 
-/// Points in the loading plate. Smaller than the shell's: a disk seen face-on
-/// spends every point on visible area, where a closed shell hides roughly half
-/// of its own behind the front.
-///
-/// Not proportionally smaller, though. The plate is wider than the shell and
-/// flat, so its points spread over several times the area, and grains migrating
-/// onto nodal lines only concentrate them where the pattern already is — it
-/// does not make the plate as a whole any denser. Below roughly this count the
-/// nodal lines resolve as dotted rather than drawn.
-const LOADING_POINT_BUDGET: usize = 40_000;
+/// How slowly the shell's animation clock advances in reduced-motion mode,
+/// as a fraction of real time. Small, because the point of the mode is that
+/// motion becomes non-distracting rather than merely slower — 0.5 is still
+/// visibly animating, just laggily. Not zero either: a shell whose folds
+/// never reshape at all reads as a frozen bug rather than as a considered
+/// accessibility state, and the "am I looking at a static image" question
+/// is exactly the ambiguity a live presence must not create.
+const REDUCED_MOTION_TIME_SCALE: f32 = 0.12;
+
+/// How far mode-added intensity/expand/cool is pulled back in reduced-motion
+/// mode. Guide §5.5's reduced-motion preset says "collapse most deformation
+/// to brightness + slow breathing" — this is the deformation half, applied
+/// on top of `LOADING_ACTIVITY_SCALE`'s hierarchy pass so both rules take
+/// their expected share when both are on at once.
+const REDUCED_MOTION_ACTIVITY_SCALE: f32 = 0.4;
+
+// Point budgets and refresh stride are supplied by `QualityTier` — the same
+// values live there, and a comment describing the reasoning for `Balanced`
+// (the previous compile-time constants) is at that module.
 
 pub struct SceneDirector {
     pub assistant_cloud: EntityInstance,
@@ -84,6 +109,22 @@ pub struct SceneDirector {
     /// the result back into the entity's own params would let each frame's
     /// output become the next frame's floor and ratchet the presence upward.
     cloud_resting: EntityParams,
+    /// Fraction of the additive mode contribution that is applied to the
+    /// shell. `1.0` when nothing competes for attention, easing down toward
+    /// `LOADING_ACTIVITY_SCALE` while Loading is showing. This is the
+    /// hierarchy-of-attention rule made explicit rather than left to a
+    /// coincidence of tuning.
+    activity_scale: f32,
+    /// Accessibility preference: minimise motion while keeping the presence
+    /// legible. When true the shell's animation clock slows to
+    /// `REDUCED_MOTION_TIME_SCALE` and mode contributions to
+    /// `REDUCED_MOTION_ACTIVITY_SCALE`, so state is still communicated but
+    /// the shell mostly stops moving.
+    pub reduced_motion: bool,
+    /// Active quality tier. Read-only from outside — mutate with
+    /// `set_quality_tier` so the entities are regenerated at the new budget
+    /// rather than the value drifting out of sync with the point sets.
+    tier: QualityTier,
 }
 
 impl SceneDirector {
@@ -111,12 +152,16 @@ impl SceneDirector {
         // those weights are the resting fold and the shell is the idle
         // signature. The generator and behavior split from `PRESENCE_SCENES.md`
         // §5 is unchanged — the shape is what the behavior springs toward.
+        let tier = QualityTier::default();
         let shell = PresenceShell::new(0x1DEE);
+        let shell_domain = shell.domain();
+        let mut shell_behavior = SurfaceBehavior::new(shell);
+        shell_behavior.deform_stride = tier.deform_stride();
         let assistant_cloud = EntityInstance::new(
             EntityKind::AssistantCloud,
-            Box::new(SurfaceGenerator::new(shell.domain())),
-            Box::new(SurfaceBehavior::new(shell)),
-            IDLE_POINT_BUDGET,
+            Box::new(SurfaceGenerator::new(shell_domain)),
+            Box::new(shell_behavior),
+            tier.shell_budget(),
             0,
             cloud_params,
         );
@@ -137,16 +182,19 @@ impl SceneDirector {
             p
         };
         let plate = ResonancePlate::new(0x400D);
+        let plate_domain = plate.domain();
+        let mut plate_behavior = SurfaceBehavior::new(plate);
+        plate_behavior.deform_stride = tier.deform_stride();
         let mut loading_ring = EntityInstance::new(
             EntityKind::LoadingRing,
-            Box::new(SurfaceGenerator::new(plate.domain())),
-            Box::new(SurfaceBehavior::new(plate)),
+            Box::new(SurfaceGenerator::new(plate_domain)),
+            Box::new(plate_behavior),
             // A modal pattern is legible only if grains are dense enough to
             // draw its nodal lines. Showing this at full density alongside a
             // full-density idle shell is a dev-harness artifact of toggling both
             // at once — in production Loading is a scene that reduces the shell
             // rather than an overlay on top of it.
-            LOADING_POINT_BUDGET,
+            tier.plate_budget(),
             1,
             ring_params,
         );
@@ -161,7 +209,52 @@ impl SceneDirector {
             ring_wanted: false,
             modes: ModeLayer::new(),
             cloud_resting,
+            activity_scale: 1.0,
+            reduced_motion: false,
+            tier,
         }
+    }
+
+    /// Currently active quality tier. Change with `set_quality_tier`, which
+    /// regenerates the point sets — you cannot mutate this directly.
+    pub fn tier(&self) -> QualityTier {
+        self.tier
+    }
+
+    /// Switch to a different quality tier. This is deliberately an outside
+    /// operation on the director rather than a field: changing tier means
+    /// regenerating each entity's particles at the new budget, which is
+    /// visible as a brief re-settling — and something the caller should be
+    /// aware they are triggering rather than something a stray write can do.
+    pub fn set_quality_tier(&mut self, tier: QualityTier) {
+        if tier == self.tier {
+            return;
+        }
+        self.tier = tier;
+        // Point count is set at generation time and the vector is what the
+        // renderer reads directly, so a tier change means regenerating both
+        // entities. Cheap enough — 80k particles come out in a few
+        // milliseconds and this is an infrequent action.
+        self.assistant_cloud.particles = self
+            .assistant_cloud
+            .generator
+            .generate(tier.shell_budget(), &self.assistant_cloud.params);
+        self.loading_ring.particles = self
+            .loading_ring
+            .generator
+            .generate(tier.plate_budget(), &self.loading_ring.params);
+        self.assistant_cloud.point_budget = tier.shell_budget();
+        self.loading_ring.point_budget = tier.plate_budget();
+        self.assistant_cloud.behavior.set_deform_stride(tier.deform_stride());
+        self.loading_ring.behavior.set_deform_stride(tier.deform_stride());
+    }
+
+    /// The current activity dampening factor. `1.0` at rest, easing toward
+    /// `LOADING_ACTIVITY_SCALE` while Loading is active. Exposed so the
+    /// debug overlay can show the resolved hierarchy value; the tick uses it
+    /// internally.
+    pub fn activity_scale(&self) -> f32 {
+        self.activity_scale
     }
 
     pub fn set_ring_wanted(&mut self, wanted: bool) {
@@ -209,6 +302,53 @@ impl SceneDirector {
         };
         self.modes.apply(&mut self.assistant_cloud.params);
 
+        // Hierarchy of attention: while Loading is showing, pull the mode's
+        // added intensity/expand/cool and its drive weights back toward the
+        // resting shell so the plate's modal pattern is not fighting a
+        // full-strength thinking or tool-use signature for the eye. The
+        // effect is *proportional* — a mode still shows through, just
+        // subdued in step with the shell's own subdued brightness above.
+        //
+        // Reduced-motion multiplies the same scale further: an accessibility
+        // preference should compose with the hierarchy rule, not race it. If
+        // both are on the effective scale is the *product*.
+        let mut scale_target = if self.loading_ring.active {
+            LOADING_ACTIVITY_SCALE
+        } else {
+            1.0
+        };
+        if self.reduced_motion {
+            scale_target *= REDUCED_MOTION_ACTIVITY_SCALE;
+        }
+        self.assistant_cloud.params.time_scale = if self.reduced_motion {
+            REDUCED_MOTION_TIME_SCALE
+        } else {
+            1.0
+        };
+        self.activity_scale =
+            step_toward(self.activity_scale, scale_target, dt, TRANSITION_SECONDS);
+        let s = self.activity_scale;
+        if s < 1.0 - 1e-4 {
+            let base = self.cloud_resting;
+            let p = &mut self.assistant_cloud.params;
+            p.intensity = base.intensity + (p.intensity - base.intensity) * s;
+            p.expand = base.expand + (p.expand - base.expand) * s;
+            p.cool = base.cool + (p.cool - base.cool) * s;
+            // The additive-term weights scale directly. Fold is 1.0 at rest
+            // and yields under load, so its subdue is `1 - (1 - fold) * s`
+            // — pulling *toward* 1.0 rather than toward 0.0, so the shell's
+            // identity does not evaporate along with the activity.
+            p.drive.fold = 1.0 - (1.0 - p.drive.fold) * s;
+            p.drive.lobes *= s;
+            p.drive.pulse *= s;
+            p.drive.neck *= s;
+            // Speech's phrase envelope is the geometric driver of the pulse
+            // term (§6, spring bandwidth), so subduing pulse without also
+            // subduing the envelope would leave the wave amplitude untouched
+            // while claiming to have quieted the shell.
+            p.audio_envelope *= s;
+        }
+
         self.assistant_cloud.update(dt, &self.signals);
         // Skip simulating the ring once it's fully invisible and settled —
         // no visible cost, and matches "calm by default" (don't spend
@@ -232,6 +372,7 @@ impl Default for SceneDirector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::mode::TRANSITION_WINDOW_SECONDS;
 
     #[test]
     fn ring_starts_hidden() {
@@ -280,6 +421,127 @@ mod tests {
             "shell did not recover"
         );
         assert!(director.loading_ring.presence < 0.01);
+    }
+
+    /// The registry is the description of what scenes exist; the director
+    /// is the code that instantiates them. Anything that lives in one and
+    /// not the other is a scene that is either invisible in the debug panel
+    /// or invisible on the screen, and both failure modes stay silent until
+    /// somebody hits them. This test asserts they cover the same set.
+    #[test]
+    fn builtins_match_the_scene_director() {
+        use crate::scene::SceneRegistry;
+        let registry = SceneRegistry::with_builtin_scenes();
+        let director = SceneDirector::new();
+
+        let director_kinds: Vec<_> = director.entities().iter().map(|e| e.kind).collect();
+        let registry_kinds: Vec<_> = registry.all().map(|d| d.entity_kind).collect();
+        for kind in &director_kinds {
+            assert!(
+                registry_kinds.contains(kind),
+                "{} is instantiated by the director but not registered",
+                kind.label(),
+            );
+        }
+        for kind in &registry_kinds {
+            assert!(
+                director_kinds.contains(kind),
+                "{} is registered but the director doesn't build one",
+                kind.label(),
+            );
+        }
+    }
+
+    /// A tier switch is not a knob the caller mutates directly; it is an
+    /// operation that regenerates the point sets to match the new budget.
+    /// Testing it as an *operation* is what makes the invariant "tier and
+    /// particle count agree" impossible to accidentally violate later.
+    #[test]
+    fn set_quality_tier_regenerates_the_point_sets_at_the_new_budget() {
+        let mut director = SceneDirector::new();
+        assert_eq!(director.tier(), QualityTier::Balanced);
+        assert_eq!(
+            director.assistant_cloud.particles.len(),
+            QualityTier::Balanced.shell_budget(),
+        );
+        assert_eq!(
+            director.loading_ring.particles.len(),
+            QualityTier::Balanced.plate_budget(),
+        );
+
+        director.set_quality_tier(QualityTier::Low);
+        assert_eq!(director.tier(), QualityTier::Low);
+        assert_eq!(
+            director.assistant_cloud.particles.len(),
+            QualityTier::Low.shell_budget(),
+        );
+        assert_eq!(
+            director.loading_ring.particles.len(),
+            QualityTier::Low.plate_budget(),
+        );
+
+        // Idempotent on the same tier — no regeneration, no work.
+        director.set_quality_tier(QualityTier::Low);
+        assert_eq!(director.tier(), QualityTier::Low);
+    }
+
+    /// Reduced-motion collapses shell dynamics to breath + slow crease
+    /// updates while leaving the physics real, so modes still communicate
+    /// state via brightness but nothing distracts.
+    #[test]
+    fn reduced_motion_slows_the_shells_clock_and_dampens_activity() {
+        let mut director = SceneDirector::new();
+        assert_eq!(director.assistant_cloud.params.time_scale, 1.0);
+
+        director.toggle_mode(PresenceMode::Thinking);
+        for _ in 0..120 {
+            director.tick(1.0 / 60.0);
+        }
+        let full = director.assistant_cloud.params;
+
+        director.reduced_motion = true;
+        for _ in 0..120 {
+            director.tick(1.0 / 60.0);
+        }
+        let reduced = director.assistant_cloud.params;
+
+        assert!(
+            (reduced.time_scale - REDUCED_MOTION_TIME_SCALE).abs() < 1e-4,
+            "time_scale did not follow reduced_motion: {}",
+            reduced.time_scale,
+        );
+        assert!(
+            reduced.drive.lobes < full.drive.lobes,
+            "reduced motion did not dampen the thinking term: {} vs {}",
+            reduced.drive.lobes,
+            full.drive.lobes,
+        );
+        assert!(
+            reduced.drive.lobes > 0.0,
+            "reduced motion silenced the term entirely; state cannot be read",
+        );
+
+        director.reduced_motion = false;
+        for _ in 0..120 {
+            director.tick(1.0 / 60.0);
+        }
+        assert_eq!(
+            director.assistant_cloud.params.time_scale, 1.0,
+            "time_scale did not recover when reduced_motion was cleared",
+        );
+    }
+
+    /// Enforces the family similarity with the mode transitions — the mode
+    /// layer polices its own window, but a slow entity fade paired with fast
+    /// mode ramps would give the presence two different tempos that any
+    /// desktop-edge crossfade would then splice into.
+    #[test]
+    fn presence_fade_is_within_the_transition_window() {
+        assert!(
+            TRANSITION_WINDOW_SECONDS.contains(&TRANSITION_SECONDS),
+            "entity presence fade is outside the shared transition window: {}",
+            TRANSITION_SECONDS,
+        );
     }
 
     #[test]
@@ -344,6 +606,55 @@ mod tests {
         assert_eq!(
             back.drive, resting.drive,
             "a term stayed live after release"
+        );
+    }
+
+    /// Hierarchy of attention: Loading + Thinking is not two full-strength
+    /// signatures competing for the eye, it is Loading in front of a subdued
+    /// still-running shell. The check is that the shell's mode-added values
+    /// are strictly *lower* when Loading is up than when it is not, not that
+    /// they hit any specific number — the constant can move; the ordering
+    /// cannot.
+    #[test]
+    fn loading_dampens_active_modes_without_stopping_them() {
+        let mut director = SceneDirector::new();
+        director.toggle_mode(PresenceMode::Thinking);
+        for _ in 0..120 {
+            director.tick(1.0 / 60.0);
+        }
+        let solo = director.assistant_cloud.params;
+        assert!(solo.drive.lobes > 0.99);
+
+        director.toggle_ring();
+        for _ in 0..180 {
+            director.tick(1.0 / 60.0);
+        }
+        let with_loading = director.assistant_cloud.params;
+
+        assert!(
+            (with_loading.drive.lobes - solo.drive.lobes * LOADING_ACTIVITY_SCALE).abs() < 5e-2,
+            "lobes should scale by activity_scale, got {} vs solo {}",
+            with_loading.drive.lobes,
+            solo.drive.lobes,
+        );
+        assert!(with_loading.drive.lobes > 0.3, "thinking was fully quenched by loading");
+        assert!(
+            with_loading.intensity < solo.intensity,
+            "intensity did not subdue when Loading came up",
+        );
+        assert!(
+            (director.activity_scale() - LOADING_ACTIVITY_SCALE).abs() < 1e-2,
+            "activity_scale did not settle at LOADING_ACTIVITY_SCALE: {}",
+            director.activity_scale(),
+        );
+
+        director.toggle_ring();
+        for _ in 0..180 {
+            director.tick(1.0 / 60.0);
+        }
+        assert!(
+            (director.activity_scale() - 1.0).abs() < 1e-3,
+            "activity_scale did not recover after Loading closed",
         );
     }
 

@@ -23,4 +23,12 @@ pub trait PointBehavior {
         params: &EntityParams,
         signals: &PresenceSignals,
     );
+
+    /// Adjust the deform refresh stride, if this behavior supports it. The
+    /// default is a no-op because a behavior that does not cache anything
+    /// has nothing to change; `SurfaceBehavior` overrides this to update
+    /// `deform_stride`. Kept on the trait rather than as a downcast so the
+    /// scene director's quality-tier switch does not need to know what kind
+    /// of behavior each entity happens to have.
+    fn set_deform_stride(&mut self, _stride: usize) {}
 }

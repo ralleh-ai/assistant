@@ -25,7 +25,8 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
 [`PRESENCE_INTEGRATION_PLAN.md`](./PRESENCE_INTEGRATION_PLAN.md),
 [ADR-010](./adr/adr-010-point-cloud-presence-entity.md),
 [ADR-011](./adr/adr-011-surface-point-generation-and-palette-setting.md),
-and [ADR-012](./adr/adr-012-additive-mode-composition.md) for the full plan.
+[ADR-012](./adr/adr-012-additive-mode-composition.md), and
+[ADR-013](./adr/adr-013-presence-window-and-process-model.md) for the full plan.
 
 7. ~~Phase 1 — standalone Rust prototype~~ **in progress** —
    `presence-prototype/` (`winit` + `wgpu` + `noise`, not Three.js — see
@@ -36,11 +37,14 @@ and [ADR-012](./adr/adr-012-additive-mode-composition.md) for the full plan.
    `speaking`, and `tool_use` moved into this phase as weighted terms on
    the same shell (ADR-012); `listening`, `error`, and `attention` need no
    geometry and sit on the same mode layer later.
-8. Phase 2 — resolve embedding decision (Tauri-managed window vs. separate
-   process; see `PRESENCE_INTEGRATION_PLAN.md` D1/D4), frameless/always-on-top
-   window behavior, real state channel (no more IPC/JSON boundary than
-   necessary now that the renderer is Rust-native), and persist
-   `EdgeSettings.presence_palette`.
+8. Phase 2 — implement the ADR-013 window and process model: a separate
+   presence process, a frameless transparent always-on-top droplet with
+   click-through by default, a small local IPC channel from `desktop-edge`
+   for signals, and shell-side persistence of settings (palette, quality
+   tier, reduced-motion) IPC'd in on startup. First platform is Windows,
+   because per-pixel alpha + click-through is where it is fussiest. Still
+   open: the IPC transport/encoding, the launch/discovery model, and
+   multi-monitor placement — see the "Not decided here" section of ADR-013.
 9. Phase 3 — real signals: blocked on #13 below (VAD state machine) plus
    a new prerequisite this plan surfaced — `desktop-edge` does not yet
    embed `ralleh-ai-router`/`ralleh-tool-gateway` at all, needed for

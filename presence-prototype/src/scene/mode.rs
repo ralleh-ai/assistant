@@ -24,27 +24,39 @@
 
 use crate::sim::{EntityParams, PresenceSignals, ShellDrive};
 
-/// A thing the assistant is doing that the presence has geometry for.
+/// A thing the assistant is doing.
 ///
 /// Idle is deliberately absent: it is not a mode but the absence of all of
 /// them, which is also exactly what the resting shell is. Adding an `Idle`
 /// variant would make "idle plus thinking" representable, and it isn't.
 ///
-/// `listening`, `error`, and `attention` from §5.1 are not here either. They
-/// need no geometry — they are colour, brightness, and framing changes — so
-/// they will sit on this weight machinery without adding shell terms.
+/// The first three are the shell-term modes from ADR-012: each raises a
+/// weighted term on `PresenceShell`. The last three are *material* modes,
+/// which the guidance document (§5.4) and `PRESENCE_VISUAL_ENTITY.md` §5.1
+/// both call for as brightness/expansion/desaturation changes on the
+/// existing shell — they add no new geometry and only touch the same
+/// `EntityParams` fields the assistant's own signals already flow through.
+/// That is a rule not a convenience: modelling "listening" as a fourth shell
+/// term would deform the surface for a state that is exactly *not* internal
+/// activity, and would collide with speaking's brightness path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PresenceMode {
     Thinking,
     Speaking,
     ToolUse,
+    Listening,
+    Attention,
+    Error,
 }
 
 impl PresenceMode {
-    pub const ALL: [PresenceMode; 3] = [
+    pub const ALL: [PresenceMode; 6] = [
         PresenceMode::Thinking,
         PresenceMode::Speaking,
         PresenceMode::ToolUse,
+        PresenceMode::Listening,
+        PresenceMode::Attention,
+        PresenceMode::Error,
     ];
 
     pub fn label(self) -> &'static str {
@@ -52,6 +64,9 @@ impl PresenceMode {
             PresenceMode::Thinking => "thinking",
             PresenceMode::Speaking => "speaking",
             PresenceMode::ToolUse => "tool_use",
+            PresenceMode::Listening => "listening",
+            PresenceMode::Attention => "attention",
+            PresenceMode::Error => "error",
         }
     }
 
@@ -61,6 +76,12 @@ impl PresenceMode {
             PresenceMode::Thinking => 'T',
             PresenceMode::Speaking => 'S',
             PresenceMode::ToolUse => 'U',
+            // N for liste**N**ing; H would have been the obvious choice and
+            // is not one, because a bare "H" reads as a help hotkey to a
+            // first-time visitor of the debug overlay.
+            PresenceMode::Listening => 'N',
+            PresenceMode::Attention => 'A',
+            PresenceMode::Error => 'E',
         }
     }
 
@@ -69,7 +90,21 @@ impl PresenceMode {
             PresenceMode::Thinking => 0,
             PresenceMode::Speaking => 1,
             PresenceMode::ToolUse => 2,
+            PresenceMode::Listening => 3,
+            PresenceMode::Attention => 4,
+            PresenceMode::Error => 5,
         }
+    }
+
+    /// True for the modes that carry no geometry — they influence brightness,
+    /// expansion, or colour on the existing shell only. Their weights never
+    /// reach `ShellDrive`; `ModeLayer::drive` reads the geometry modes by
+    /// name for exactly this reason.
+    pub fn is_material_only(self) -> bool {
+        matches!(
+            self,
+            PresenceMode::Listening | PresenceMode::Attention | PresenceMode::Error
+        )
     }
 
     fn profile(self) -> ModeProfile {
@@ -105,6 +140,53 @@ impl PresenceMode {
                 attack: 0.55,
                 release: 0.75,
             },
+            // Listening: a small brightening and a small radial breath.
+            // Intensity is deliberately below thinking's, since listening is
+            // not *doing* anything — a shell that lights up as brightly to
+            // hear as it does to think reads as pretending to work.
+            PresenceMode::Listening => ModeProfile {
+                intensity: 0.35,
+                cool: 0.15,
+                expand: 0.03,
+                attack: 0.30,
+                release: 0.55,
+            },
+            // Attention: a short bright rise that will typically be
+            // immediately released by the caller into whatever comes next
+            // (listening, thinking). It is a *notice-me*, not a state to
+            // dwell in, so attack is fast and release is fast too. The value
+            // is above thinking's so the pulse actually rises above whatever
+            // was already showing.
+            PresenceMode::Attention => ModeProfile {
+                intensity: 0.95,
+                cool: 0.20,
+                expand: 0.06,
+                // Kept at the fastest end of the 300-900ms window (which the
+                // integration plan specifies and `every_mode_settles_within
+                // _the_transition_window` locks in). A snap that beats 300ms
+                // would out-run the eye's own saccade time and read as a
+                // rendering artefact rather than as something demanding
+                // attention.
+                attack: 0.30,
+                release: 0.45,
+            },
+            // Error: negative-going. `intensity: -1.0` here means "at full
+            // engagement pull intensity to zero"; `apply` treats it as a
+            // damping factor rather than a target, since the additive max
+            // blend the other modes use cannot express a *reduction* and an
+            // error that could not visibly dim the shell would only be an
+            // extra colour, not an error. Attack is short so a denial reads
+            // immediately; release is slower so it fades rather than snapping
+            // back to whatever was underneath it — a shell that returns to
+            // full brightness the instant the error clears reads as the
+            // failure not having actually mattered.
+            PresenceMode::Error => ModeProfile {
+                intensity: -1.0,
+                cool: -1.0,
+                expand: -0.05,
+                attack: 0.30,
+                release: 0.60,
+            },
         }
     }
 }
@@ -136,6 +218,16 @@ struct ModeProfile {
 /// coincide — which the radius clamp already handles, and which is rare.
 const FOLD_YIELD: f32 = 0.25;
 
+/// The window every visible transition in the presence has to sit inside,
+/// in seconds. `PRESENCE_INTEGRATION_PLAN.md` §4.3's "300-900ms eased" is
+/// the range this expresses, and `desktop-edge`'s splash/settings/core
+/// crossfade at ~420ms is the reference cadence — the guide asks the
+/// presence to feel like part of the same product, not a shell running at
+/// its own tempo. `every_mode_settles_within_the_transition_window` in this
+/// module and `presence_fade_is_within_the_transition_window` in
+/// `director` are the two guardrails.
+pub const TRANSITION_WINDOW_SECONDS: std::ops::RangeInclusive<f32> = 0.3..=0.9;
+
 /// Seconds for the speech phrase envelope to follow the raw level.
 ///
 /// Around a 0.35 Hz corner, comfortably inside what the surface spring passes.
@@ -154,6 +246,19 @@ pub struct ModeLayer {
 
 impl ModeLayer {
     pub fn new() -> Self {
+        // Runtime assertion mirrors the compile-time-adjacent test
+        // `every_mode_settles_within_the_transition_window`: makes the
+        // invariant visible in a debug build even for consumers that don't
+        // run the crate's tests (e.g. someone dropping in a new mode from
+        // outside the crate one day). Cheap enough to keep permanently.
+        debug_assert!(
+            PresenceMode::ALL.iter().all(|m| {
+                let p = m.profile();
+                TRANSITION_WINDOW_SECONDS.contains(&p.attack)
+                    && TRANSITION_WINDOW_SECONDS.contains(&p.release)
+            }),
+            "a PresenceMode profile fell outside TRANSITION_WINDOW_SECONDS",
+        );
         Self {
             engaged: [false; PresenceMode::ALL.len()],
             ramp: [0.0; PresenceMode::ALL.len()],
@@ -213,7 +318,18 @@ impl ModeLayer {
     }
 
     /// This frame's shell term weights.
+    ///
+    /// Reads the geometry modes by name and asserts (in debug) that any
+    /// material-only mode is *not* one of them, since introducing a fourth
+    /// term for e.g. listening would silently change the invariant §5.1
+    /// depends on and no other test would necessarily catch the drift.
     pub fn drive(&self) -> ShellDrive {
+        debug_assert!(
+            !PresenceMode::Thinking.is_material_only()
+                && !PresenceMode::Speaking.is_material_only()
+                && !PresenceMode::ToolUse.is_material_only(),
+            "a shell-term mode has been reclassified as material-only",
+        );
         let lobes = self.weight(PresenceMode::Thinking);
         let pulse = self.weight(PresenceMode::Speaking);
         let neck = self.weight(PresenceMode::ToolUse);
@@ -234,22 +350,53 @@ impl ModeLayer {
     /// Folds the engaged modes into an entity's per-frame params, treating the
     /// values already there as the resting baseline.
     ///
-    /// The per-mode values combine by weighted max rather than by sum. These
-    /// are levels, not quantities: two modes at once is not twice as intense
-    /// as one, it is as intense as the more demanding of them.
+    /// The positive-going per-mode values combine by weighted max rather than
+    /// by sum. These are levels, not quantities: two modes at once is not
+    /// twice as intense as one, it is as intense as the more demanding of
+    /// them.
+    ///
+    /// Error is handled separately from the max blend and *after* it, as a
+    /// multiplicative damping. This is not symmetric with the other modes for
+    /// a reason: error is not another kind of activity, it is a
+    /// non-completion of whatever was being shown, so it has to be able to
+    /// reduce what the additive modes just added rather than take a max
+    /// against them. Modelling it inside the additive blend would either let
+    /// a low error weight be masked by any other engaged mode or force the
+    /// blend to know about signs, and both are more complexity than a
+    /// post-multiply.
     pub fn apply(&self, params: &mut EntityParams) {
         let base = *params;
-        params.intensity = self.blend(base.intensity, |p| p.intensity);
-        params.cool = self.blend(base.cool, |p| p.cool);
-        params.expand = self.blend(base.expand, |p| p.expand);
+        params.intensity = self.blend_positive(base.intensity, |p| p.intensity);
+        params.cool = self.blend_positive(base.cool, |p| p.cool);
+        params.expand = self.blend_positive(base.expand, |p| p.expand);
+
+        // Error damps everything that just went above baseline. `error_dip`
+        // in [0, 1]: 0 leaves the shell as-is, 1 drives it back to baseline.
+        // Chosen conservative on purpose — a fully quenched shell reads as
+        // *off*, and the error signature has to remain distinguishable from
+        // a fade-out.
+        let error_dip = 0.7 * self.weight(PresenceMode::Error);
+        params.intensity = base.intensity + (params.intensity - base.intensity) * (1.0 - error_dip);
+        params.cool = base.cool + (params.cool - base.cool) * (1.0 - error_dip);
+        // Error's own expand target is negative and cannot ride the positive
+        // blend, so it is added directly after the damping. The shell shrinks
+        // slightly for the duration of the error and only then relaxes back.
+        params.expand += PresenceMode::Error.profile().expand * self.weight(PresenceMode::Error);
+
         params.audio_envelope = self.audio_envelope;
         params.drive = self.drive();
     }
 
-    fn blend(&self, base: f32, pick: impl Fn(&ModeProfile) -> f32) -> f32 {
+    fn blend_positive(&self, base: f32, pick: impl Fn(&ModeProfile) -> f32) -> f32 {
         PresenceMode::ALL.iter().fold(base, |acc, mode| {
             let target = pick(&mode.profile());
-            acc.max(base + (target - base) * self.weight(*mode))
+            // Only positive-going profiles contribute to the max blend. Error
+            // reduces the outcome and is handled after the blend in `apply`.
+            if target <= base {
+                acc
+            } else {
+                acc.max(base + (target - base) * self.weight(*mode))
+            }
         })
     }
 
@@ -339,14 +486,14 @@ mod tests {
         for mode in PresenceMode::ALL {
             let profile = mode.profile();
             assert!(
-                (0.3..=0.9).contains(&profile.attack),
-                "{}'s attack is outside the 300-900ms window: {}",
+                TRANSITION_WINDOW_SECONDS.contains(&profile.attack),
+                "{}'s attack is outside the transition window: {}",
                 mode.label(),
                 profile.attack
             );
             assert!(
-                (0.3..=0.9).contains(&profile.release),
-                "{}'s release is outside the 300-900ms window: {}",
+                TRANSITION_WINDOW_SECONDS.contains(&profile.release),
+                "{}'s release is outside the transition window: {}",
                 mode.label(),
                 profile.release
             );
@@ -494,6 +641,117 @@ mod tests {
             "levels summed: {}",
             params.intensity
         );
+    }
+
+    /// Listening is the "I am hearing you" state — a small brightening and a
+    /// small breath, and specifically not a deformation. If listening ever
+    /// contributed to `ShellDrive` the shell would be reshaping itself to
+    /// hear, which is the opposite of what the state means.
+    #[test]
+    fn listening_lifts_the_shell_a_little_without_touching_its_shape() {
+        assert!(PresenceMode::Listening.is_material_only());
+        let mut layer = ModeLayer::new();
+        layer.set(PresenceMode::Listening, true);
+        run(&mut layer, 2.0);
+        assert_eq!(layer.drive(), ShellDrive::IDLE);
+
+        let mut params = EntityParams::new(Vec3::ZERO, 1.0);
+        params.intensity = 0.15;
+        params.expand = 0.0;
+        let resting = params;
+        layer.apply(&mut params);
+
+        assert!(params.intensity > resting.intensity, "listening did not brighten the shell");
+        assert!(params.expand > resting.expand, "listening did not lift the shell");
+        // Listening should be visibly gentler than thinking.
+        let mut alt = resting;
+        let mut thinking = ModeLayer::new();
+        thinking.set(PresenceMode::Thinking, true);
+        run(&mut thinking, 2.0);
+        thinking.apply(&mut alt);
+        assert!(
+            alt.intensity > params.intensity,
+            "listening reached thinking's level — the two states are indistinguishable",
+        );
+    }
+
+    /// Attention is deliberately louder than any of the working states — its
+    /// entire content is "look at me". A pulse that peaks below the states it
+    /// interrupts would be invisible against them.
+    #[test]
+    fn attention_rises_above_the_working_states() {
+        let mut params = EntityParams::new(Vec3::ZERO, 1.0);
+        params.intensity = 0.15;
+        let resting = params;
+
+        let mut layer = ModeLayer::new();
+        layer.set(PresenceMode::Attention, true);
+        run(&mut layer, 2.0);
+        let mut with_attention = resting;
+        layer.apply(&mut with_attention);
+
+        let thinking_target = PresenceMode::Thinking.profile().intensity;
+        assert!(
+            with_attention.intensity > thinking_target,
+            "attention peaked at or below thinking: {} vs {}",
+            with_attention.intensity,
+            thinking_target,
+        );
+    }
+
+    /// Error must be able to *reduce* whatever else is happening, not just
+    /// add another colour on top. A denial that leaves the shell as bright as
+    /// it was during the request looks like the request succeeded.
+    #[test]
+    fn error_dims_the_shell_even_alongside_activity() {
+        let mut layer = ModeLayer::new();
+        layer.set(PresenceMode::Thinking, true);
+        run(&mut layer, 2.0);
+
+        let mut thinking = EntityParams::new(Vec3::ZERO, 1.0);
+        thinking.intensity = 0.15;
+        let resting = thinking;
+        layer.apply(&mut thinking);
+
+        layer.set(PresenceMode::Error, true);
+        run(&mut layer, 2.0);
+        let mut with_error = resting;
+        layer.apply(&mut with_error);
+
+        assert!(
+            with_error.intensity < thinking.intensity,
+            "error left intensity unchanged: {} vs {}",
+            with_error.intensity,
+            thinking.intensity,
+        );
+        assert!(
+            with_error.intensity > resting.intensity,
+            "error snuffed the shell back below the resting shell it should sit on top of",
+        );
+        assert!(
+            with_error.expand < thinking.expand - 1e-4,
+            "error did not pull expand in against the ongoing activity: {} vs {}",
+            with_error.expand,
+            thinking.expand,
+        );
+    }
+
+    /// None of the material modes are allowed to raise a shell term. If they
+    /// did, "listening" or an error would deform the surface — which is
+    /// exactly the failure §5.1 rules out.
+    #[test]
+    fn material_modes_never_reach_the_shell_drive() {
+        for mode in PresenceMode::ALL.iter().filter(|m| m.is_material_only()) {
+            let mut layer = ModeLayer::new();
+            layer.set(*mode, true);
+            run(&mut layer, 2.0);
+            assert_eq!(
+                layer.drive(),
+                ShellDrive::IDLE,
+                "{} raised a shell term",
+                mode.label(),
+            );
+        }
     }
 
     /// The envelope must be slow enough for the surface spring to pass it.

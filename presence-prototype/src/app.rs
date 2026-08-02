@@ -40,7 +40,27 @@ pub struct App {
     /// per frame.
     log_fps: bool,
     fps_log_frames: u64,
+    /// Seconds the smoothed FPS has stayed below `ADAPTIVE_DOWNSHIFT_FPS`.
+    /// Once it crosses `ADAPTIVE_DOWNSHIFT_HOLD_SECONDS` the quality tier is
+    /// stepped down (once). Never stepped back up automatically — a lift is
+    /// a decision that has to survive the transient it produces, and the
+    /// point at which one is safe is much easier for the user to judge than
+    /// for an autoshift to.
+    low_fps_seconds: f32,
 }
+
+/// Smoothed FPS at or below this figure counts as under-budget.
+///
+/// 45 rather than 60: the target is 60, but the smoothed value flickers at
+/// the target on healthy hardware, and downshifting on those flickers would
+/// make the entity rebuild its point set for reasons a user could not see.
+const ADAPTIVE_DOWNSHIFT_FPS: f32 = 45.0;
+
+/// Consecutive seconds of under-budget FPS before adaptive downshift fires.
+/// Long enough that a startup transient or a brief tab-swap does not lower
+/// the tier, short enough that a genuinely slow machine gets its help before
+/// the user has decided to close the window.
+const ADAPTIVE_DOWNSHIFT_HOLD_SECONDS: f32 = 3.0;
 
 impl App {
     pub fn new() -> Self {
@@ -53,6 +73,7 @@ impl App {
             fps: 0.0,
             log_fps: std::env::var_os("PRESENCE_LOG_FPS").is_some(),
             fps_log_frames: 0,
+            low_fps_seconds: 0.0,
         }
     }
 
@@ -76,6 +97,35 @@ impl App {
         }
         if steps == MAX_SIM_STEPS_PER_FRAME {
             self.sim_accumulator = 0.0;
+        }
+
+        // Adaptive downshift — see the constants above for the thresholds.
+        // Waits for the smoothed FPS to warm up before counting, since the
+        // very first few frames of a run are not representative of anything.
+        if self.fps > 5.0 {
+            if self.fps < ADAPTIVE_DOWNSHIFT_FPS {
+                self.low_fps_seconds += frame_dt;
+                if self.low_fps_seconds >= ADAPTIVE_DOWNSHIFT_HOLD_SECONDS {
+                    if let Some(next) = self.director.tier().lower() {
+                        log::info!(
+                            "adaptive downshift: {:.1} FPS held under {} for {:.1}s — moving to {}",
+                            self.fps,
+                            ADAPTIVE_DOWNSHIFT_FPS,
+                            self.low_fps_seconds,
+                            next.label(),
+                        );
+                        self.director.set_quality_tier(next);
+                    }
+                    self.low_fps_seconds = 0.0;
+                }
+            } else {
+                // A single healthy frame resets the timer. That is more
+                // lenient than requiring a healthy *streak* to clear it,
+                // and the leniency is deliberate: we would rather miss a
+                // downshift by a fraction of a second than fire one on a
+                // machine that is actually fine and just hit a hitch.
+                self.low_fps_seconds = 0.0;
+            }
         }
 
         live.renderer.animate_camera(frame_dt);
@@ -144,6 +194,22 @@ impl App {
         }
         match &key_event.logical_key {
             Key::Character(c) if c.eq_ignore_ascii_case("l") => self.director.toggle_ring(),
+            Key::Character(c) if c.eq_ignore_ascii_case("r") => {
+                self.director.reduced_motion = !self.director.reduced_motion;
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("q") => {
+                // Cycles: the alternative would be two separate hotkeys, and
+                // the tier list is short enough that a single-key cycle is
+                // faster to use in the dev harness than picking a direction.
+                use crate::scene::QualityTier;
+                let current = self.director.tier();
+                let idx = QualityTier::ALL
+                    .iter()
+                    .position(|t| *t == current)
+                    .unwrap_or(0);
+                let next = QualityTier::ALL[(idx + 1) % QualityTier::ALL.len()];
+                self.director.set_quality_tier(next);
+            }
             Key::Named(NamedKey::Escape) => event_loop.exit(),
             // Toggles rather than a selection, so overlapping modes can be
             // exercised from the keyboard — the composition is the thing that

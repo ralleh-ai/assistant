@@ -252,7 +252,7 @@ fn shell_offset(layer: Layer, seed: Vec3) -> f32 {
     }
 }
 
-/// Steps a full refresh of every particle's cached deform takes.
+/// Default steps a full refresh of every particle's cached deform takes.
 ///
 /// Set against how fast the deformation it caches actually moves. `PresenceShell`
 /// reshapes its folds over tens of seconds, so refreshing a given particle at
@@ -264,7 +264,12 @@ fn shell_offset(layer: Layer, seed: Vec3) -> f32 {
 /// would update one spatial region at a time, since generation walks the
 /// surface in seed order, and a region snapping while its neighbours lag is
 /// visible in a way that a scatter of individual particles is not.
-const DEFORM_STRIDE: usize = 4;
+///
+/// Made a runtime field on `SurfaceBehavior` rather than a compile-time
+/// constant so the quality-tier system can raise it on slower hardware —
+/// each doubling roughly halves the deform cost. This is the value used
+/// unless the tier system asks for something else.
+pub const DEFAULT_DEFORM_STRIDE: usize = 4;
 
 /// Springs particles onto whatever skin its `SurfaceShape` describes.
 ///
@@ -286,6 +291,9 @@ pub struct SurfaceBehavior<S: SurfaceShape> {
     pub damping: f32,
     /// Which stride class refreshes its cached deform this step.
     refresh_phase: usize,
+    /// How many steps between refreshes of a given particle's cached deform.
+    /// See `DEFAULT_DEFORM_STRIDE`; higher is cheaper and less responsive.
+    pub deform_stride: usize,
 }
 
 impl<S: SurfaceShape> SurfaceBehavior<S> {
@@ -295,6 +303,7 @@ impl<S: SurfaceShape> SurfaceBehavior<S> {
             spring_k: 14.0,
             damping: 7.5,
             refresh_phase: 0,
+            deform_stride: DEFAULT_DEFORM_STRIDE,
         }
     }
 
@@ -325,6 +334,10 @@ impl<S: SurfaceShape> SurfaceBehavior<S> {
 }
 
 impl<S: SurfaceShape> PointBehavior for SurfaceBehavior<S> {
+    fn set_deform_stride(&mut self, stride: usize) {
+        self.deform_stride = stride.max(1);
+    }
+
     fn update(
         &mut self,
         particles: &mut [Particle],
@@ -346,11 +359,12 @@ impl<S: SurfaceShape> PointBehavior for SurfaceBehavior<S> {
         let voice = params.drive.pulse * signals.audio_level.clamp(0.0, 1.0);
 
         let frame = self.shape.frame(&params);
-        let phase = self.refresh_phase;
-        self.refresh_phase = (self.refresh_phase + 1) % DEFORM_STRIDE;
+        let stride = self.deform_stride.max(1);
+        let phase = self.refresh_phase % stride;
+        self.refresh_phase = (self.refresh_phase + 1) % stride;
 
         for (i, p) in particles.iter_mut().enumerate() {
-            if i % DEFORM_STRIDE == phase {
+            if i % stride == phase {
                 let deform = self.shape.deform(p.base_offset, &frame);
                 p.local = deform.local;
                 // Only the skin carries creases. Off-skin layers reporting them
@@ -609,6 +623,13 @@ pub struct ShellFrame {
     radius: f32,
     drive: ShellDrive,
     fold_time: f32,
+    /// Multiplier on the crease term only, in `[fold_rest_floor, 1.0]`. A very
+    /// slow rise and fall of *how brightly the folds draw*, without changing
+    /// the geometry — so from the corner of the eye the shell looks like it
+    /// is subtly resting between features rather than continuously churning.
+    /// This is the material half of the idle-calm pass; slowing evolution and
+    /// breath was the geometric half.
+    fold_rest: f32,
     lobes: [Lobe; MAX_LOBES],
     live_lobes: usize,
     pulse_amp: f32,
@@ -638,7 +659,14 @@ impl PresenceShell {
                 // detail, four is not visibly different from three but costs a
                 // third more in the hottest loop in the program.
                 octaves: 3,
-                evolution: 0.045,
+                // Halved from 0.045 during the idle-calm pass. At the previous
+                // rate the peripheral eye caught the folds visibly reshaping
+                // once every fifteen seconds or so, which is fine to look
+                // *at* and wrong to look *past* — the guide's peripheral test
+                // is what this tuning is for. The silhouette still reshapes,
+                // just slowly enough that noticing it means noticing on
+                // purpose.
+                evolution: 0.022,
                 // Low enough that creases cover a real fraction of the skin.
                 // Set high, the filaments technically exist but sit almost
                 // entirely on the limb, where the grazing term is already
@@ -702,8 +730,16 @@ impl PresenceShell {
                 waist_at: 0.72,
                 waist_width: 0.13,
             },
-            breath_amplitude: 0.022,
-            breath_speed: 0.085,
+            // Breathing is the one motion always present at rest, so its
+            // cadence sets what "at rest" feels like. The previous ~12-second
+            // period pulled the eye every twelve seconds; ~18 seconds crosses
+            // the threshold where it stops registering as motion at all and
+            // starts registering as the thing being alive. Amplitude drops
+            // with speed on purpose: a slower breath at the old amplitude
+            // reads as *heavier* breathing rather than calmer, which is the
+            // opposite of what this pass is for.
+            breath_amplitude: 0.016,
+            breath_speed: 0.055,
             spin_speed: 0.017,
         }
     }
@@ -884,6 +920,14 @@ impl SurfaceShape for PresenceShell {
             radius: self.base_radius * breath * (1.0 + params.expand * 0.16),
             drive: params.drive,
             fold_time: params.time * self.fold.evolution,
+            // ~35-second period, floor 0.62. Deliberately *not* commensurate
+            // with the breath period, so the two never phase-lock into a
+            // single visible rhythm — the compound motion is what makes idle
+            // stop reading as a machine. Held above zero because folds that
+            // *actually* stop drawing look like a rendering bug rather than
+            // like calm.
+            fold_rest: 0.62 + 0.38 * 0.5
+                * (1.0 + (params.time * (std::f32::consts::TAU / 35.0) - 0.7).sin()),
             lobes,
             live_lobes,
             pulse_amp: self.pulse.depth
@@ -911,7 +955,13 @@ impl SurfaceShape for PresenceShell {
             // here — it belongs to `place`, since a cached breath would stutter
             // at the refresh rate.
             radius += frame.drive.fold * self.fold.depth * (ridge - 0.5);
-            crease += frame.drive.fold * smoothstep(self.fold.crease_threshold, 1.0, ridge);
+            // Rest applies to crease only, not to the geometric term above.
+            // If it modulated the displacement the silhouette would visibly
+            // swell and shrink on the rest period, which is exactly the
+            // large-motion signal this pass is trying to remove.
+            crease += frame.drive.fold
+                * frame.fold_rest
+                * smoothstep(self.fold.crease_threshold, 1.0, ridge);
         }
 
         if frame.drive.lobes > ShellDrive::GATE {
@@ -1636,15 +1686,21 @@ mod tests {
         params.drive.pulse = 1.0;
         params.audio_envelope = 1.0;
 
-        let probe = Vec3::new(0.3, 0.8, -0.5).normalize();
+        // Pick the probe by *rotating the pulse axis* rather than by picking
+        // a plausible-looking seed by eye: the previous version happened to
+        // land close to a zero of `sin(k·along)`, where a travelling and a
+        // standing wave produce indistinguishable small displacements and
+        // any unrelated per-frame motion (breath, evolution) is enough to
+        // flip the sign of the residual. Sampling one radian off the axis
+        // puts the probe well away from every zero and node.
+        let probe = Mat3::from_axis_angle(Vec3::new(0.0, 0.0, 1.0), 1.0) * shell.pulse.axis;
+        let probe = probe.normalize();
         let radius_at = |t: f32, params: &mut EntityParams| {
             params.time = t;
             let frame = shell.frame(params);
             shell.place(probe, probe, &frame, params).position.length()
         };
 
-        // A quarter period apart, where a travelling wave has moved a quarter
-        // wavelength past the probe and a standing one would be at a node.
         let quarter = 1.0 / (4.0 * shell.pulse.speed);
         let a = radius_at(0.0, &mut params);
         let b = radius_at(quarter, &mut params);
@@ -1989,7 +2045,7 @@ mod tests {
         let mut behavior = SurfaceBehavior::new(PresenceShell::new(5));
         let signals = PresenceSignals::default();
 
-        for step in 0..DEFORM_STRIDE {
+        for step in 0..DEFAULT_DEFORM_STRIDE {
             params.time = step as f32 / 60.0;
             behavior.update(&mut particles, 1.0 / 60.0, &params, &signals);
         }

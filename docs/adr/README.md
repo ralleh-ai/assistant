@@ -27,3 +27,4 @@ This folder holds ADRs in two categories:
 | [ADR-010](./adr-010-point-cloud-presence-entity.md) | Point Cloud Presence Entity — Rust-First Renderer (`winit` + `wgpu`), Not Three.js | Accepted (planning; Phase 1 prototype in progress) |
 | [ADR-011](./adr-011-surface-point-generation-and-palette-setting.md) | Presence Points Lie On Surfaces, Not Through Volumes — and the Palette Is a User Setting | Accepted, **implemented** (Phase 1 prototype) |
 | [ADR-012](./adr-012-additive-mode-composition.md) | Modes Compose Additively On One Shell, Rather Than Selecting Exclusive Shapes | Accepted, **implemented** (Phase 1 prototype) |
+| [ADR-013](./adr-013-presence-window-and-process-model.md) | The Presence Runs In Its Own Process, As A Frameless Always-On-Top Droplet | Accepted (decision only; Phase 2 will implement) |

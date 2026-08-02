@@ -19,16 +19,15 @@ impl EntityKind {
 
 pub struct EntityInstance {
     pub kind: EntityKind,
-    /// Kept for parity with `docs/PRESENCE_SCENES.md` §5.1's shape and a
-    /// future "re-seed this entity" dev action — Phase 1 generates once at
-    /// construction and never regenerates.
-    #[allow(dead_code)]
+    /// Used by the scene director's quality-tier path to regenerate points
+    /// at a new budget without rebuilding the entity from scratch.
     pub generator: Box<dyn PointGenerator>,
     pub behavior: Box<dyn PointBehavior>,
     pub particles: Vec<Particle>,
-    /// Kept for parity with the documented shape; not yet read anywhere
-    /// (particle count is read directly from `particles.len()` instead).
-    #[allow(dead_code)]
+    /// Kept in sync with the last budget the generator was asked for. Not
+    /// the source of truth for the current point count (that is
+    /// `particles.len()`) — it is what the tier switch reads to decide
+    /// whether a regeneration would change anything.
     pub point_budget: usize,
     /// Hierarchy ordering for future multi-entity crowding rules
     /// (`docs/PRESENCE_VISUAL_ENTITY.md` §4.3) — not yet enforced.
@@ -70,7 +69,10 @@ impl EntityInstance {
 
     pub fn update(&mut self, dt: f32, signals: &PresenceSignals) {
         self.params.dt = dt;
-        self.params.time += dt;
+        // The animation clock advances at whatever fraction of real time the
+        // scene has asked for — see `EntityParams::time_scale`. The physics
+        // clock passed to the behavior below is always real time.
+        self.params.time += dt * self.params.time_scale;
         self.params.presence = self.presence;
         self.behavior
             .update(&mut self.particles, dt, &self.params, signals);
