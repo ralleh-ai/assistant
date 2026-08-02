@@ -47,9 +47,17 @@ If you get `LNK1104: cannot open file 'msvcrt.lib'` or missing `excpt.h`, you
 started a normal shell without the VS C++ environment — use
 `./scripts/tauri-dev.ps1` or “Developer PowerShell for VS”.
 
-UI: **Ping Rust core**, **Voice smoke (mock)**, **Clipboard smoke (mock)**
-(policy-gated via `ralleh-policy-core` + `ralleh-os-capabilities`), and
-**Open station log →**.
+UI: **Ping Rust core**, **Voice smoke (mock)**, **Clipboard smoke (mock)**,
+**Mic smoke** (live when built with `--features mic`), and **Open station log →**.
+
+Live mic:
+
+```bat
+scripts\tauri-dev-mic.cmd
+```
+
+Stamp Voice clearance in the station log first. Capture is ~1 second of
+default-input metrics (no STT yet).
 
 ## Layout
 
@@ -61,5 +69,5 @@ desktop-edge/
 
 ## Next
 
-Optional live mic, real screen/hotkey backends — see `/docs/NEXT_STEPS.md`
+OIDC / control plane, screen/hotkey backends, mic→STT — see `/docs/NEXT_STEPS.md`
 and `/docs/HEADLESS.md`.

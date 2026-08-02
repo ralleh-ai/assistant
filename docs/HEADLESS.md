@@ -14,7 +14,7 @@ separately with `npm run tauri dev` on a desktop host.
 | STT / TTS | `MockStt` / `MockTts` |
 | Frame assembly | Pure `FrameAssembler` (no `cpal`) |
 | Pipeline smoke | mock mic → VAD → STT → TTS |
-| Live mic (`cpal`) | **Not compiled** (`mic` feature off) |
+| Live mic (`cpal`) | **Not compiled** (`mic` feature off). Desktop: `scripts/tauri-dev-mic.cmd` / `mic_smoke` |
 | Whisper / Piper CLI e2e | `#[ignore]` — need env + downloaded tools |
 | Tauri / clipboard / screen | Traits + mocks in `ralleh-os-capabilities`; desktop `clipboard_smoke` uses mock by default (`--features clipboard-os` for real clipboard) |
 
@@ -40,6 +40,13 @@ Interactive capture to WAV (level meter on stderr):
 cargo run -p ralleh-audio-core --features mic --bin mic-capture -- --seconds 5 --out capture.wav
 ```
 
+Desktop shell (~1s metrics, needs station-log Voice clearance):
+
+```bat
+scripts\tauri-dev-mic.cmd
+```
+
+Then **Mic smoke (live)** in the UI.
 - `try_open_default()` soft-fails (`None`) on missing/broken devices,
   `RALLEH_SKIP_LIVE_AUDIO`, or `CI` without `RALLEH_LIVE_MIC=1`.
 - `open_default()` / `mic-capture` require a real mic (hard errors).

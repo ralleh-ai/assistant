@@ -2,8 +2,8 @@
 
 ## Done recently
 
-- OS capability traits (`ralleh-os-capabilities`) + policy-gated `clipboard_smoke`;
-  Tauri station log settings; `voice_smoke`; Windows `tauri-dev.cmd` helpers.
+- Live mic smoke from desktop-edge (`--features mic`); OS capability traits +
+  clipboard smoke; station log settings; voice_smoke.
 
 ## High priority — Tauri desktop shell (Phase 1 continued)
 
@@ -14,7 +14,8 @@
    mcp base URL, mic clearance; Rust-only write to app config dir).
 5. ~~OS capabilities (clipboard first)~~ **done** — traits + mocks; screen/hotkey
    stubs; `clipboard_smoke` via policy + mock (optional `--features clipboard-os`).
-6. Optional live mic from the shell (`--features mic` on edge / audio-core).
+6. ~~Optional live mic from the shell~~ **done** — `mic_smoke` (policy + clearance);
+   `scripts/tauri-dev-mic.cmd` / `--features mic`.
 
 ## Medium priority
 
@@ -23,6 +24,7 @@
 9. Approval cryptographically bound to approver identity (T4).
 10. Audit integrity / queryability beyond JSONL (T5).
 11. Real screen capture / hotkey OS backends (still trait-only stubs).
+12. Live mic → VAD → STT path in the shell (beyond capture metrics).
 
 ## Lower priority
 

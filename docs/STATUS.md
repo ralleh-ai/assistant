@@ -1,21 +1,22 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (OS capabilities + station log + voice_smoke)
+**As of:** 2026-08-01 (live mic smoke + OS caps + station log)
 
 ## Build/test state
 
 ```
-cargo test --workspace → headless-safe (includes ralleh-os-capabilities mocks)
-desktop-edge: clipboard_smoke (policy + mock); settings; core_ping; voice_smoke
+cargo test --workspace → headless-safe (mic feature off)
+desktop-edge default: mic_smoke errors cleanly without --features mic
+desktop-edge --features mic: live capture (~1s) after station-log Voice clearance
 ```
 
 ## Highlights
 
-- **`ralleh-os-capabilities`** — clipboard/screen/hotkey traits + mocks;
-  optional `clipboard-os` (arboard).
-- **`clipboard_smoke`** — policy-gated round-trip using station-log identity.
-- **Station log** — edge settings in OS app config via Rust IPC only.
+- **`mic_smoke`** — policy `os.mic.capture` + `micAcknowledged`; metrics via
+  `ralleh_audio_core::run_live_mic_smoke`.
+- **`scripts/tauri-dev-mic.cmd`** — Tauri dev with `--features mic`.
+- Clipboard / station log / voice mock smokes as before.
 
 ## Next up
 
-Optional live mic from the shell — see NEXT_STEPS.md.
+Medium-priority backlog (OIDC when control plane exists, etc.) — see NEXT_STEPS.md.

@@ -25,3 +25,5 @@ ralleh-policy-core = { path = "../../crates/ralleh-policy-core" }
 default = []
 # Real OS clipboard (arboard). Default builds use the mock backend.
 clipboard-os = ["ralleh-os-capabilities/clipboard-os"]
+# Live microphone via cpal (WASAPI). Off by default for headless-safe builds.
+mic = ["ralleh-audio-core/mic"]

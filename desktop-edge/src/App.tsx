@@ -1,13 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Setup } from "./Setup";
 import "./App.css";
+
+type EdgeFeatures = {
+  mic: boolean;
+  clipboardOs: boolean;
+};
 
 type CoreStatus = {
   product: string;
   edge: string;
   version: string;
   message: string;
+  features: EdgeFeatures;
 };
 
 type VoiceSmoke = {
@@ -28,16 +34,49 @@ type ClipboardSmoke = {
   policyReason: string;
 };
 
+type MicSmoke = {
+  sampleRateHz: number;
+  durationMs: number;
+  frames: number;
+  samples: number;
+  peakRms: number;
+  maxAbs: number;
+  micFeature: boolean;
+  tenantId: string;
+  deviceId: string;
+  actorId: string;
+  policyOutcome: string;
+  policyRuleId: string | null;
+};
+
 type View = "home" | "setup";
 
 function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
   const [status, setStatus] = useState<CoreStatus | null>(null);
   const [voice, setVoice] = useState<VoiceSmoke | null>(null);
   const [clipboard, setClipboard] = useState<ClipboardSmoke | null>(null);
+  const [mic, setMic] = useState<MicSmoke | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"ping" | "voice" | "clipboard" | null>(
-    null,
-  );
+  const [busy, setBusy] = useState<
+    "ping" | "voice" | "clipboard" | "mic" | null
+  >(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await invoke<CoreStatus>("core_ping");
+        if (!cancelled) setStatus(s);
+      } catch {
+        /* home still usable; explicit Ping retries */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const micBuilt = status?.features.mic === true;
 
   async function pingCore() {
     setBusy("ping");
@@ -72,6 +111,19 @@ function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
       setClipboard(await invoke<ClipboardSmoke>("clipboard_smoke"));
     } catch (e) {
       setClipboard(null);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runMicSmoke() {
+    setBusy("mic");
+    setError(null);
+    try {
+      setMic(await invoke<MicSmoke>("mic_smoke"));
+    } catch (e) {
+      setMic(null);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
@@ -113,6 +165,23 @@ function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
             ? "Checking clipboard…"
             : "Clipboard smoke (mock)"}
         </button>
+        <button
+          type="button"
+          className="cta secondary"
+          onClick={runMicSmoke}
+          disabled={busy !== null}
+          title={
+            micBuilt
+              ? "Capture ~1s from the default mic (needs station-log Voice clearance)"
+              : "Rebuild with scripts\\tauri-dev-mic.cmd (or --features mic)"
+          }
+        >
+          {busy === "mic"
+            ? "Listening…"
+            : micBuilt
+              ? "Mic smoke (live)"
+              : "Mic smoke (needs mic feature)"}
+        </button>
       </div>
       <button type="button" className="text-nav home-setup" onClick={onOpenSetup}>
         Open station log →
@@ -120,6 +189,7 @@ function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
       {status && (
         <p className="status" role="status">
           {status.product} {status.edge} v{status.version} — {status.message}
+          {status.features.mic ? " · mic on" : " · mic off"}
         </p>
       )}
       {voice && (
@@ -132,6 +202,13 @@ function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
         <p className="status" role="status">
           Clipboard {clipboard.backend} · {clipboard.policyOutcome} via{" "}
           {clipboard.policyRuleId ?? "—"} · round-trip “{clipboard.readBack}”
+        </p>
+      )}
+      {mic && (
+        <p className="status" role="status">
+          Mic {mic.frames} frames / {mic.samples} samples @ {mic.sampleRateHz}{" "}
+          Hz · peak RMS {mic.peakRms.toFixed(4)} · max |x|{" "}
+          {mic.maxAbs.toFixed(4)}
         </p>
       )}
       {error && (
