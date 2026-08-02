@@ -1,24 +1,20 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (Linux audio-e2e workflow + Cargo.lock CI)
+**As of:** 2026-08-01 (crate naming map + Tauri/NestJS threat expansion)
 
 ## Build/test state
 
 ```
-cargo test --workspace → default features (headless CI on every push/PR)
-workflow_dispatch: audio-e2e (whisper-cli + piper; optional whisper-rs)
+cargo test --workspace → unchanged (docs-only change this step)
 ```
 
 ## Highlights
 
-- **`.github/workflows/audio-e2e.yml`** — manual Linux job downloads CLI
-  tools/models and runs ignored Whisper/Piper e2e; optional
-  `--features whisper` job.
-- Linux download scripts: `scripts/download-whisper-*.sh`,
-  `scripts/download-piper.sh`.
-- Default CI + `Cargo.lock` unchanged (no mic/whisper on every PR).
+- **`docs/CRATE_NAMING.md`** — §16 ↔ actual crate map; mass rename deferred.
+- **`docs/THREAT_MODEL.md`** — forward Tauri (T11–T16) and NestJS (T17–T22)
+  threats without claiming those surfaces exist yet.
 
 ## Next up
 
-OIDC when control plane exists; crate naming; Tauri threat model — see
-NEXT_STEPS.md.
+OIDC when control plane exists; optional `allow_private_targets` for
+http-fetch — see NEXT_STEPS.md.

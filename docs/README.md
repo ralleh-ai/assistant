@@ -16,8 +16,9 @@ and next steps.
 6. [`DECISIONS.md`](./DECISIONS.md) — key engineering decisions made during implementation that aren't in the original DEVELOPMENT.md (i.e., decisions made *while building*, not while planning).
 7. [`ENVIRONMENT.md`](./ENVIRONMENT.md) — dev environment constraints, bootstrap instructions, tool versions, host resource notes.
 8. [`HEADLESS.md`](./HEADLESS.md) — what is safe without mic/display; desktop opt-in features and env flags.
-9. [`THREAT_MODEL.md`](./THREAT_MODEL.md) — Phase 0 threat-model draft for the current Rust spine.
-10. [`adr/`](./adr/) — architecture decision records, both from the original planning doc and any made during implementation.
+9. [`CRATE_NAMING.md`](./CRATE_NAMING.md) — DEVELOPMENT.md §16 names vs actual crates; rename policy.
+10. [`THREAT_MODEL.md`](./THREAT_MODEL.md) — Phase 0 threat-model draft (+ Tauri/NestJS forward threats).
+11. [`adr/`](./adr/) — architecture decision records, both from the original planning doc and any made during implementation.
 
 ## Why this exists
 

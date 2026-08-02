@@ -16,16 +16,20 @@ crates/
   ralleh-mcp-server/     HTTP surface wiring everything together (maps loosely to §14.1 API surface, though not identical routes yet)
 ```
 
-This is a subset of the planned `crates/` layout in DEVELOPMENT.md §16
-(`ralleh-core`, `policy-core`, `mcp-gateway`, `ai-router`, `memory-core`,
-`audit-core`). Naming has diverged slightly (`ralleh-tool-gateway` here vs.
-`mcp-gateway` in the plan; `ralleh-audit-store` here vs. `audit-core` in the
-plan) — this is worth reconciling later but is not a functional gap, see
-[`NEXT_STEPS.md`](./NEXT_STEPS.md).
+This is a subset of the planned `crates/` layout in DEVELOPMENT.md §16.
+Naming has diverged by design for now — see the full map and rename policy
+in [`CRATE_NAMING.md`](./CRATE_NAMING.md). Short version:
 
-Not yet started: `memory-core` (Phase 3 in the plan — pgvector-backed
-enterprise memory), any TypeScript/NestJS control plane, any Tauri/React
-edge shell.
+| Plan (§16) | Actual |
+|---|---|
+| `policy-core` | `ralleh-policy-core` |
+| `mcp-gateway` | `ralleh-tool-gateway` (+ `ralleh-mcp-server` HTTP) |
+| `ai-router` | `ralleh-ai-router` |
+| `audit-core` | `ralleh-audit-store` |
+| `ralleh-core` | `ralleh-audio-core` (audio slice only so far) |
+
+Not yet started: `memory-core` (Phase 3), TypeScript/NestJS control plane,
+Tauri/React edge shell (`desktop-edge/`).
 
 ## `ralleh-policy-core`
 

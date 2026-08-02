@@ -176,7 +176,16 @@ egress is allowed — same layering as fs sandbox roots. An empty allowlist
 fails closed at config load time rather than registering a no-op tool.
 
 
-## Optional Linux audio e2e (not default CI)
+## Crate naming: map §16 names; defer mass rename
+
+**Decision:** Keep current `ralleh-*` crate directory/package names.
+Document the DEVELOPMENT.md §16 ↔ actual mapping in
+[`CRATE_NAMING.md`](./CRATE_NAMING.md). Do not rename until an external
+consumer (control plane / published crates) requires §16 IDs.
+
+**Why:** Renames are pure churn while the only consumers are in-tree path
+deps and docs. Consistency of the `ralleh-` prefix matters more than
+matching early planning directory names.
 
 **Decision:** Keep real ggml/ONNX e2e off the default `ci.yml` path. Add
 `audio-e2e` as a manual GitHub Actions workflow plus Linux download
