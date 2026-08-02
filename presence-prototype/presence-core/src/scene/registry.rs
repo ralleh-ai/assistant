@@ -112,6 +112,15 @@ impl SceneRegistry {
     pub fn len(&self) -> usize {
         self.scenes.len()
     }
+
+    /// Companion to [`len`] required by clippy for public APIs. Always
+    /// `false` in the current build because `with_builtin_scenes` inserts
+    /// two entries, but the method is kept so callers can compose their own
+    /// registries in the future without a wart.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.scenes.is_empty()
+    }
 }
 
 #[cfg(test)]

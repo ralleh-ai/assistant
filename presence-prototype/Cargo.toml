@@ -1,16 +1,26 @@
-[package]
-name = "presence-prototype"
+[workspace]
+resolver = "2"
+members = ["presence-core", "presence-runtime"]
+default-members = ["presence-runtime"]
+
+# Two-crate layout for Phase 2 §1 of docs/PRESENCE_INTEGRATION_PLAN.md:
+# - `presence-core` is the library — simulation, scene director, and renderer.
+#   No window creation, no key handling, no debug overlay.
+# - `presence-runtime` is the binary that hosts the library — winit event loop,
+#   window management, and the egui debug panel.
+#
+# The workspace lives inside `presence-prototype/` (not at the repo root)
+# because the root workspace excludes this whole subtree — the presence
+# prototype needs a GPU + window and can't build headless in CI. See the
+# root `Cargo.toml` exclude list and the note in `HEADLESS.md`.
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "UNLICENSED"
-description = "Phase 1 standalone prototype for the Point Cloud Presence / Live System Scanner (docs/PRESENCE_VISUAL_ENTITY.md). winit + wgpu, not part of the main Cargo workspace (see root Cargo.toml exclude list / HEADLESS.md)."
 publish = false
 
-[[bin]]
-name = "presence-prototype"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
 winit = "0.30"
 wgpu = "22"
 pollster = "0.3"
@@ -24,16 +34,15 @@ egui-winit = "0.29"
 log = "0.4"
 env_logger = "0.11"
 
+# Match the tuning that the single-crate prototype had: the hot path lives
+# in dependency code (`noise`'s 4-D Simplex), so we build deps at opt-level 3
+# even in `cargo run`, and keep our own crates at opt-level 1 so debug info
+# still means something. See the original comment in the pre-split manifest.
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
 
-# The simulation's hot path is `noise`'s 4-D Simplex, so an unoptimized
-# debug build is dominated by dependency code rather than our own. Building
-# dependencies at opt-level 3 while keeping this crate lightly optimized
-# makes `cargo run` usable for visual iteration without giving up
-# debuggability of the crate's own frames.
 [profile.dev]
 opt-level = 1
 

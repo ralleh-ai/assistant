@@ -18,7 +18,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dev = Join-Path (Split-Path -Parent $root) "scripts\presence-dev.cmd"
 
-Get-Process presence-prototype -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process presence-runtime -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 if (-not $SkipBuild) {
@@ -36,7 +36,7 @@ Start-Sleep -Seconds $Settle
 if ($Keys) {
     Add-Type -AssemblyName Microsoft.VisualBasic
     Add-Type -AssemblyName System.Windows.Forms
-    $proc = Get-Process -Name "presence-prototype" -ErrorAction Stop
+    $proc = Get-Process -Name "presence-runtime" -ErrorAction Stop
     [Microsoft.VisualBasic.Interaction]::AppActivate($proc.Id)
     Start-Sleep -Milliseconds 400
     [System.Windows.Forms.SendKeys]::SendWait($Keys)

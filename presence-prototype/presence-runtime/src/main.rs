@@ -5,10 +5,6 @@
 //! crate's `README.md`.
 
 mod app;
-mod palette;
-mod render;
-mod scene;
-mod sim;
 mod ui;
 
 use winit::event_loop::{ControlFlow, EventLoop};

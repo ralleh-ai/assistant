@@ -7,14 +7,14 @@ use egui_wgpu::ScreenDescriptor;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-use crate::palette::{PaletteId, PresencePalette};
-use crate::render::camera::PointMaterial;
-use crate::render::post::PostSettings;
-use crate::render::Frame;
-use crate::scene::entity::EntityInstance;
-use crate::scene::mode::PresenceMode;
-use crate::scene::{SceneDirector, SceneRegistry};
-use crate::sim::Layer;
+use presence_core::palette::{PaletteId, PresencePalette};
+use presence_core::render::camera::PointMaterial;
+use presence_core::render::post::PostSettings;
+use presence_core::render::Frame;
+use presence_core::scene::entity::EntityInstance;
+use presence_core::scene::mode::PresenceMode;
+use presence_core::scene::{SceneDirector, SceneRegistry};
+use presence_core::sim::Layer;
 
 pub struct EguiLayer {
     context: egui::Context,
@@ -235,7 +235,7 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
                 egui::ComboBox::from_id_salt("quality")
                     .selected_text(selected.label())
                     .show_ui(ui, |ui| {
-                        for tier in crate::scene::QualityTier::ALL {
+                        for tier in presence_core::scene::QualityTier::ALL {
                             ui.selectable_value(&mut selected, tier, tier.label());
                         }
                     });

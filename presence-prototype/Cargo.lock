@@ -1846,19 +1846,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "presence-prototype"
+name = "presence-core"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "egui",
- "egui-wgpu",
- "egui-winit",
- "env_logger",
  "glam",
  "log",
  "noise",
  "pollster",
  "rand",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "presence-runtime"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui-wgpu",
+ "egui-winit",
+ "env_logger",
+ "log",
+ "pollster",
+ "presence-core",
  "wgpu",
  "winit",
 ]

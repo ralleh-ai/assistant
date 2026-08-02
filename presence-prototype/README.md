@@ -343,22 +343,37 @@ framing changes — so they will sit on the weight/lerp machinery in
 
 ## Code map
 
-- `src/sim/` — the `PointGenerator`/`PointBehavior` traits, the
-  Simplex/ridged/curl noise field (`docs/PRESENCE_VISUAL_ENTITY.md` §6),
-  and `shapes.rs`: the `SurfaceShape` trait plus `PresenceShell` (every
-  mode) and `ResonancePlate` (Loading), the shared `SurfaceGenerator`, and
-  `SurfaceBehavior`. `shapes.rs` is where the interesting reasoning lives.
-- `src/scene/` — `EntityInstance`, `SceneDirector` (transition
-  orchestration), `mode.rs` (`PresenceMode` and the eased weight ramps that
-  drive the shell's terms), `SceneRegistry` (the "clear registration point"
-  for future scenes, `docs/PRESENCE_SCENES.md` §9 item 5).
-- `src/render/` — `wgpu` setup, the instanced-billboard point pipeline
-  (`docs/PRESENCE_VISUAL_ENTITY.md` §7.4), the camera and its `PointMaterial`
-  tunables, and `post.rs` — the HDR target, bloom chain, and tonemap
-  composite.
-- `src/ui.rs` — `egui` debug overlay/dev controls.
-- `src/palette.rs` — `PaletteId`/`PresencePalette`: the selectable colour
-  schemes. The teal preset's hexes are pulled from
-  `desktop-edge/src/App.css`'s custom properties so the prototype and the
-  shipped UI never drift into two different "teal"s (see
-  `docs/PRESENCE_VISUAL_ENTITY.md` §3.1).
+This directory is a small Cargo workspace with two crates (Phase 2 §1 of
+`../docs/PRESENCE_INTEGRATION_PLAN.md` — the split that lets the library
+be reused by `desktop-edge` without dragging the dev harness along):
+
+- **`presence-core/`** — library. Simulation, scene director, and renderer.
+  No window creation, no key handling, no debug overlay. This is the crate
+  the shell integration in Phase 2 will depend on.
+  - `src/sim/` — the `PointGenerator`/`PointBehavior` traits, the
+    Simplex/ridged/curl noise field (`../docs/PRESENCE_VISUAL_ENTITY.md` §6),
+    and `shapes.rs`: the `SurfaceShape` trait plus `PresenceShell` (every
+    mode) and `ResonancePlate` (Loading), the shared `SurfaceGenerator`,
+    and `SurfaceBehavior`. `shapes.rs` is where the interesting reasoning
+    lives.
+  - `src/scene/` — `EntityInstance`, `SceneDirector` (transition
+    orchestration), `mode.rs` (`PresenceMode` and the eased weight ramps
+    that drive the shell's terms), `SceneRegistry` (the "clear registration
+    point" for future scenes, `../docs/PRESENCE_SCENES.md` §9 item 5).
+  - `src/render/` — `wgpu` setup, the instanced-billboard point pipeline
+    (`../docs/PRESENCE_VISUAL_ENTITY.md` §7.4), the camera and its
+    `PointMaterial` tunables, and `post.rs` — the HDR target, bloom chain,
+    and tonemap composite.
+  - `src/palette.rs` — `PaletteId`/`PresencePalette`: the selectable colour
+    schemes. The teal preset's hexes are pulled from
+    `../desktop-edge/src/App.css`'s custom properties so the prototype and
+    the shipped UI never drift into two different "teal"s (see
+    `../docs/PRESENCE_VISUAL_ENTITY.md` §3.1).
+- **`presence-runtime/`** — binary. Hosts `presence-core` inside a `winit`
+  event loop and adds the `egui` debug panel.
+  - `src/main.rs` — event loop entry.
+  - `src/app.rs` — `winit` `ApplicationHandler`, fixed-timestep simulation
+    driver, adaptive quality downshift.
+  - `src/ui.rs` — `egui` debug overlay/dev controls. A follow-up will
+    move this behind a `dev` Cargo feature so a shipping build strips the
+    overlay entirely (see Phase 2 §1).

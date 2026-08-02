@@ -45,8 +45,8 @@ if (-not [Win]::SetProcessDpiAwarenessContext([IntPtr](-4))) { [void][Win]::SetP
 
 Add-Type -AssemblyName System.Drawing
 
-$proc = Get-Process -Name "presence-prototype" -ErrorAction SilentlyContinue
-if (-not $proc) { Write-Error "presence-prototype is not running"; exit 1 }
+$proc = Get-Process -Name "presence-runtime" -ErrorAction SilentlyContinue
+if (-not $proc) { Write-Error "presence-runtime is not running"; exit 1 }
 $handle = $proc.MainWindowHandle
 
 # HWND_TOPMOST (no move, no resize) so nothing occludes the capture.

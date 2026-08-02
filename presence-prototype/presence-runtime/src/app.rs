@@ -8,9 +8,10 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::render::Renderer;
-use crate::scene::mode::PresenceMode;
-use crate::scene::{SceneDirector, SceneRegistry};
+use presence_core::render::Renderer;
+use presence_core::scene::mode::PresenceMode;
+use presence_core::scene::{SceneDirector, SceneRegistry};
+
 use crate::ui::{EguiLayer, PanelState};
 
 /// Simulation runs on a fixed step so motion timing is identical at any
@@ -201,7 +202,7 @@ impl App {
                 // Cycles: the alternative would be two separate hotkeys, and
                 // the tier list is short enough that a single-key cycle is
                 // faster to use in the dev harness than picking a direction.
-                use crate::scene::QualityTier;
+                use presence_core::scene::QualityTier;
                 let current = self.director.tier();
                 let idx = QualityTier::ALL
                     .iter()

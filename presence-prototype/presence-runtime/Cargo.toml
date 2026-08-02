@@ -1,0 +1,28 @@
+[package]
+name = "presence-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Point Cloud Presence — winit + wgpu runtime that hosts `presence-core`. Owns the window, event loop, and the egui debug panel."
+
+[[bin]]
+name = "presence-runtime"
+path = "src/main.rs"
+
+# NOTE: the debug overlay is currently unconditional. A `dev` feature gate that
+# lets a shipping build strip egui out is the next follow-up (see Phase 2 §1
+# of docs/PRESENCE_INTEGRATION_PLAN.md — "The dev debug panel becomes a `dev`
+# feature on the runtime"). Kept out of this first split so the behavior is
+# byte-for-byte the same as the pre-split prototype.
+
+[dependencies]
+presence-core = { path = "../presence-core" }
+winit = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+egui-winit = { workspace = true }
