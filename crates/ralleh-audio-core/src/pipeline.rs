@@ -98,7 +98,7 @@ pub fn run_live_mic_smoke(seconds: f32) -> Result<LiveMicSmokeResult, String> {
     {
         let _ = seconds;
         return Err(
-            "live mic requires building desktop-edge / ralleh-audio-core with --features mic"
+            "live mic not compiled into this binary — restart with scripts\\tauri-dev.cmd (mic is on by default for desktop-edge)"
                 .into(),
         );
     }

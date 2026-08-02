@@ -48,16 +48,21 @@ started a normal shell without the VS C++ environment — use
 `./scripts/tauri-dev.ps1` or “Developer PowerShell for VS”.
 
 UI: **Ping Rust core**, **Voice smoke (mock)**, **Clipboard smoke (mock)**,
-**Mic smoke** (live when built with `--features mic`), and **Open station log →**.
+**Mic smoke (live)**, and **Open station log →**.
 
-Live mic:
+Live mic is **on by default** for this desktop shell (`mic` Cargo feature /
+`tauri.conf.json` `build.features`). Stamp Voice clearance in the station log
+first. Capture is ~1 second of default-input metrics (no STT yet).
+
+```bat
+scripts\tauri-dev.cmd
+```
+
+Explicit mic rebuild (same as default now):
 
 ```bat
 scripts\tauri-dev-mic.cmd
 ```
-
-Stamp Voice clearance in the station log first. Capture is ~1 second of
-default-input metrics (no STT yet).
 
 ## Layout
 

@@ -15,7 +15,8 @@
 5. ~~OS capabilities (clipboard first)~~ **done** — traits + mocks; screen/hotkey
    stubs; `clipboard_smoke` via policy + mock (optional `--features clipboard-os`).
 6. ~~Optional live mic from the shell~~ **done** — `mic_smoke` (policy + clearance);
-   `scripts/tauri-dev-mic.cmd` / `--features mic`.
+   **on by default** in `desktop-edge` (`mic` feature / `build.features`).
+   Workspace audio-core stays mic-off for headless CI.
 
 ## Medium priority
 

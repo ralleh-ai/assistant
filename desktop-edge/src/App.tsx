@@ -173,14 +173,14 @@ function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
           title={
             micBuilt
               ? "Capture ~1s from the default mic (needs station-log Voice clearance)"
-              : "Rebuild with scripts\\tauri-dev-mic.cmd (or --features mic)"
+              : "Rebuild via scripts\\tauri-dev.cmd (mic is on by default)"
           }
         >
           {busy === "mic"
             ? "Listening…"
             : micBuilt
               ? "Mic smoke (live)"
-              : "Mic smoke (needs mic feature)"}
+              : "Mic smoke (rebuild needed)"}
         </button>
       </div>
       <button type="button" className="text-nav home-setup" onClick={onOpenSetup}>

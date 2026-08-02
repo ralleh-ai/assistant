@@ -5,16 +5,15 @@
 ## Build/test state
 
 ```
-cargo test --workspace → headless-safe (mic feature off)
-desktop-edge default: mic_smoke errors cleanly without --features mic
-desktop-edge --features mic: live capture (~1s) after station-log Voice clearance
+cargo test --workspace → headless-safe (audio-core mic feature off)
+desktop-edge default: mic on (cpal); mic_smoke after station-log Voice clearance
 ```
 
 ## Highlights
 
 - **`mic_smoke`** — policy `os.mic.capture` + `micAcknowledged`; metrics via
   `ralleh_audio_core::run_live_mic_smoke`.
-- **`scripts/tauri-dev-mic.cmd`** — Tauri dev with `--features mic`.
+- **`scripts/tauri-dev.cmd`** — Tauri dev (mic on by default for the shell).
 - Clipboard / station log / voice mock smokes as before.
 
 ## Next up
