@@ -2,8 +2,8 @@
 
 ## Done recently
 
-- Tauri **station log** settings/onboarding UI + `edge-settings.json` persistence;
-  `voice_smoke` IPC; Windows `tauri-dev.cmd` helpers; Phase 1 scaffold.
+- OS capability traits (`ralleh-os-capabilities`) + policy-gated `clipboard_smoke`;
+  Tauri station log settings; `voice_smoke`; Windows `tauri-dev.cmd` helpers.
 
 ## High priority — Tauri desktop shell (Phase 1 continued)
 
@@ -12,8 +12,8 @@
 3. ~~Embed voice core (mock pipeline via `voice_smoke`)~~ **done**
 4. ~~Settings / onboarding UI~~ **done** (station log plates; tenant/device/actor,
    mcp base URL, mic clearance; Rust-only write to app config dir).
-5. **OS capabilities only as needed** — clipboard/screen/hotkeys behind
-   features + policy (T13); never raw FS/net to JS.
+5. ~~OS capabilities (clipboard first)~~ **done** — traits + mocks; screen/hotkey
+   stubs; `clipboard_smoke` via policy + mock (optional `--features clipboard-os`).
 6. Optional live mic from the shell (`--features mic` on edge / audio-core).
 
 ## Medium priority
@@ -22,6 +22,7 @@
 8. Optional `allow_private_targets` for http-fetch internal APIs.
 9. Approval cryptographically bound to approver identity (T4).
 10. Audit integrity / queryability beyond JSONL (T5).
+11. Real screen capture / hotkey OS backends (still trait-only stubs).
 
 ## Lower priority
 

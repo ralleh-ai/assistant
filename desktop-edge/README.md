@@ -47,9 +47,9 @@ If you get `LNK1104: cannot open file 'msvcrt.lib'` or missing `excpt.h`, you
 started a normal shell without the VS C++ environment — use
 `./scripts/tauri-dev.ps1` or “Developer PowerShell for VS”.
 
-UI: **Ping Rust core**, **Voice smoke (mock)**, and **Open station log →**
-(settings plates → `edge-settings.json` under the OS app config dir via
-`load_edge_settings` / `save_edge_settings` only — no webview filesystem).
+UI: **Ping Rust core**, **Voice smoke (mock)**, **Clipboard smoke (mock)**
+(policy-gated via `ralleh-policy-core` + `ralleh-os-capabilities`), and
+**Open station log →**.
 
 ## Layout
 
@@ -61,5 +61,5 @@ desktop-edge/
 
 ## Next
 
-OS capabilities behind features, optional live mic — see `/docs/NEXT_STEPS.md`
+Optional live mic, real screen/hotkey backends — see `/docs/NEXT_STEPS.md`
 and `/docs/HEADLESS.md`.

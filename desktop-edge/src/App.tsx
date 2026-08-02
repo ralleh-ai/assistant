@@ -16,13 +16,28 @@ type VoiceSmoke = {
   sampleRateHz: number;
 };
 
+type ClipboardSmoke = {
+  backend: string;
+  written: string;
+  readBack: string;
+  tenantId: string;
+  deviceId: string;
+  actorId: string;
+  policyOutcome: string;
+  policyRuleId: string | null;
+  policyReason: string;
+};
+
 type View = "home" | "setup";
 
 function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
   const [status, setStatus] = useState<CoreStatus | null>(null);
   const [voice, setVoice] = useState<VoiceSmoke | null>(null);
+  const [clipboard, setClipboard] = useState<ClipboardSmoke | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"ping" | "voice" | null>(null);
+  const [busy, setBusy] = useState<"ping" | "voice" | "clipboard" | null>(
+    null,
+  );
 
   async function pingCore() {
     setBusy("ping");
@@ -44,6 +59,19 @@ function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
       setVoice(await invoke<VoiceSmoke>("voice_smoke"));
     } catch (e) {
       setVoice(null);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runClipboardSmoke() {
+    setBusy("clipboard");
+    setError(null);
+    try {
+      setClipboard(await invoke<ClipboardSmoke>("clipboard_smoke"));
+    } catch (e) {
+      setClipboard(null);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
@@ -75,6 +103,16 @@ function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
         >
           {busy === "voice" ? "Running pipeline…" : "Voice smoke (mock)"}
         </button>
+        <button
+          type="button"
+          className="cta secondary"
+          onClick={runClipboardSmoke}
+          disabled={busy !== null}
+        >
+          {busy === "clipboard"
+            ? "Checking clipboard…"
+            : "Clipboard smoke (mock)"}
+        </button>
       </div>
       <button type="button" className="text-nav home-setup" onClick={onOpenSetup}>
         Open station log →
@@ -88,6 +126,12 @@ function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
         <p className="status" role="status">
           Transcript “{voice.transcript}” · TTS {voice.ttsSamples} samples @{" "}
           {voice.sampleRateHz} Hz
+        </p>
+      )}
+      {clipboard && (
+        <p className="status" role="status">
+          Clipboard {clipboard.backend} · {clipboard.policyOutcome} via{" "}
+          {clipboard.policyRuleId ?? "—"} · round-trip “{clipboard.readBack}”
         </p>
       )}
       {error && (

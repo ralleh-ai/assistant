@@ -16,7 +16,7 @@ separately with `npm run tauri dev` on a desktop host.
 | Pipeline smoke | mock mic → VAD → STT → TTS |
 | Live mic (`cpal`) | **Not compiled** (`mic` feature off) |
 | Whisper / Piper CLI e2e | `#[ignore]` — need env + downloaded tools |
-| Tauri / clipboard / screen | Not implemented yet |
+| Tauri / clipboard / screen | Traits + mocks in `ralleh-os-capabilities`; desktop `clipboard_smoke` uses mock by default (`--features clipboard-os` for real clipboard) |
 
 ```bash
 ./scripts/bootstrap.sh

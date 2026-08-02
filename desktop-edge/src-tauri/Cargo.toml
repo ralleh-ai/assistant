@@ -18,3 +18,10 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ralleh-audio-core = { path = "../../crates/ralleh-audio-core" }
+ralleh-os-capabilities = { path = "../../crates/ralleh-os-capabilities" }
+ralleh-policy-core = { path = "../../crates/ralleh-policy-core" }
+
+[features]
+default = []
+# Real OS clipboard (arboard). Default builds use the mock backend.
+clipboard-os = ["ralleh-os-capabilities/clipboard-os"]

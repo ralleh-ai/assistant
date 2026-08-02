@@ -1,0 +1,20 @@
+[package]
+name = "ralleh-os-capabilities"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop OS capability traits (clipboard/screen/hotkeys) with mocks; OS bindings feature-gated (T13 / HEADLESS.md)"
+
+[features]
+default = []
+# Real clipboard via arboard (WASAPI-free, but needs a display session).
+# Off by default so headless CI never touches the system clipboard.
+#   cargo test -p ralleh-os-capabilities --features clipboard-os
+clipboard-os = ["dep:arboard"]
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+arboard = { version = "3", optional = true }
+
+[dev-dependencies]

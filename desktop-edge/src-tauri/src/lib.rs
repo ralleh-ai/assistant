@@ -1,13 +1,16 @@
 //! Ralleh desktop edge — Tauri command surface (Phase 1).
 //!
 //! Keep IPC allowlisted and narrow (threat model T11). No raw FS/net
-//! exposure to the webview — settings I/O stays in Rust.
+//! exposure to the webview — settings I/O stays in Rust. OS capabilities
+//! go through policy + traits (T13), never raw clipboard APIs from JS.
 
+mod os_caps;
 mod settings;
 
 use serde::Serialize;
 use tauri::AppHandle;
 
+use os_caps::{run_clipboard_smoke, ClipboardSmokeResult};
 use ralleh_audio_core::{run_mock_voice_pipeline, MockVoicePipelineResult};
 use settings::{load_settings, save_settings, settings_path_display, EdgeSettings};
 
@@ -38,6 +41,12 @@ fn voice_smoke() -> Result<MockVoicePipelineResult, String> {
 }
 
 #[tauri::command]
+fn clipboard_smoke(app: AppHandle) -> Result<ClipboardSmokeResult, String> {
+    let settings = load_settings(&app)?;
+    run_clipboard_smoke(&settings)
+}
+
+#[tauri::command]
 fn load_edge_settings(app: AppHandle) -> Result<EdgeSettings, String> {
     load_settings(&app)
 }
@@ -58,6 +67,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             core_ping,
             voice_smoke,
+            clipboard_smoke,
             load_edge_settings,
             save_edge_settings,
             edge_settings_path

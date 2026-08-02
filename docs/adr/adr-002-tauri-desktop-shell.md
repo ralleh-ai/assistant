@@ -20,8 +20,8 @@ code with server-side Rust services.
 
 ## Implementation status
 
-**Scaffold + voice smoke + station log:** [`../../desktop-edge/`](../../desktop-edge/)
-Tauri v2 + React/TS; IPC `core_ping`, `voice_smoke` (mock pipeline via
-`ralleh-audio-core`), and edge settings load/save (app config dir only —
-no webview FS). Live mic and OS capabilities not wired yet.
+**Scaffold + voice smoke + station log + clipboard smoke:** [`../../desktop-edge/`](../../desktop-edge/)
+Tauri v2 + React/TS; IPC `core_ping`, `voice_smoke`, `clipboard_smoke` (policy +
+`ralleh-os-capabilities` mock by default), and edge settings load/save.
+Screen/hotkey OS backends not wired yet (traits only).
 Forward threats T11–T16; headless rules in [`../HEADLESS.md`](../HEADLESS.md).

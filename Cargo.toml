@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ralleh-policy-core",
     "crates/ralleh-audio-core",
+    "crates/ralleh-os-capabilities",
     "crates/ralleh-tool-gateway",
     "crates/ralleh-mcp-server",
     "crates/ralleh-ai-router",
