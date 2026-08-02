@@ -4,6 +4,7 @@
 //! exposure to the webview — settings I/O stays in Rust. OS capabilities
 //! go through policy + traits (T13), never raw clipboard/mic APIs from JS.
 
+mod assistant;
 mod mic;
 mod os_caps;
 mod presence;
@@ -17,10 +18,13 @@ use tauri::{AppHandle, Manager, State};
 
 use mic::{mic_feature_enabled, run_mic_smoke, MicSmokeResult};
 use os_caps::{run_clipboard_smoke, ClipboardSmokeResult};
+use assistant::{completion_request, AssistantState, ECHO_CAPABILITY};
 use presence::{EventListener, Presence};
 use presence_ipc::{Command as PresenceCommand, Event as PresenceEvent, PaletteId, PresenceMode, QualityTier};
 use settings::PresencePosition;
 use presence_mic::MicPump;
+use ralleh_ai_router::{CompletionOutcome, CompletionResponse};
+use ralleh_tool_gateway::ToolCallOutcome;
 use ralleh_audio_core::{run_mock_voice_pipeline, MockVoicePipelineResult};
 use settings::{load_settings, save_settings, settings_path_display, EdgeSettings};
 
@@ -329,6 +333,97 @@ fn presence_mic_start(
     })
 }
 
+// -----------------------------------------------------------------------------
+// Assistant commands (Phase 3 §3.2)
+//
+// `thinking` and `tool_use` come from real work sources — the router and the
+// tool gateway — rather than dev-panel toggles. Both handlers hold a
+// `Presence::ModeHold` for the duration of the async call so the mode
+// engagement matches the wall-clock time of the operation exactly, and pulse
+// `Error` on any Denied / ApprovalRequired / Failed outcome.
+// -----------------------------------------------------------------------------
+
+#[tauri::command]
+async fn assistant_think(
+    prompt: String,
+    app: AppHandle,
+    state: State<'_, AssistantState>,
+    presence: State<'_, Presence>,
+) -> Result<String, String> {
+    let settings = load_settings(&app)?;
+    let request = completion_request(
+        &settings.tenant_id,
+        &settings.device_id,
+        &settings.actor_id,
+        &prompt,
+    );
+    // `router` cloned out before the await so we do not hold the
+    // Tauri `State` guard longer than the async call. The `_hold`
+    // guard, on the other hand, deliberately lives to the end of
+    // scope: its `Drop` fires the mode-release even on early return
+    // via `?`, panic, or a task cancellation.
+    let router = state.router.clone();
+    let _hold = presence.hold_mode(PresenceMode::Thinking);
+
+    match router.route(&request).await {
+        CompletionOutcome::Succeeded(CompletionResponse { text, .. }) => Ok(text),
+        CompletionOutcome::Denied => {
+            presence.pulse_error();
+            Err("policy denied the completion request".into())
+        }
+        CompletionOutcome::ApprovalRequired => {
+            presence.pulse_error();
+            Err("completion requires human approval".into())
+        }
+        CompletionOutcome::Failed { backend, error } => {
+            presence.pulse_error();
+            Err(format!("completion failed via {backend}: {error}"))
+        }
+        CompletionOutcome::NoBackendConfigured => {
+            presence.pulse_error();
+            Err("no completion backend is configured on this shell".into())
+        }
+    }
+}
+
+#[tauri::command]
+fn assistant_tool_ping(
+    app: AppHandle,
+    state: State<'_, AssistantState>,
+    presence: State<'_, Presence>,
+) -> Result<String, String> {
+    let settings = load_settings(&app)?;
+    let gateway = state.gateway.clone();
+    // Synchronous dispatch — `ToolGateway::dispatch` is sync today,
+    // so no need to spawn or await. The hold is still an RAII guard
+    // for symmetry with `assistant_think`; drops at end of scope
+    // and on any early return via `?`.
+    let _hold = presence.hold_mode(PresenceMode::ToolUse);
+
+    let event = gateway.dispatch(
+        settings.tenant_id.clone(),
+        settings.device_id.clone(),
+        settings.actor_id.clone(),
+        ECHO_CAPABILITY.to_string(),
+        serde_json::json!({ "source": "assistant_tool_ping" }),
+    );
+    match event.outcome {
+        ToolCallOutcome::Succeeded { result_summary } => Ok(result_summary),
+        ToolCallOutcome::Denied
+        | ToolCallOutcome::ApprovalRequired
+        | ToolCallOutcome::ApprovalRejected
+        | ToolCallOutcome::Failed { .. }
+        | ToolCallOutcome::NoHandlerRegistered
+        | ToolCallOutcome::UnknownCapability => {
+            presence.pulse_error();
+            Err(format!(
+                "tool call ended in a non-success outcome: {:?}",
+                event.outcome
+            ))
+        }
+    }
+}
+
 #[tauri::command]
 fn presence_mic_stop(pump: State<'_, MicPumpState>) -> Result<PresenceMicStatus, String> {
     let mut guard = pump.lock().map_err(|e| e.to_string())?;
@@ -450,9 +545,11 @@ where
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mic_pump: MicPumpState = Mutex::new(None);
+    let assistant_state = AssistantState::with_defaults();
 
     tauri::Builder::default()
         .manage(mic_pump)
+        .manage(assistant_state)
         // Presence is spawned inside `setup` so the reverse-channel
         // listener can capture an `AppHandle` — we need one to load
         // and save `EdgeSettings` from the reader thread. Everything
@@ -485,6 +582,8 @@ pub fn run() {
             presence_mic_status,
             presence_mic_start,
             presence_mic_stop,
+            assistant_think,
+            assistant_tool_ping,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

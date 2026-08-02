@@ -1,9 +1,9 @@
 # Status — Last Validated Snapshot
 
 **As of:** 2026-08-02 (Phase 2 §1–§6 complete; Phase 3 §1 (VAD →
-Listening), §3.3 (`speaking` on TTS synthesis), and §3.5 (policy
-denials → `error`) landed — the presence now reflects real assistant
-outcomes rather than dev-panel toggles)
+Listening), §3.2 (router + tool gateway → `thinking` / `tool_use`),
+§3.3 (`speaking` on TTS synthesis), and §3.5 (policy denials → `error`)
+landed — every mode except `attention` now has a real work source)
 
 ## Build/test state
 

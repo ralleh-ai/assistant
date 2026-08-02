@@ -20,6 +20,13 @@ serde_json = "1"
 ralleh-audio-core = { path = "../../crates/ralleh-audio-core" }
 ralleh-os-capabilities = { path = "../../crates/ralleh-os-capabilities" }
 ralleh-policy-core = { path = "../../crates/ralleh-policy-core" }
+# Phase 3 §3.2 — real router + tool gateway inside the shell process,
+# so `thinking` and `tool_use` engage on real work rather than dev
+# panel toggles. `EchoBackend` / `EchoHandler` are the default
+# backends (shell owns nothing sensitive by default); real HTTP /
+# LLM backends will slot in behind these traits in Phase 4.
+ralleh-ai-router = { path = "../../crates/ralleh-ai-router" }
+ralleh-tool-gateway = { path = "../../crates/ralleh-tool-gateway" }
 # Wire types for the presence renderer child process (Phase 2 §3 —
 # docs/PRESENCE_INTEGRATION_PLAN.md, ADR-013). Same crate the presence
 # runtime consumes; keeping the two in lockstep is why it lives in the

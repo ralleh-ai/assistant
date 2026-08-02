@@ -155,6 +155,27 @@ export const PRESENCE_MODES: { id: PresenceMode; label: string }[] = [
   { id: "error", label: "Error" },
 ];
 
+/**
+ * Fires a completion through the shell-embedded `AiRouter` (Phase 3
+ * §3.2). `thinking` engages on entry, releases on outcome. Denied /
+ * ApprovalRequired / Failed additionally fire the error pulse and
+ * reject the promise with a human-readable message. `EchoBackend`
+ * is the default backend today — the response is `"echo: <prompt>"`.
+ */
+export function assistantThink(prompt: string): Promise<string> {
+  return invoke<string>("assistant_think", { prompt });
+}
+
+/**
+ * Dispatches a scaffold call through the shell-embedded
+ * `ToolGateway`. `tool_use` engages for the duration. Same
+ * pass/fail policy as `assistantThink` — a Denied / Failed outcome
+ * pulses `error` and rejects.
+ */
+export function assistantToolPing(): Promise<string> {
+  return invoke<string>("assistant_tool_ping");
+}
+
 export const PALETTES: { id: PaletteId; label: string }[] = [
   { id: "teal", label: "Teal" },
   { id: "lime", label: "Lime" },

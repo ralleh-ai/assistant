@@ -33,5 +33,5 @@ pub use fs_read_handler::{sandbox_root as fs_read_sandbox_root, FsReadTextError,
 pub use fs_write_handler::{sandbox_root as fs_write_sandbox_root, FsWriteTextError, FsWriteTextHandler};
 pub use http_fetch_handler::{HttpFetchError, HttpFetchHandler};
 pub use gateway::{AuditSink, ToolGateway};
-pub use handler::{ToolHandler, ToolInvocation, ToolResult};
+pub use handler::{AlwaysFailHandler, EchoHandler, ToolHandler, ToolInvocation, ToolResult};
 pub use registry::{ToolDefinition, ToolRegistry};

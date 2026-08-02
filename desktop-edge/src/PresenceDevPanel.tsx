@@ -13,6 +13,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+    assistantThink,
+    assistantToolPing,
     PRESENCE_MODES,
     presenceMicStart,
     presenceMicStatus,
@@ -153,6 +155,42 @@ export function PresenceDevPanel() {
         await presenceSetInteractive(next);
     }, [interactive]);
 
+    // Assistant scaffolding: fire real router / tool-gateway calls
+    // so `thinking` / `tool_use` engage on real work rather than a
+    // dev-panel mode toggle. `assistantError` surfaces failures next
+    // to the buttons so a denied policy or an offline backend
+    // becomes visible to the operator instead of only in the log.
+    const [assistantError, setAssistantError] = useState<string | null>(null);
+    const [thinking, setThinking] = useState(false);
+    const [toolBusy, setToolBusy] = useState(false);
+
+    const onThink = useCallback(async () => {
+        setAssistantError(null);
+        setThinking(true);
+        try {
+            // Hardcoded prompt is fine — this is a scaffold surface.
+            // A real prompt/reply UI arrives with the voice-smoke →
+            // router refactor (Phase 3 §3.3 follow-up).
+            await assistantThink("hello from the dev panel");
+        } catch (err) {
+            setAssistantError(String(err));
+        } finally {
+            setThinking(false);
+        }
+    }, []);
+
+    const onToolPing = useCallback(async () => {
+        setAssistantError(null);
+        setToolBusy(true);
+        try {
+            await assistantToolPing();
+        } catch (err) {
+            setAssistantError(String(err));
+        } finally {
+            setToolBusy(false);
+        }
+    }, []);
+
   const onPaletteChange = useCallback(async (id: PaletteId) => {
     setPalette(id);
     await presenceSetPalette(id);
@@ -257,6 +295,40 @@ export function PresenceDevPanel() {
             {micError && (
                 <p className="presence-dev-error" role="alert">
                     {micError}
+                </p>
+            )}
+
+            <div className="presence-dev-row presence-dev-secondary">
+                <button
+                    type="button"
+                    className={
+                        thinking
+                            ? "presence-dev-chip is-engaged"
+                            : "presence-dev-chip"
+                    }
+                    onClick={onThink}
+                    disabled={thinking}
+                    title="Fire an AiRouter completion; engages `thinking`"
+                >
+                    {thinking ? "Think ●" : "Think"}
+                </button>
+                <button
+                    type="button"
+                    className={
+                        toolBusy
+                            ? "presence-dev-chip is-engaged"
+                            : "presence-dev-chip"
+                    }
+                    onClick={onToolPing}
+                    disabled={toolBusy}
+                    title="Dispatch through ToolGateway; engages `tool_use`"
+                >
+                    {toolBusy ? "Tool call ●" : "Tool call"}
+                </button>
+            </div>
+            {assistantError && (
+                <p className="presence-dev-error" role="alert">
+                    {assistantError}
                 </p>
             )}
 

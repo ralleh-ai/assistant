@@ -115,9 +115,21 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
        Remaining sub-step of §3.1 is `idle` becoming a real
        "no assistant work in flight" signal rather than the mic-off
        default — needs the router integration below.
-    2. Wire `ralleh-ai-router` and `ralleh-tool-gateway` (or a local
-       stand-in) into the shell process so `thinking`/`tool_use` have
-       a source. Neither is embedded in `desktop-edge` today.
+    2. **Router + tool gateway embedded in the shell (2026-08-02).**
+       `desktop-edge/src-tauri/src/assistant.rs` owns an
+       `AiRouter` (default `EchoBackend`) and a `ToolGateway`
+       (default `EchoHandler` registered under
+       `assistant.tool.echo`). Two new Tauri commands —
+       `assistant_think` (async, hits the router) and
+       `assistant_tool_ping` (sync, hits the gateway) —
+       hold `PresenceMode::Thinking` / `ToolUse` for the wall-clock
+       duration of the call via `Presence::hold_mode` (RAII guard,
+       drop-safe across `.await` / panics / `?` early returns).
+       Denied / ApprovalRequired / Failed outcomes pulse `error` and
+       reject the promise. Dev panel gains "Think" and "Tool call"
+       chips. Real HTTP / LLM backends slot in behind
+       `CompletionBackend` in Phase 4; the mode-signal path does not
+       change.
     3. **`speaking` engagement wired to TTS (2026-08-02)** — the
        Tauri `voice_smoke` handler now fires
        `Presence::pulse_speaking(duration_ms)` on a successful

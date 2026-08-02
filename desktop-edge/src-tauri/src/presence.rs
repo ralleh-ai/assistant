@@ -46,6 +46,32 @@ use presence_ipc::{Command, Envelope, Event, EventEnvelope};
 /// consumer (Tauri, settings, logging) into its own signature.
 pub type EventListener = Box<dyn Fn(Event) + Send + 'static>;
 
+/// RAII guard returned by [`Presence::hold_mode`]. Engages a
+/// [`presence_ipc::PresenceMode`] on construction (via the caller)
+/// and releases it on drop. `Send` because `Sender<Envelope>` is,
+/// which is what makes it safe to hold across `.await` points inside
+/// Tauri async command handlers.
+pub struct ModeHold {
+    tx: Option<Sender<Envelope>>,
+    mode: presence_ipc::PresenceMode,
+}
+
+impl Drop for ModeHold {
+    fn drop(&mut self) {
+        let Some(tx) = self.tx.take() else {
+            return;
+        };
+        // Best-effort release. If the writer thread has since exited,
+        // the send fails silently — the runtime will lose the mode
+        // engagement on its next crossfade tick, which is the same
+        // failure mode every other command has on a dead pipe.
+        let _ = tx.send(Envelope::wrap(Command::SetMode {
+            mode: self.mode,
+            engaged: false,
+        }));
+    }
+}
+
 /// Environment variable that points at the `presence-runtime` binary.
 /// Unset means "presence disabled" — see the module docs.
 pub const BIN_ENV: &str = "RALLEH_PRESENCE_BIN";
@@ -216,6 +242,45 @@ impl Presence {
         self.pulse_mode(presence_ipc::PresenceMode::Speaking, hold);
     }
 
+    /// Engages `mode` and returns a guard that releases it on drop.
+    /// The sustained counterpart to `pulse_*` — used by the router
+    /// and tool-gateway wrappers where the visual must hold for the
+    /// full duration of an async operation (which could be
+    /// milliseconds for `EchoBackend` or many seconds for a real
+    /// LLM) rather than a fixed hold.
+    ///
+    /// RAII drop is what makes this safe across `.await` points and
+    /// early returns: even if the future panics or bails out with
+    /// `?`, the release fires. Re-engaging the same mode from a
+    /// nested call is idempotent on the runtime side, so nested
+    /// guards behave sensibly as long as their `Drop` order is right
+    /// — which Rust guarantees for scope-owned values.
+    ///
+    /// No-op on a disabled `Presence`: the returned guard's `Drop`
+    /// is inert. Callers do not need to check `is_enabled` first.
+    pub fn hold_mode(&self, mode: presence_ipc::PresenceMode) -> ModeHold {
+        let Some(tx) = &self.tx else {
+            return ModeHold { tx: None, mode };
+        };
+        if tx
+            .send(Envelope::wrap(Command::SetMode {
+                mode,
+                engaged: true,
+            }))
+            .is_err()
+        {
+            // Writer thread has exited — return an inert guard rather
+            // than one that will try to send a release into a dead
+            // channel. Result is the same either way (nothing happens
+            // on drop), but this keeps the branch obvious in profiling.
+            return ModeHold { tx: None, mode };
+        }
+        ModeHold {
+            tx: Some(tx.clone()),
+            mode,
+        }
+    }
+
     /// Shared implementation for the two `pulse_*` helpers above.
     /// Engage → sleep on a detached thread → release. Detached
     /// because the caller (a Tauri command handler) has no reason to
@@ -361,6 +426,52 @@ mod tests {
         // If any of the above blocked or panicked, this line does not
         // execute — the test failure would be a timeout or a stack
         // trace rather than an assertion.
+    }
+
+    #[test]
+    fn hold_mode_engages_on_construction_and_releases_on_drop() {
+        // Wire a Presence to an in-memory receiver so we can inspect
+        // exactly which envelopes the guard emits. `Sender<Envelope>`
+        // does not need the child process for this to work.
+        let (tx, rx) = mpsc::channel::<Envelope>();
+        let p = Presence {
+            tx: Some(tx),
+            child: Mutex::new(None),
+        };
+
+        {
+            let _hold = p.hold_mode(presence_ipc::PresenceMode::Thinking);
+            let engage = rx.recv().expect("engage envelope");
+            assert!(matches!(
+                engage.payload,
+                Command::SetMode {
+                    mode: presence_ipc::PresenceMode::Thinking,
+                    engaged: true,
+                }
+            ));
+        }
+
+        // Guard dropped at end of block — release must be next on the
+        // wire, with the same mode and `engaged: false`.
+        let release = rx.recv().expect("release envelope");
+        assert!(matches!(
+            release.payload,
+            Command::SetMode {
+                mode: presence_ipc::PresenceMode::Thinking,
+                engaged: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn hold_mode_on_disabled_presence_is_inert() {
+        // The Tauri command handlers use `hold_mode` unconditionally.
+        // Constructing and dropping the guard against a disabled
+        // `Presence` must be a no-op — no panic, no thread spawn, no
+        // send-to-nowhere.
+        let p = Presence::disabled();
+        let hold = p.hold_mode(presence_ipc::PresenceMode::Thinking);
+        drop(hold);
     }
 
     #[test]
