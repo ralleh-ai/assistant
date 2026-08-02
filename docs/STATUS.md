@@ -1,23 +1,24 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (Whisper CLI ggml e2e + Piper CLI TTS)
+**As of:** 2026-08-01 (headless-hardened audio: `mic` feature-gated)
 
 ## Build/test state
 
 ```
 cargo test --workspace → 130 passed, 2 ignored (CLI e2e)
-  ai-router 17 | audio-core 25 (+2 ignored) | mcp-server 21 | tool-gateway 39
-  policy 21 | audit-store 7
+  (CI=true verified; no cpal link in default features)
+cargo test -p ralleh-audio-core --features mic → 26 passed, 3 ignored
 ```
 
 ## Highlights
 
-- **`WhisperCliStt`** — real ggml e2e via whisper.cpp CLI (Windows-friendly;
-  in-process `whisper-rs` still blocked on MSVC bindgen).
-- **`PiperCliTts`** — real ONNX voice e2e via Piper CLI.
-- **Anthropic backend** + **Bearer auth (T1)** + mocks remain as before.
+- **Default audio is headless-safe** — `cpal` behind `--features mic`;
+  `try_open_default` soft-fails; live smoke `#[ignore]` + `RALLEH_LIVE_MIC`.
+- **Mock pipeline smoke** — VAD → MockStt → MockTts without a device.
+- **`WhisperCliStt` / `PiperCliTts`** — ignored real-model e2e (opt-in).
+- Anthropic backend + Bearer auth (T1) unchanged.
 
 ## Next up
 
-OIDC/device attestation; http-fetch private-IP harden; in-process whisper on
-Linux CI — see NEXT_STEPS.md.
+OIDC; http-fetch private-IP harden; Linux CI job notes — see NEXT_STEPS.md
+and HEADLESS.md.

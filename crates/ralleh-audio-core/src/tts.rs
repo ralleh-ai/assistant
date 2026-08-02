@@ -101,9 +101,14 @@ impl TextToSpeech for PiperCliTts {
         if text.trim().is_empty() {
             return Err(TtsError::EmptyText);
         }
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let out_wav = std::env::temp_dir().join(format!(
-            "ralleh-piper-{}.wav",
-            std::process::id()
+            "ralleh-piper-{}-{}.wav",
+            std::process::id(),
+            uniq
         ));
         let work_dir = self
             .cli_path

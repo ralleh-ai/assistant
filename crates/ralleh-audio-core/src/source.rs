@@ -28,8 +28,7 @@ impl AudioFrame {
 }
 
 /// Abstraction over "something that produces audio frames." Implemented by
-/// `MockAudioSource` today; a live microphone backend implements the same
-/// trait later with zero changes required in any consumer of this trait.
+/// `MockAudioSource` (always) and `CpalMicSource` (behind `--features mic`).
 pub trait AudioSource {
     /// Pull the next available frame, or `None` if the source is exhausted
     /// (mock) / no more frames are currently available (live, non-blocking

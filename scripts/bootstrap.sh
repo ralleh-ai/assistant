@@ -52,8 +52,9 @@ if command -v rustup >/dev/null 2>&1; then
   (cd "${REPO_ROOT}" && rustup show >/dev/null 2>&1) || true
 fi
 
-# 4. Build + test the full workspace. This is the single source of truth
-#    for "does this repo work on this machine right now."
+# 4. Build + test the full workspace. Default features are headless-safe
+#    (no mic / display / whisper.cpp). See docs/HEADLESS.md for desktop
+#    opt-in (--features mic, ignored STT/TTS e2e).
 log "Running full workspace test suite (cargo test --workspace)..."
 (cd "${REPO_ROOT}" && cargo test --workspace)
 

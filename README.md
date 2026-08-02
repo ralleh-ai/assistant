@@ -20,8 +20,9 @@ and audit events for privileged actions.
 - Rust (stable) via [rustup](https://rustup.rs) — this repo pins a toolchain
   via `rust-toolchain.toml`, so `rustup` will auto-install the correct version
   the first time you build.
-- No other system dependencies are required for the crates currently in this
-  workspace (audio I/O is mocked — see below).
+- No other system dependencies are required for **default** builds
+  (headless-safe: mocks only — see [`docs/HEADLESS.md`](docs/HEADLESS.md)).
+  Optional live mic needs `--features mic` (+ `libasound2-dev` on Linux).
 
 ## Quickstart (bulletproof pull-and-run)
 

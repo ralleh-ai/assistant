@@ -230,9 +230,14 @@ impl SpeechToText for WhisperCliStt {
             return Err(SttError::EmptyAudio);
         }
         let dir = std::env::temp_dir();
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let wav_path = dir.join(format!(
-            "ralleh-whisper-{}.wav",
-            std::process::id()
+            "ralleh-whisper-{}-{}.wav",
+            std::process::id(),
+            uniq
         ));
         crate::wav::write_pcm16_mono(&wav_path, samples, sample_rate_hz)
             .map_err(|e| SttError::Engine(e.to_string()))?;

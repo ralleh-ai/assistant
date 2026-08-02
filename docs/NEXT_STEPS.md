@@ -2,21 +2,18 @@
 
 ## Done recently
 
-- Config, durable approvals, http fetch, cpal, STT/TTS traits + mocks,
-  Anthropic Messages backend, Bearer token caller auth (T1),
-  **WhisperCliStt ggml e2e** (JFK sample), **PiperCliTts** e2e,
-  Phase 0 threat model.
+- Headless audio hardening (`mic` feature, soft-fail open, mock pipeline
+  smoke, `docs/HEADLESS.md`), Whisper/Piper CLI e2e, Anthropic + T1 auth.
 
 ## High priority
 
-1. **In-process whisper on Linux CI** — `--features whisper` +
-   `whisper_rs_e2e` where bindgen works; keep `WhisperCliStt` as Windows
-   fallback.
-2. **OIDC / device attestation** — replace shared-secret tokens when the
+1. **OIDC / device attestation** — replace shared-secret tokens when the
    control plane exists.
-3. Harden http-fetch (private-IP / DNS-rebinding).
-4. Optional native `piper-rs` / Kokoro behind a cargo feature (CLI path
-   already covers real-model validation).
+2. Harden http-fetch (private-IP / DNS-rebinding).
+3. Optional native `piper-rs` / in-process whisper on Linux CI (never on
+   default `cargo test --workspace`).
+4. When adding clipboard/screen/hotkeys: follow HEADLESS.md rule (trait +
+   mock + feature + ignored e2e).
 
 ## Medium priority
 
@@ -27,5 +24,5 @@
 ## Lower priority
 
 - NestJS control plane, Postgres, Temporal — Phase 2+.
-- Tauri/React shell — Phase 1.
+- Tauri/React shell — Phase 1 (needs display host).
 - MCP connectors — Phase 3.

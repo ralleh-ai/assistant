@@ -6,17 +6,19 @@ license.workspace = true
 
 [features]
 default = []
-# Native whisper.cpp via whisper-rs (ADR-003). Off by default: compiling
-# whisper.cpp needs cmake + a long first build, and runtime needs a ggml
-# model file. Enable with: cargo test -p ralleh-audio-core --features whisper
+# Live microphone via cpal (WASAPI/ALSA/CoreAudio). Off by default so
+# headless CI/dev never needs libasound / device access.
+#   cargo test -p ralleh-audio-core --features mic
+mic = ["dep:cpal"]
+# Native whisper.cpp via whisper-rs (ADR-003). Off by default.
 whisper = ["dep:whisper-rs"]
 
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
-cpal = "0.15"
-# 0.13: in-process whisper.cpp. On Windows MSVC, bindgen often fails
-# (opaque whisper_full_params); use WhisperCliStt + tools/whisper instead.
+cpal = { version = "0.15", optional = true }
+# 0.13: in-process whisper.cpp. On Windows MSVC, bindgen often fails;
+# use WhisperCliStt + tools/whisper instead.
 whisper-rs = { version = "0.13", optional = true }
 
 [dev-dependencies]

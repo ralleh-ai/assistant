@@ -97,19 +97,23 @@ who, from where, what capability, human confirmation needed?
 
 ## `ralleh-audio-core`
 
-**Purpose:** DEVELOPMENT.md §9 "Voice Pipeline" primitives — VAD, wake-word detection, audio source abstraction. This is the *only* crate in the workspace that has not yet been connected to anything real (no microphone capture, no STT/TTS bindings) — it currently operates purely on synthetic/mock audio frames to prove the state-machine logic.
+**Purpose:** DEVELOPMENT.md §9 "Voice Pipeline" primitives — VAD, wake-word
+detection, audio source abstraction, STT/TTS adapters.
 
 **Key types:**
-- `AudioSource` trait + `MockAudioSource` test double + `CpalMicSource` live mic (`cpal` default input).
-- `FrameAssembler` — pure PCM→`AudioFrame` chunking used by the mic source (unit-tested without hardware).
+- `AudioSource` trait + `MockAudioSource` test double; live
+  `CpalMicSource` behind `--features mic` (`cpal`).
+- `FrameAssembler` — pure PCM→`AudioFrame` chunking (always compiled;
+  unit-tested without hardware).
+- Headless pipeline smoke: mock frames → VAD → MockStt → MockTts.
 - VAD state machine: silence → maybe-speech → speech → maybe-silence → silence, with debouncing.
 - Wake-word detector: acoustic pattern matching against utterance bounds, with cooldown.
 
-**19 tests** cover VAD, wake-word, mock source, frame assembly, and
-`CpalMicSource::try_open_default` (returns `None` when no input device).
+`CpalMicSource::try_open_default` returns `None` when skipped/unavailable
+(see [`HEADLESS.md`](./HEADLESS.md)).
 
-Real STT (`whisper-rs`) / TTS bindings per DEVELOPMENT.md Phase 1 are
-not started. See [`NEXT_STEPS.md`](./NEXT_STEPS.md).
+STT/TTS: mocks always; Whisper/Piper CLI adapters with ignored e2e;
+in-process `whisper-rs` behind `--features whisper`.
 
 ## `ralleh-mcp-server`
 

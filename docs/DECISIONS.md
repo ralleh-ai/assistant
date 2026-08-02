@@ -167,17 +167,17 @@ fetch/search." Policy gating (`Allow` on `tool.http.fetch`) answers
 egress is allowed — same layering as fs sandbox roots. An empty allowlist
 fails closed at config load time rather than registering a no-op tool.
 
-## `cpal` mic source always compiled; open is best-effort
+## Live mic behind `mic` feature; default builds are headless-safe
 
-**Decision:** `CpalMicSource` is a first-class `AudioSource` in
-`ralleh-audio-core` (not feature-gated). `try_open_default()` returns
-`Ok(None)` when the host has no input device so headless CI stays green.
+**Decision:** `cpal` / `CpalMicSource` are gated on `--features mic` (off by
+default). `FrameAssembler` and mocks always compile. `try_open_default()`
+maps *any* open failure (no device, broken ALSA/Pulse, `CI` without
+`RALLEH_LIVE_MIC`, `RALLEH_SKIP_LIVE_AUDIO`) to `Ok(None)`. Live mic smoke
+is `#[ignore]` and requires `RALLEH_LIVE_MIC=1`.
 
-**Why:** the desktop transition environment can exercise real capture; the
-`AudioSource` trait boundary already meant VAD/wake-word needed no changes.
-Keeping `cpal` unconditional avoids a matrix of feature flags for a
-dependency that compiles cleanly on Windows/macOS/Linux. Hosts without a
-mic simply never construct the live source.
+**Why:** Returning development to a headless host must not need
+`libasound2-dev` or a working capture device. Desktop validation stays
+opt-in; see [`HEADLESS.md`](./HEADLESS.md).
 
 ## STT: trait + mock always; whisper-rs behind a feature; CLI fallback
 
@@ -204,5 +204,6 @@ In-crate `piper-rs` remains a follow-up.
 **Why:** Same escape-hatch pattern as Whisper CLI — validates the adapter
 surface and real-model I/O without pulling ONNX Runtime / espeak into every
 default build.
+
 
 

@@ -87,6 +87,11 @@ Relevant environment variables (all optional, all have sane defaults):
 - `RALLEH_API_TOKENS` — enable caller auth:
   `token:tenant:actor[:device];...` (see threat model T1).
 - `RALLEH_API_TOKENS_FILE` — JSON token file (preferred over inline env).
+## Live mic / desktop audio
+
+- Default builds **do not** link `cpal` — see [`HEADLESS.md`](./HEADLESS.md).
+- `RALLEH_LIVE_MIC=1` — run ignored live-mic smoke with `--features mic`.
+- `RALLEH_SKIP_LIVE_AUDIO` — force soft-skip of live open.
 - `WHISPER_MODEL_PATH` — ggml model path for ignored whisper e2e tests.
 - `WHISPER_CLI_PATH` — path to `whisper-cli` (see
   `scripts/download-whisper-cli.ps1`) for `WhisperCliStt` e2e.
