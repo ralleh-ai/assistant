@@ -65,10 +65,6 @@ impl CpalMicSource {
     }
 
     pub fn open_default_with_frame_ms(frame_ms: u32) -> Result<Self, CpalMicError> {
-        if should_skip_live_audio() {
-            return Err(CpalMicError::SkippedByEnv);
-        }
-
         let host = cpal::default_host();
         let device = host
             .default_input_device()
@@ -128,10 +124,13 @@ impl CpalMicSource {
         })
     }
 
-    /// Best-effort open for tests and optional capture: any failure (no
-    /// device, broken ALSA, CI skip) becomes `None` so headless suites
-    /// stay green. Use `open_default` when absence of a mic is an error.
+    /// Best-effort open for tests and optional capture: CI / skip-env and
+    /// any hardware failure become `None`. Use `open_default` in apps
+    /// (e.g. `mic-capture`) when a mic is required.
     pub fn try_open_default() -> Option<Self> {
+        if should_skip_live_audio() {
+            return None;
+        }
         Self::open_default().ok()
     }
 
@@ -217,8 +216,6 @@ mod tests {
             live_mic_requested(),
             "set RALLEH_LIVE_MIC=1 to run this smoke"
         );
-        // Bypass CI soft-skip for this intentional run.
-        std::env::remove_var("RALLEH_SKIP_LIVE_AUDIO");
         let src = CpalMicSource::open_default().expect("mic should open when live requested");
         assert!(src.sample_rate_hz() > 0);
     }

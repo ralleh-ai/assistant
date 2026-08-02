@@ -21,4 +21,9 @@ cpal = { version = "0.15", optional = true }
 # use WhisperCliStt + tools/whisper instead.
 whisper-rs = { version = "0.13", optional = true }
 
+[[bin]]
+name = "mic-capture"
+path = "src/bin/mic_capture.rs"
+required-features = ["mic"]
+
 [dev-dependencies]

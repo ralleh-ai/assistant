@@ -31,9 +31,15 @@ cargo test -p ralleh-audio-core --features mic
 RALLEH_LIVE_MIC=1 cargo test -p ralleh-audio-core --features mic -- --ignored live_mic
 ```
 
-- `try_open_default()` soft-fails (`Ok(None)`) on missing/broken devices,
+Interactive capture to WAV (level meter on stderr):
+
+```bash
+cargo run -p ralleh-audio-core --features mic --bin mic-capture -- --seconds 5 --out capture.wav
+```
+
+- `try_open_default()` soft-fails (`None`) on missing/broken devices,
   `RALLEH_SKIP_LIVE_AUDIO`, or `CI` without `RALLEH_LIVE_MIC=1`.
-- `open_default()` still returns hard errors for real desktop apps.
+- `open_default()` / `mic-capture` require a real mic (hard errors).
 
 ### Real STT / TTS models
 

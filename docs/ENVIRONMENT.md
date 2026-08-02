@@ -91,7 +91,10 @@ Relevant environment variables (all optional, all have sane defaults):
 
 - Default builds **do not** link `cpal` — see [`HEADLESS.md`](./HEADLESS.md).
 - `RALLEH_LIVE_MIC=1` — run ignored live-mic smoke with `--features mic`.
-- `RALLEH_SKIP_LIVE_AUDIO` — force soft-skip of live open.
+- `RALLEH_SKIP_LIVE_AUDIO` — force soft-skip of live open in tests
+  (`try_open_default`); `mic-capture` clears this if set.
+- Interactive capture:
+  `cargo run -p ralleh-audio-core --features mic --bin mic-capture -- --seconds 5 --out capture.wav`
 - `WHISPER_MODEL_PATH` — ggml model path for ignored whisper e2e tests.
 - `WHISPER_CLI_PATH` — path to `whisper-cli` (see
   `scripts/download-whisper-cli.ps1`) for `WhisperCliStt` e2e.

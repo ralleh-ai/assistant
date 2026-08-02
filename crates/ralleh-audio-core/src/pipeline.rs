@@ -3,33 +3,34 @@
 //! Proves the desktop audio path can be exercised without hardware so
 //! development can return to a headless host without losing coverage.
 
-use crate::source::{AudioSource, MockAudioSource};
-use crate::stt::{MockStt, SpeechToText};
-use crate::tts::{MockTts, TextToSpeech};
-use crate::vad::{VadConfig, VadState, VoiceActivityDetector};
-
-/// Collect PCM from frames while VAD reports speech (after confirm).
-fn collect_utterance(source: &mut dyn AudioSource, vad: &mut VoiceActivityDetector) -> Vec<f32> {
-    let mut pcm = Vec::new();
-    let mut in_speech = false;
-    while let Some(frame) = source.next_frame() {
-        let state = vad.process_frame(&frame);
-        match state {
-            VadState::Speech | VadState::MaybeSilence => {
-                in_speech = true;
-                pcm.extend_from_slice(&frame.samples);
-            }
-            VadState::Silence if in_speech => break,
-            VadState::MaybeSpeech => {}
-            VadState::Silence => {}
-        }
-    }
-    pcm
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::source::{AudioSource, MockAudioSource};
+    use crate::stt::{MockStt, SpeechToText};
+    use crate::tts::{MockTts, TextToSpeech};
+    use crate::vad::{VadConfig, VadState, VoiceActivityDetector};
+
+    /// Collect PCM from frames while VAD reports speech (after confirm).
+    fn collect_utterance(
+        source: &mut dyn AudioSource,
+        vad: &mut VoiceActivityDetector,
+    ) -> Vec<f32> {
+        let mut pcm = Vec::new();
+        let mut in_speech = false;
+        while let Some(frame) = source.next_frame() {
+            let state = vad.process_frame(&frame);
+            match state {
+                VadState::Speech | VadState::MaybeSilence => {
+                    in_speech = true;
+                    pcm.extend_from_slice(&frame.samples);
+                }
+                VadState::Silence if in_speech => break,
+                VadState::MaybeSpeech => {}
+                VadState::Silence => {}
+            }
+        }
+        pcm
+    }
 
     #[test]
     fn headless_mock_pipeline_vad_stt_tts() {
