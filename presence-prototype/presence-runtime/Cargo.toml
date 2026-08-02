@@ -21,6 +21,11 @@ dev = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 
 [dependencies]
 presence-core = { path = "../presence-core" }
+# presence-ipc lives in the *root* workspace. Depending on it by path
+# across workspaces is fine — cargo treats it as a normal path dep.
+presence-ipc = { path = "../../crates/presence-ipc" }
+serde_json = "1"
+
 winit = { workspace = true }
 wgpu = { workspace = true }
 pollster = { workspace = true }

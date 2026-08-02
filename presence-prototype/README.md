@@ -264,6 +264,38 @@ step alone runs for a couple of minutes.
 `set PRESENCE_LOG_FPS=1` to log the smoothed frame rate periodically when
 the debug panel is collapsed.
 
+## Driving the presence from another process (stdin transport)
+
+`presence-runtime` can accept a live stream of commands from stdin, so a
+shell (Tauri edge, a test harness, or a hand-fed PowerShell here-string)
+can drive the presence without touching the debug panel. Off by default —
+the debug harness needs stdin free for the terminal — set the opt-in and
+the runtime spawns a reader thread:
+
+```powershell
+$env:PRESENCE_STDIN_IPC = "1"
+scripts\presence-dev.cmd run --release
+```
+
+Then, from another process, write newline-delimited
+[`presence_ipc::Envelope`](../crates/presence-ipc/src/lib.rs) payloads to
+that runtime's stdin. One envelope per line:
+
+```json
+{"version":1,"payload":{"kind":"set_signals","intensity":0.7,"audio_level":0.35,"progress":0.0,"active_modes":["thinking"]}}
+{"version":1,"payload":{"kind":"set_mode","mode":"speaking","engaged":true}}
+{"version":1,"payload":{"kind":"set_palette","palette":"ember"}}
+```
+
+Semantics live in `presence-core`'s `SceneDirector::apply_command`
+(behind the `ipc` feature): `set_signals` treats `active_modes` as
+authoritative (modes not in the list are released), `set_mode` is a
+plain toggle. Envelopes whose `version` does not match this build's
+`presence_ipc::VERSION` are logged and dropped rather than executed.
+
+The reverse direction (presence → shell) is a Phase 4 concern —
+docs/PRESENCE_INTEGRATION_PLAN.md and ADR-013 for the design.
+
 ## Controls
 
 - **L** or the checkbox in the debug panel — toggle the `LoadingRing` entity.

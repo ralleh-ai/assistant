@@ -5,6 +5,7 @@
 //! crate's `README.md`.
 
 mod app;
+mod ipc_stdin;
 #[cfg(feature = "dev")]
 mod ui;
 

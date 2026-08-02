@@ -1,5 +1,8 @@
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
+
+use presence_ipc::Command;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -57,6 +60,10 @@ pub struct App {
     /// point at which one is safe is much easier for the user to judge than
     /// for an autoshift to.
     low_fps_seconds: f32,
+    /// Optional stdin transport (see [`crate::ipc_stdin`]). `None` when
+    /// `PRESENCE_STDIN_IPC` is not set to a truthy value — that is the
+    /// default and keeps the runtime a stand-alone dev harness.
+    ipc_commands: Option<Receiver<Command>>,
 }
 
 /// Smoothed FPS at or below this figure counts as under-budget.
@@ -85,10 +92,39 @@ impl App {
             log_fps: std::env::var_os("PRESENCE_LOG_FPS").is_some(),
             fps_log_frames: 0,
             low_fps_seconds: 0.0,
+            ipc_commands: crate::ipc_stdin::spawn_if_enabled(),
+        }
+    }
+
+    /// Drains everything the stdin transport has queued since the last
+    /// frame and forwards each command to the director. No-op when the
+    /// transport is disabled.
+    fn drain_pending_commands(&mut self) {
+        let Some(rx) = &self.ipc_commands else {
+            return;
+        };
+        for cmd in crate::ipc_stdin::drain(rx) {
+            self.director.apply_command(cmd);
+        }
+    }
+
+    /// If the shell has requested a palette change via ipc, apply it to
+    /// the renderer. Called once per frame after `drain_pending_commands`
+    /// so the update lands on the same frame the command arrived.
+    fn apply_pending_palette(&mut self) {
+        let Some(live) = &mut self.live else { return };
+        if let Some(id) = self.director.take_pending_palette() {
+            live.renderer.palette = id.palette();
         }
     }
 
     fn redraw(&mut self) {
+        // Apply anything the shell has sent since the last frame before we
+        // advance the simulation, so a `SetSignals` that arrives between
+        // frames influences *this* frame rather than trailing by one.
+        self.drain_pending_commands();
+        self.apply_pending_palette();
+
         let Some(live) = &mut self.live else { return };
 
         let now = Instant::now();

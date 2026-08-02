@@ -1885,6 +1885,8 @@ dependencies = [
  "log",
  "pollster",
  "presence-core",
+ "presence-ipc",
+ "serde_json",
  "wgpu",
  "winit",
 ]
