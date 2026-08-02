@@ -20,6 +20,12 @@ serde_json = "1"
 ralleh-audio-core = { path = "../../crates/ralleh-audio-core" }
 ralleh-os-capabilities = { path = "../../crates/ralleh-os-capabilities" }
 ralleh-policy-core = { path = "../../crates/ralleh-policy-core" }
+# Wire types for the presence renderer child process (Phase 2 §3 —
+# docs/PRESENCE_INTEGRATION_PLAN.md, ADR-013). Same crate the presence
+# runtime consumes; keeping the two in lockstep is why it lives in the
+# root workspace's `crates/`.
+presence-ipc = { path = "../../crates/presence-ipc" }
+log = "0.4"
 
 [features]
 default = ["mic"]

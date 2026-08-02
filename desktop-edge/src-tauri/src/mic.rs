@@ -97,8 +97,10 @@ mod tests {
 
     #[test]
     fn with_clearance_fails_cleanly_without_mic_feature() {
-        let mut settings = EdgeSettings::default();
-        settings.mic_acknowledged = true;
+        let settings = EdgeSettings {
+            mic_acknowledged: true,
+            ..EdgeSettings::default()
+        };
         let result = run_mic_smoke(&settings, 0.5);
         // Default edge build: no mic feature → clear rebuild message.
         // With mic feature under CI skip: also Err, never panic.
