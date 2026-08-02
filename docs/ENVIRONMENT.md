@@ -105,6 +105,8 @@ Relevant environment variables (all optional, all have sane defaults):
   (`try_open_default`); `mic-capture` clears this if set.
 - Interactive capture:
   `cargo run -p ralleh-audio-core --features mic --bin mic-capture -- --seconds 5 --out capture.wav`
+- Tauri desktop edge (needs MSVC env on Windows):
+  `scripts\tauri-dev.cmd` from the repo root (avoids PowerShell script policy).
 - `WHISPER_MODEL_PATH` — ggml model path for ignored whisper e2e tests.
 - `WHISPER_CLI_PATH` — path to `whisper-cli` (see
   `scripts/download-whisper-cli.ps1`) for `WhisperCliStt` e2e.
