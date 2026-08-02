@@ -8,6 +8,8 @@ members = [
     "crates/ralleh-ai-router",
     "crates/ralleh-audit-store",
 ]
+# Tauri edge app is its own Cargo project (needs WebView; not headless CI).
+exclude = ["desktop-edge/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

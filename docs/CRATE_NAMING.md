@@ -15,7 +15,8 @@ path deps for no runtime win.
 | `ai-router/` | `ralleh-ai-router` | Prefixed consistently |
 | `audit-core/` | `ralleh-audit-store` | “store” reflects JSONL persistence, not only ingestion |
 | `memory-core/` | *(not started)* | Phase 3 — keep plan name when introduced |
-| `desktop-edge/` | *(not started)* | Tauri app; out of `crates/` |
+| `desktop-edge/` | `desktop-edge/` (Tauri; not a workspace member) | Own Cargo.toml under `src-tauri/` |
+
 | `apps/control-plane/` (NestJS) | *(not started)* | Separate package / repo layout later |
 
 ## Rules going forward

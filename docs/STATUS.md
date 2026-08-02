@@ -1,20 +1,23 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (backlog: Tauri Phase 1 is next)
+**As of:** 2026-08-01 (Tauri Phase 1 scaffold)
 
 ## Build/test state
 
 ```
-cargo test --workspace → headless-safe default features
+cargo test --workspace → headless-safe (desktop-edge NOT in workspace)
+cd desktop-edge && npm install && npm run build   # UI
+cd desktop-edge && npm run tauri dev              # full app (desktop)
 ```
 
 ## Highlights
 
-- Rust spine validated (policy, gateway, mcp-server, ai-router, audio,
-  audit); http-fetch SSRF hardened; mic opt-in + `mic-capture`.
-- Docs: crate naming map; Tauri/NestJS threats T11–T22.
+- **`desktop-edge/`** — Tauri v2 + React/TS; product name **Ralleh**; IPC
+  command `core_ping` returns core status (T11-friendly allowlist).
+- Separate Cargo project under `desktop-edge/src-tauri` so default CI never
+  needs WebView2/GTK.
 
 ## Next up
 
-**Tauri v2 desktop shell** — scaffold `desktop-edge/`, then IPC + audio
-wiring. See [`NEXT_STEPS.md`](./NEXT_STEPS.md) (high-priority Tauri track).
+Path-dep `ralleh-audio-core` into the edge binary; settings UI — see
+NEXT_STEPS.md.

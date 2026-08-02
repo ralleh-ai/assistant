@@ -20,8 +20,7 @@ code with server-side Rust services.
 
 ## Implementation status
 
-Not started — **next implementation track** per
-[`../NEXT_STEPS.md`](../NEXT_STEPS.md). `ralleh-audio-core` is the voice
-logic that should sit behind this shell (VAD, wake-word, optional `mic`).
-Forward threats: [`../THREAT_MODEL.md`](../THREAT_MODEL.md) T11–T16.
-Headless rules for OS caps: [`../HEADLESS.md`](../HEADLESS.md).
+**Scaffold started** in [`../../desktop-edge/`](../../desktop-edge/):
+Tauri v2 + React/TS UI, `core_ping` IPC. Not yet wired to
+`ralleh-audio-core` or OS capabilities. Forward threats T11–T16;
+headless rules in [`../HEADLESS.md`](../HEADLESS.md).

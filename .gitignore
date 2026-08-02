@@ -2,3 +2,5 @@
 models/
 tools/
 *.wav
+desktop-edge/node_modules/
+desktop-edge/dist/

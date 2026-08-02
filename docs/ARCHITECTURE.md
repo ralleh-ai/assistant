@@ -28,8 +28,10 @@ in [`CRATE_NAMING.md`](./CRATE_NAMING.md). Short version:
 | `audit-core` | `ralleh-audit-store` |
 | `ralleh-core` | `ralleh-audio-core` (audio slice only so far) |
 
-Not yet started: `memory-core` (Phase 3), TypeScript/NestJS control plane,
-Tauri/React edge shell (`desktop-edge/`).
+Not yet started in the Rust workspace: `memory-core` (Phase 3).
+
+**Desktop shell:** [`desktop-edge/`](../desktop-edge/) (Tauri v2 + React) —
+separate Cargo project, not a workspace member. See ADR-002.
 
 ## `ralleh-policy-core`
 

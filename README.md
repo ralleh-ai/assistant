@@ -70,7 +70,8 @@ projects/ralleh/
 | `ralleh-mcp-server` | 🟢 validated | Thin Axum HTTP surface over the tool gateway. Registry + policy load from declarative `config/default.toml` (or `RALLEH_CONFIG`). Real runnable binary (`RALLEH_MCP_ADDR`), boots and serves `/healthz` + `POST /v1/tools/dispatch` + `POST /v1/completions`. Smoke-tested end-to-end as part of `scripts/bootstrap.sh`. |
 | `ralleh-ai-router` | 🟢 validated | Routes completion requests through a pluggable `CompletionBackend` trait, mirroring the tool gateway's design, and is now **policy-gated through `ralleh-policy-core`** the same way tool dispatch is — every request is evaluated (tenant/device/actor scoped) before the backend is ever invoked; denied/approval-required decisions short-circuit before touching the backend. Ships with a local `EchoBackend` for dev/testing (no real provider credentials required yet); real provider backends (OpenAI, Anthropic, local inference) are a follow-up. Exposed live over HTTP via `ralleh-mcp-server`'s `POST /v1/completions`. 7 tests in the router crate + 2 HTTP-level tests in mcp-server, including failure-path handling and a policy-denial-through-HTTP proof. |
 
-**Desktop shell (Tauri v2):** deferred by explicit user decision until the dev environment moves to a machine with a display and adequate memory headroom (this headless VPS OOM-killed `cargo install tauri-cli` even after webkit2gtk/gtk system deps were installed).
+**Desktop shell (Tauri v2):** scaffolded in `desktop-edge/` (Phase 1). Not
+part of `cargo test --workspace` — run with `cd desktop-edge && npm run tauri dev`.
 
 Each module gets its own `README.md` inside its crate directory documenting
 what's validated, what's stubbed, and what "done" means for that module before

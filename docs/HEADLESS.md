@@ -2,7 +2,9 @@
 
 Default `cargo test --workspace` is **headless-safe**: no microphone, no
 display, no Whisper/Piper binaries required. The same command runs in
-GitHub Actions (`.github/workflows/ci.yml`).
+GitHub Actions (`.github/workflows/ci.yml`). The Tauri app lives in
+`desktop-edge/` and is **excluded** from the Cargo workspace — run it
+separately with `npm run tauri dev` on a desktop host.
 
 ## What runs on a headless host
 
