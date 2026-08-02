@@ -225,10 +225,16 @@ the call duration, then releases; the status line and the visual
 both reflect that from the same tracker.
 
 Natural follow-ups on top of this surface:
-- Real completion backend behind `CompletionBackend`
-  (`AnthropicMessagesBackend` and `HttpCompletionBackend` already
-  exist in the router crate) — configuration flow is the open
-  question, not the wiring.
+- ~~Real completion backend behind `CompletionBackend`.~~
+  **landed (2026-08-02)** — `assistant.rs` reads
+  `RALLEH_COMPLETION_KIND` (`echo` / `anthropic` / `openai`) plus
+  `_BASE_URL` / `_MODEL` / `_API_KEY` at startup and constructs
+  the matching backend. Missing or misconfigured → falls back to
+  Echo with a named-var log line, so the shell always starts.
+  Env-var config for now: a user-facing settings-UI plate is a
+  separate design question about tenant / actor scoping that
+  shouldn't gate the backend swap. Seven unit tests pin the
+  selector's behavior on missing / partial / valid config.
 - Streaming replies — grows a `partial` state on `Conversation`
   and a `route_stream` variant on the router.
 - Persistence — first design decision is whether history lives

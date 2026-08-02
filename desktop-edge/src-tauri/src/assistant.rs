@@ -28,7 +28,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use ralleh_ai_router::{AiRouter, CompletionRequest, EchoBackend};
+use ralleh_ai_router::{
+    AiRouter, AnthropicMessagesBackend, CompletionBackend, CompletionRequest, EchoBackend,
+    HttpCompletionBackend,
+};
 use ralleh_policy_core::{PolicyEngine, PolicyRule, RuleEffect};
 use ralleh_tool_gateway::{
     EchoHandler, ToolDefinition, ToolGateway, ToolRegistry,
@@ -38,6 +41,36 @@ use ralleh_tool_gateway::{
 /// gateway. Real capabilities (fs.read.text, http.fetch, etc.) will
 /// land as separate registrations once their handlers are wired.
 pub const ECHO_CAPABILITY: &str = "assistant.tool.echo";
+
+/// Environment variables that configure the completion backend at
+/// shell startup. Kept as env vars (not `EdgeSettings`) for this
+/// landing because backend selection is operator/developer config,
+/// not user-facing wizard config — a per-tenant settings surface
+/// is a design question we haven't answered yet, and env vars
+/// slot in behind the existing `PRESENCE_*` /
+/// `RALLEH_SCAN_SWEEP_MS` pattern without gating the backend swap
+/// on that design.
+///
+/// - `RALLEH_COMPLETION_KIND` — `"echo"` (default) | `"anthropic"` |
+///   `"openai"` (OpenAI-compatible `/chat/completions` — works
+///   with OpenAI, Ollama, LM Studio, vLLM, and every clone).
+/// - `RALLEH_COMPLETION_BASE_URL` — API root. For `openai`, include
+///   the `/v1` suffix if the provider requires it; the backend
+///   appends `/chat/completions`. For `anthropic`, root only.
+/// - `RALLEH_COMPLETION_MODEL` — model identifier the backend
+///   sends in each request.
+/// - `RALLEH_COMPLETION_API_KEY` — optional for `openai` (local
+///   servers often accept unauthenticated calls), required for
+///   `anthropic`.
+///
+/// Missing / unrecognized `KIND` → `EchoBackend` with a log line.
+/// A misconfigured non-echo kind (e.g. anthropic without a key)
+/// also falls back to Echo with a warning, so the shell always
+/// starts.
+pub const COMPLETION_KIND_ENV: &str = "RALLEH_COMPLETION_KIND";
+pub const COMPLETION_BASE_URL_ENV: &str = "RALLEH_COMPLETION_BASE_URL";
+pub const COMPLETION_MODEL_ENV: &str = "RALLEH_COMPLETION_MODEL";
+pub const COMPLETION_API_KEY_ENV: &str = "RALLEH_COMPLETION_API_KEY";
 
 /// Bundle of Ralleh subsystems the assistant flows through. Cloned
 /// aggressively so async Tauri command handlers can move the pieces
@@ -76,11 +109,13 @@ impl Drop for WorkGuard {
 }
 
 impl AssistantState {
-    /// Construct with dev defaults: `EchoBackend`, echo tool handler,
-    /// permissive policy. Called once from Tauri's `.setup()` and
-    /// installed as managed state.
+    /// Construct with dev defaults. Backend is selected by the
+    /// `RALLEH_COMPLETION_*` env vars (see the constants above);
+    /// tool gateway is always the scaffold `EchoHandler` under a
+    /// permissive policy for now. Called once from Tauri's
+    /// `.setup()` and installed as managed state.
     pub fn with_defaults() -> Self {
-        let router = AiRouter::new(Box::new(EchoBackend));
+        let router = AiRouter::new(select_backend_from_env());
 
         let mut registry = ToolRegistry::new();
         registry.register(
@@ -156,6 +191,89 @@ impl AssistantState {
     pub fn in_flight_handle(&self) -> Arc<AtomicUsize> {
         self.in_flight.clone()
     }
+}
+
+/// Reads the four `RALLEH_COMPLETION_*` env vars and returns the
+/// appropriate `CompletionBackend`. Falls back to `EchoBackend`
+/// (with a log line at the appropriate level) on:
+///   - missing / empty / unrecognized `KIND`
+///   - missing `BASE_URL` for a non-echo kind
+///   - missing `MODEL` for a non-echo kind
+///   - `anthropic` kind without an `API_KEY`
+///
+/// The fallback is deliberate: a misconfigured completion backend
+/// must not stop the shell from starting. Every log line names the
+/// exact env var responsible so operators can fix the config
+/// without reading source.
+fn select_backend_from_env() -> Box<dyn CompletionBackend> {
+    let kind = std::env::var(COMPLETION_KIND_ENV)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match kind.as_str() {
+        "" | "echo" => {
+            log::info!(
+                "assistant: completion backend = Echo (set {COMPLETION_KIND_ENV} to `anthropic` or `openai` for a real backend)"
+            );
+            Box::new(EchoBackend)
+        }
+        "anthropic" => build_anthropic().unwrap_or_else(|reason| {
+            log::warn!("assistant: falling back to Echo — {reason}");
+            Box::new(EchoBackend)
+        }),
+        "openai" => build_openai_compatible().unwrap_or_else(|reason| {
+            log::warn!("assistant: falling back to Echo — {reason}");
+            Box::new(EchoBackend)
+        }),
+        other => {
+            log::warn!(
+                "assistant: unknown {COMPLETION_KIND_ENV}=`{other}` — falling back to Echo"
+            );
+            Box::new(EchoBackend)
+        }
+    }
+}
+
+fn build_anthropic() -> Result<Box<dyn CompletionBackend>, String> {
+    let base_url = required_env(COMPLETION_BASE_URL_ENV)?;
+    let model = required_env(COMPLETION_MODEL_ENV)?;
+    let api_key = required_env(COMPLETION_API_KEY_ENV)?;
+    log::info!(
+        "assistant: completion backend = Anthropic ({model} @ {base_url})"
+    );
+    Ok(Box::new(AnthropicMessagesBackend::new(
+        "anthropic",
+        base_url,
+        model,
+        api_key,
+    )))
+}
+
+fn build_openai_compatible() -> Result<Box<dyn CompletionBackend>, String> {
+    let base_url = required_env(COMPLETION_BASE_URL_ENV)?;
+    let model = required_env(COMPLETION_MODEL_ENV)?;
+    // Optional for OpenAI-compatible: local Ollama / LM Studio /
+    // vLLM don't need one, and `HttpCompletionBackend` skips the
+    // `Authorization` header when `api_key` is `None`.
+    let api_key = std::env::var(COMPLETION_API_KEY_ENV)
+        .ok()
+        .filter(|s| !s.is_empty());
+    log::info!(
+        "assistant: completion backend = OpenAI-compatible ({model} @ {base_url}, api_key={})",
+        if api_key.is_some() { "present" } else { "none" }
+    );
+    Ok(Box::new(HttpCompletionBackend::new(
+        "openai-compatible",
+        base_url,
+        model,
+        api_key,
+    )))
+}
+
+fn required_env(name: &str) -> Result<String, String> {
+    std::env::var(name)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("{name} is unset or empty"))
 }
 
 /// Helper: build a `CompletionRequest` from the shell's identity
@@ -236,6 +354,105 @@ mod tests {
         let handle = state.in_flight_handle();
         let _guard = state.begin_work();
         assert_eq!(handle.load(std::sync::atomic::Ordering::Acquire), 1);
+    }
+
+    /// Guard rail: env-var tests set process globals and cannot
+    /// run in parallel without stepping on each other. Every test
+    /// in this block that touches the completion env vars grabs
+    /// this lock first. `Mutex<()>` rather than a serial crate to
+    /// avoid a new dependency for four tests.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn clear_completion_env() {
+        for name in [
+            COMPLETION_KIND_ENV,
+            COMPLETION_BASE_URL_ENV,
+            COMPLETION_MODEL_ENV,
+            COMPLETION_API_KEY_ENV,
+        ] {
+            std::env::remove_var(name);
+        }
+    }
+
+    /// `EchoBackend::name()` is the stable observable string that
+    /// distinguishes it from a real backend. Kept in one constant
+    /// here so a rename in `ralleh-ai-router` produces one obvious
+    /// failure rather than four opaque ones.
+    const ECHO_NAME: &str = "local-echo";
+
+    #[test]
+    fn missing_env_selects_echo_backend() {
+        let _lock = env_lock();
+        clear_completion_env();
+        assert_eq!(select_backend_from_env().name(), ECHO_NAME);
+    }
+
+    #[test]
+    fn explicit_echo_kind_selects_echo_backend() {
+        let _lock = env_lock();
+        clear_completion_env();
+        std::env::set_var(COMPLETION_KIND_ENV, "echo");
+        assert_eq!(select_backend_from_env().name(), ECHO_NAME);
+    }
+
+    #[test]
+    fn unknown_kind_falls_back_to_echo() {
+        let _lock = env_lock();
+        clear_completion_env();
+        std::env::set_var(COMPLETION_KIND_ENV, "made-up-provider");
+        assert_eq!(select_backend_from_env().name(), ECHO_NAME);
+    }
+
+    #[test]
+    fn anthropic_without_api_key_falls_back_to_echo() {
+        let _lock = env_lock();
+        clear_completion_env();
+        std::env::set_var(COMPLETION_KIND_ENV, "anthropic");
+        std::env::set_var(COMPLETION_BASE_URL_ENV, "https://api.anthropic.com");
+        std::env::set_var(COMPLETION_MODEL_ENV, "claude-3-5-sonnet-latest");
+        assert_eq!(select_backend_from_env().name(), ECHO_NAME);
+    }
+
+    #[test]
+    fn anthropic_with_full_config_selects_anthropic() {
+        let _lock = env_lock();
+        clear_completion_env();
+        std::env::set_var(COMPLETION_KIND_ENV, "anthropic");
+        std::env::set_var(COMPLETION_BASE_URL_ENV, "https://api.anthropic.com");
+        std::env::set_var(COMPLETION_MODEL_ENV, "claude-3-5-sonnet-latest");
+        std::env::set_var(COMPLETION_API_KEY_ENV, "sk-ant-fake");
+        // The Anthropic backend is constructed with `name = "anthropic"`
+        // in `build_anthropic`, and `CompletionBackend::name` returns
+        // that. This is the observable pin.
+        assert_eq!(select_backend_from_env().name(), "anthropic");
+        clear_completion_env();
+    }
+
+    #[test]
+    fn openai_kind_without_api_key_still_selects_openai() {
+        // Unlike anthropic: local OpenAI-compatible servers
+        // (Ollama, LM Studio, vLLM) don't need an API key, so a
+        // missing one must NOT fall back to Echo.
+        let _lock = env_lock();
+        clear_completion_env();
+        std::env::set_var(COMPLETION_KIND_ENV, "openai");
+        std::env::set_var(COMPLETION_BASE_URL_ENV, "http://127.0.0.1:11434/v1");
+        std::env::set_var(COMPLETION_MODEL_ENV, "llama3.2:latest");
+        assert_eq!(select_backend_from_env().name(), "openai-compatible");
+        clear_completion_env();
+    }
+
+    #[test]
+    fn openai_kind_missing_base_url_falls_back_to_echo() {
+        let _lock = env_lock();
+        clear_completion_env();
+        std::env::set_var(COMPLETION_KIND_ENV, "openai");
+        std::env::set_var(COMPLETION_MODEL_ENV, "gpt-4o");
+        assert_eq!(select_backend_from_env().name(), ECHO_NAME);
+        clear_completion_env();
     }
 
     #[test]

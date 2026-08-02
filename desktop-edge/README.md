@@ -46,6 +46,22 @@ CLI/tests — not on the core home screen.
   it; a minimum of 5000 ms is enforced. The sweep only fires while
   `AssistantState::is_idle()` is true, so it never competes with
   real thinking / tool-use / speaking activity.
+- `RALLEH_COMPLETION_KIND` — completion backend selector: `echo`
+  (default), `anthropic`, or `openai` (OpenAI-compatible
+  `/chat/completions` — OpenAI itself, Ollama, LM Studio, vLLM,
+  etc.). Missing or unrecognized falls back to Echo with a log
+  line.
+- `RALLEH_COMPLETION_BASE_URL` — API root. For `openai`, include
+  the `/v1` suffix if the provider requires it (the backend
+  appends `/chat/completions`). For `anthropic`, root only
+  (backend appends `/v1/messages`).
+- `RALLEH_COMPLETION_MODEL` — model identifier the backend sends
+  in each request.
+- `RALLEH_COMPLETION_API_KEY` — optional for `openai` (local
+  servers often accept unauthenticated calls), required for
+  `anthropic`. A misconfigured non-echo kind (e.g. anthropic
+  without a key) falls back to Echo with a warning; the shell
+  always starts.
 
 ## Layout
 
