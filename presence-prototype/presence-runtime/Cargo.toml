@@ -10,11 +10,14 @@ description = "Point Cloud Presence — winit + wgpu runtime that hosts `presenc
 name = "presence-runtime"
 path = "src/main.rs"
 
-# NOTE: the debug overlay is currently unconditional. A `dev` feature gate that
-# lets a shipping build strip egui out is the next follow-up (see Phase 2 §1
-# of docs/PRESENCE_INTEGRATION_PLAN.md — "The dev debug panel becomes a `dev`
-# feature on the runtime"). Kept out of this first split so the behavior is
-# byte-for-byte the same as the pre-split prototype.
+[features]
+# The `dev` feature carries the egui debug overlay + its window hooks. On by
+# default while `presence-prototype` is the primary way we exercise the
+# library; a shipping build (Phase 3) uses `--no-default-features` to strip
+# egui and its ~30 transitive crates out of the runtime. See Phase 2 §1 of
+# docs/PRESENCE_INTEGRATION_PLAN.md.
+default = ["dev"]
+dev = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 
 [dependencies]
 presence-core = { path = "../presence-core" }
@@ -23,6 +26,7 @@ wgpu = { workspace = true }
 pollster = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
-egui = { workspace = true }
-egui-wgpu = { workspace = true }
-egui-winit = { workspace = true }
+
+egui = { workspace = true, optional = true }
+egui-wgpu = { workspace = true, optional = true }
+egui-winit = { workspace = true, optional = true }

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use egui_wgpu::ScreenDescriptor;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -10,8 +9,13 @@ use winit::window::{Window, WindowId};
 
 use presence_core::render::Renderer;
 use presence_core::scene::mode::PresenceMode;
-use presence_core::scene::{SceneDirector, SceneRegistry};
+use presence_core::scene::SceneDirector;
 
+#[cfg(feature = "dev")]
+use presence_core::scene::SceneRegistry;
+#[cfg(feature = "dev")]
+use egui_wgpu::ScreenDescriptor;
+#[cfg(feature = "dev")]
 use crate::ui::{EguiLayer, PanelState};
 
 /// Simulation runs on a fixed step so motion timing is identical at any
@@ -26,12 +30,17 @@ const MAX_SIM_STEPS_PER_FRAME: u32 = 4;
 struct Live {
     window: Arc<Window>,
     renderer: Renderer,
+    #[cfg(feature = "dev")]
     ui: EguiLayer,
 }
 
 pub struct App {
     live: Option<Live>,
     director: SceneDirector,
+    /// Only read by the debug panel today, so it lives with the `dev`
+    /// feature. When the shell owns a real registry (Phase 2 §2/§3) this
+    /// will move into `presence-core`'s public surface.
+    #[cfg(feature = "dev")]
     registry: SceneRegistry,
     last_frame: Instant,
     sim_accumulator: f32,
@@ -68,6 +77,7 @@ impl App {
         Self {
             live: None,
             director: SceneDirector::new(),
+            #[cfg(feature = "dev")]
             registry: SceneRegistry::with_builtin_scenes(),
             last_frame: Instant::now(),
             sim_accumulator: 0.0,
@@ -143,7 +153,8 @@ impl App {
             .map(|e| (e.particles.as_slice(), e.presence))
             .collect();
 
-        let frame = match live.renderer.begin_frame(&entity_particles) {
+        #[allow(unused_mut)]
+        let mut frame = match live.renderer.begin_frame(&entity_particles) {
             Ok(frame) => frame,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 let size = live.window.inner_size();
@@ -160,30 +171,33 @@ impl App {
             }
         };
 
-        let screen_descriptor = ScreenDescriptor {
-            size_in_pixels: [
-                live.renderer.surface_config.width,
-                live.renderer.surface_config.height,
-            ],
-            pixels_per_point: live.window.scale_factor() as f32,
-        };
-
-        let mut frame = frame;
-        live.ui.draw(
-            &live.window,
-            &live.renderer.device,
-            &live.renderer.queue,
-            &mut frame,
-            &screen_descriptor,
-            &mut PanelState {
-                director: &mut self.director,
-                registry: &self.registry,
-                material: &mut live.renderer.material,
-                post: &mut live.renderer.post.settings,
-                palette: &mut live.renderer.palette,
-                fps: self.fps,
-            },
-        );
+        // Debug overlay is a `dev` feature — compiled out of shipping builds
+        // so the runtime does not pull `egui` or its transitive graph.
+        #[cfg(feature = "dev")]
+        {
+            let screen_descriptor = ScreenDescriptor {
+                size_in_pixels: [
+                    live.renderer.surface_config.width,
+                    live.renderer.surface_config.height,
+                ],
+                pixels_per_point: live.window.scale_factor() as f32,
+            };
+            live.ui.draw(
+                &live.window,
+                &live.renderer.device,
+                &live.renderer.queue,
+                &mut frame,
+                &screen_descriptor,
+                &mut PanelState {
+                    director: &mut self.director,
+                    registry: &self.registry,
+                    material: &mut live.renderer.material,
+                    post: &mut live.renderer.post.settings,
+                    palette: &mut live.renderer.palette,
+                    fps: self.fps,
+                },
+            );
+        }
 
         frame.finish(&live.renderer.queue);
         live.window.request_redraw();
@@ -244,6 +258,7 @@ impl ApplicationHandler for App {
         );
 
         let renderer = pollster::block_on(Renderer::new(window.clone()));
+        #[cfg(feature = "dev")]
         let ui = EguiLayer::new(&renderer.device, renderer.surface_config.format, &window);
 
         window.request_redraw();
@@ -251,6 +266,7 @@ impl ApplicationHandler for App {
         self.live = Some(Live {
             window,
             renderer,
+            #[cfg(feature = "dev")]
             ui,
         });
     }
@@ -261,6 +277,10 @@ impl ApplicationHandler for App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        // Without the `dev` feature the overlay does not exist, so no window
+        // event is ever consumed by UI and the whole check collapses to
+        // `false` at compile time.
+        #[cfg(feature = "dev")]
         let consumed_by_ui = if let Some(live) = &mut self.live {
             if live.window.id() != window_id {
                 false
@@ -270,6 +290,10 @@ impl ApplicationHandler for App {
         } else {
             false
         };
+        #[cfg(not(feature = "dev"))]
+        let consumed_by_ui = false;
+        #[cfg(not(feature = "dev"))]
+        let _ = window_id;
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),

@@ -5,6 +5,7 @@
 //! crate's `README.md`.
 
 mod app;
+#[cfg(feature = "dev")]
 mod ui;
 
 use winit::event_loop::{ControlFlow, EventLoop};
