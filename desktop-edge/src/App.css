@@ -302,6 +302,85 @@ body {
   opacity: 0.5;
 }
 
+/* —— Presence dev panel ——
+ * Rendered only when the Tauri side reports the presence runtime is
+ * spawned (RALLEH_PRESENCE_BIN set at shell start). Styled to sit
+ * alongside `.core-identity` as another quiet monospace band, not to
+ * compete with `.core-headline` for attention — this is scaffolding
+ * that goes away once real signals drive the presence.
+ */
+.presence-dev {
+  margin-top: 1.5rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.presence-dev-heading {
+  margin: 0;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(215, 228, 223, 0.55);
+}
+
+.presence-dev-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.presence-dev-secondary {
+  gap: 0.4rem 0.6rem;
+}
+
+.presence-dev-palette {
+  gap: 0.4rem 0.55rem;
+}
+
+.presence-dev-label {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: rgba(215, 228, 223, 0.45);
+  margin-right: 0.25rem;
+}
+
+.presence-dev-chip {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: rgba(215, 228, 223, 0.7);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.03em;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 160ms ease, border-color 160ms ease,
+    background 160ms ease;
+}
+
+.presence-dev-chip:hover {
+  color: var(--mist);
+  border-color: rgba(31, 138, 122, 0.55);
+}
+
+.presence-dev-chip:focus-visible {
+  outline: 1px solid var(--teal);
+  outline-offset: 3px;
+}
+
+.presence-dev-chip.is-engaged {
+  color: var(--foam);
+  background: rgba(31, 138, 122, 0.28);
+  border-color: rgba(31, 138, 122, 0.75);
+}
+
 /* —— Settings —— */
 
 .setup {

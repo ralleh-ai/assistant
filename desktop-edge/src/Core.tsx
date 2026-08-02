@@ -1,4 +1,7 @@
+import { useEffect, useState } from "react";
 import type { EdgeSettings } from "./settings";
+import { presenceStatus } from "./presence";
+import { PresenceDevPanel } from "./PresenceDevPanel";
 
 type Props = {
   settings: EdgeSettings;
@@ -27,6 +30,22 @@ function GearIcon() {
 export function Core({ settings, onOpenSettings }: Props) {
   const styleLabel =
     settings.voiceStyle.charAt(0).toUpperCase() + settings.voiceStyle.slice(1);
+
+  // Presence dev panel: only rendered when the Tauri side reports the
+  // runtime is spawned. On a machine without `RALLEH_PRESENCE_BIN` this
+  // stays `false` and the panel never mounts, so the shipping Core view
+  // is unchanged. The check is a single Tauri round-trip on mount —
+  // cheap and inert once resolved.
+  const [presenceEnabled, setPresenceEnabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    presenceStatus().then((s) => {
+      if (!cancelled) setPresenceEnabled(s.enabled);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <section className="core" aria-label="Ralleh edge">
@@ -61,6 +80,8 @@ export function Core({ settings, onOpenSettings }: Props) {
           </span>
           <span>{styleLabel}</span>
         </p>
+
+        {presenceEnabled && <PresenceDevPanel />}
       </div>
     </section>
   );
