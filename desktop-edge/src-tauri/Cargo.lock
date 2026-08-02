@@ -542,6 +542,7 @@ dependencies = [
 name = "desktop-edge"
 version = "0.1.0"
 dependencies = [
+ "ralleh-audio-core",
  "serde",
  "serde_json",
  "tauri",
@@ -2296,6 +2297,14 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "ralleh-audio-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "raw-window-handle"

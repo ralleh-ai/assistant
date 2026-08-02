@@ -1,23 +1,20 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (Tauri Phase 1 scaffold)
+**As of:** 2026-08-01 (Tauri voice_smoke + audio-core path dep)
 
 ## Build/test state
 
 ```
-cargo test --workspace → headless-safe (desktop-edge NOT in workspace)
-cd desktop-edge && npm install && npm run build   # UI
-cd desktop-edge && npm run tauri dev              # full app (desktop)
+cargo test --workspace → headless-safe
+desktop-edge: path-dep ralleh-audio-core; IPC core_ping + voice_smoke
 ```
 
 ## Highlights
 
-- **`desktop-edge/`** — Tauri v2 + React/TS; product name **Ralleh**; IPC
-  command `core_ping` returns core status (T11-friendly allowlist).
-- Separate Cargo project under `desktop-edge/src-tauri` so default CI never
-  needs WebView2/GTK.
+- **`voice_smoke`** — UI invokes mock mic → VAD → MockStt → MockTts via
+  `ralleh_audio_core::run_mock_voice_pipeline`.
+- `scripts/tauri-dev.cmd` for MSVC + npm on Windows.
 
 ## Next up
 
-Path-dep `ralleh-audio-core` into the edge binary; settings UI — see
-NEXT_STEPS.md.
+Settings / onboarding UI in `desktop-edge` — see NEXT_STEPS.md.

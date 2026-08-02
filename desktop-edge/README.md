@@ -47,7 +47,8 @@ If you get `LNK1104: cannot open file 'msvcrt.lib'` or missing `excpt.h`, you
 started a normal shell without the VS C++ environment — use
 `./scripts/tauri-dev.ps1` or “Developer PowerShell for VS”.
 
-UI: **Ping Rust core** → `core_ping` IPC (threat model T11 allowlisted command).
+UI: **Ping Rust core** (`core_ping`) and **Voice smoke (mock)**
+(`voice_smoke` → `ralleh-audio-core` mock VAD/STT/TTS).
 
 ## Layout
 

@@ -22,6 +22,7 @@ mod wav;
 mod cpal_source;
 
 pub use frame::FrameAssembler;
+pub use pipeline::{run_mock_voice_pipeline, MockVoicePipelineResult};
 pub use source::{AudioFrame, AudioSource, MockAudioSource};
 pub use stt::{MockStt, SpeechToText, SttError, Transcript, WhisperCliStt};
 #[cfg(feature = "whisper")]

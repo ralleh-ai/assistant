@@ -20,7 +20,7 @@ code with server-side Rust services.
 
 ## Implementation status
 
-**Scaffold started** in [`../../desktop-edge/`](../../desktop-edge/):
-Tauri v2 + React/TS UI, `core_ping` IPC. Not yet wired to
-`ralleh-audio-core` or OS capabilities. Forward threats T11–T16;
-headless rules in [`../HEADLESS.md`](../HEADLESS.md).
+**Scaffold + voice smoke:** [`../../desktop-edge/`](../../desktop-edge/)
+Tauri v2 + React/TS; IPC `core_ping` and `voice_smoke` (mock pipeline via
+`ralleh-audio-core`). Live mic and OS capabilities not wired yet.
+Forward threats T11–T16; headless rules in [`../HEADLESS.md`](../HEADLESS.md).
