@@ -1,7 +1,8 @@
 # Headless vs Desktop Development
 
 Default `cargo test --workspace` is **headless-safe**: no microphone, no
-display, no Whisper/Piper binaries required.
+display, no Whisper/Piper binaries required. The same command runs in
+GitHub Actions (`.github/workflows/ci.yml`).
 
 ## What runs on a headless host
 

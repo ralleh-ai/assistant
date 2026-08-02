@@ -2,8 +2,8 @@
 
 ## Done recently
 
-- Http-fetch private-IP / DNS-rebinding guards (T3), mic-capture binary,
-  headless audio hardening, Whisper/Piper CLI e2e, Anthropic + T1 auth.
+- Commit `Cargo.lock` + headless GitHub Actions CI, http-fetch SSRF guards
+  (T3), mic-capture, headless audio, Whisper/Piper CLI e2e, Anthropic + T1.
 
 ## High priority
 
@@ -17,9 +17,8 @@
 ## Medium priority
 
 4. Reconcile crate naming with DEVELOPMENT.md §16.
-5. Commit `Cargo.lock`.
-6. Expand threat model for Tauri / NestJS.
-7. Optional config flag to permit hostname→private resolution for
+5. Expand threat model for Tauri / NestJS.
+6. Optional config flag to permit hostname→private resolution for
    intentional internal APIs (today: allowlist the IP literal).
 
 ## Lower priority

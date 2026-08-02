@@ -176,6 +176,16 @@ egress is allowed — same layering as fs sandbox roots. An empty allowlist
 fails closed at config load time rather than registering a no-op tool.
 
 
+## Commit `Cargo.lock` for reproducible app builds
+
+**Decision:** Track `Cargo.lock` in git (removed from `.gitignore`). This
+workspace ships a runnable binary (`ralleh-mcp-server`) and CI; a lockfile
+keeps headless/CI builds reproducible.
+
+**Why:** Library-only crates often omit lockfiles; application workspaces
+should commit them so `cargo test --workspace` and GitHub Actions resolve
+the same dependency graph everywhere.
+
 ## Live mic behind `mic` feature; default builds are headless-safe
 
 **Decision:** `cpal` / `CpalMicSource` are gated on `--features mic` (off by

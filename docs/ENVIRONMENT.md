@@ -12,6 +12,10 @@ carried over from the environment this was originally built in.
   machine: installs/verifies Rust, runs the full test suite. Idempotent —
   safe to re-run after `git pull` to pick up new dependencies or workspace
   members.
+- `Cargo.lock` is committed so CI and local builds resolve the same
+  dependency versions.
+- GitHub Actions (`.github/workflows/ci.yml`) runs headless
+  `cargo test --workspace` on push/PR to `master`.
 - If not using the bootstrap script, the three manual steps it performs:
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal

@@ -1,21 +1,21 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (http-fetch SSRF harden + mic-capture)
+**As of:** 2026-08-01 (Cargo.lock + headless CI workflow)
 
 ## Build/test state
 
 ```
-cargo test --workspace → headless-safe default features
+cargo test --workspace → 134 passed, 2 ignored (CI=true)
+GitHub Actions: .github/workflows/ci.yml (ubuntu, default features)
 ```
 
 ## Highlights
 
-- **HttpFetchHandler** — private/link-local/special IP block + DNS
-  rebinding guard (hostname must resolve public; loopback only via
-  explicit IP allowlist). Threat model T3 closed for current surface.
-- **mic-capture** binary (`--features mic`) for local WAV recording.
-- Headless audio defaults; Whisper/Piper CLI e2e opt-in; Anthropic + T1 auth.
+- **`Cargo.lock` tracked** for reproducible CI/app builds.
+- **Headless CI** — `cargo test --workspace` on push/PR to `master`.
+- Http-fetch SSRF harden (T3); mic-capture; audio defaults headless-safe.
 
 ## Next up
 
-OIDC/device attestation; Cargo.lock; naming reconcile — see NEXT_STEPS.md.
+OIDC when control plane exists; crate naming; Tauri threat model — see
+NEXT_STEPS.md.
