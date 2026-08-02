@@ -161,6 +161,38 @@ pub enum Command {
     /// click-through there), but harmless to send — the runtime just
     /// applies the flag and moves on.
     SetInteractive { interactive: bool },
+    /// Moves the droplet's top-left corner to `(x, y)` in physical
+    /// screen pixels. Values are the same shape winit reports on
+    /// `WindowEvent::Moved`, so a shell that stores a value it saw
+    /// on the reverse channel can hand it right back on the next
+    /// launch.
+    SetPosition { x: i32, y: i32 },
+}
+
+/// A message the presence sends *back* to its host. Reverse channel
+/// for the transport in `crates/presence-ipc/README-ish`: shell writes
+/// [`Command`]s to the child's stdin, child writes [`Event`]s to its
+/// stdout. Kept small and specific — the shell should not have to
+/// mirror the runtime's whole state, just the pieces it needs to
+/// persist or expose (window geometry today; frame timing later).
+///
+/// `#[non_exhaustive]` for the same reason [`Command`] is — a shell
+/// built against an older runtime should ignore unknown events, not
+/// break.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Event {
+    /// Fired once when the runtime has opened its window and can
+    /// accept `Command`s. Carries the initial window position so a
+    /// shell that has never seen this presence has a value to
+    /// persist immediately.
+    Ready { x: i32, y: i32 },
+    /// Fired when the window moves. Throttled on the runtime side
+    /// (roughly one per 100 ms during a drag) so the pipe doesn't
+    /// flood. Values are physical pixels — the same units the
+    /// matching [`Command::SetPosition`] accepts.
+    Moved { x: i32, y: i32 },
 }
 
 /// Every message on the wire is wrapped in one of these so a peer can
@@ -182,6 +214,29 @@ impl Envelope {
 
     /// True iff `self.version` matches the version this build was compiled
     /// against. A receiver should call this before matching on `payload`.
+    pub fn is_current(&self) -> bool {
+        self.version == VERSION
+    }
+}
+
+/// Reverse-channel envelope (`presence-runtime` → shell). Same
+/// versioning story as [`Envelope`] — kept separate so a receiver can
+/// pattern-match on the payload type in the type system rather than
+/// discovering it at runtime.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EventEnvelope {
+    pub version: u32,
+    pub payload: Event,
+}
+
+impl EventEnvelope {
+    pub fn wrap(payload: Event) -> Self {
+        Self {
+            version: VERSION,
+            payload,
+        }
+    }
+
     pub fn is_current(&self) -> bool {
         self.version == VERSION
     }
@@ -286,6 +341,7 @@ mod tests {
                 palette: PaletteId::Ember,
             },
             Command::SetInteractive { interactive: true },
+            Command::SetPosition { x: 100, y: 200 },
         ];
         for cmd in commands {
             let env = Envelope::wrap(cmd.clone());
@@ -310,6 +366,22 @@ mod tests {
         let encoded = serde_json::to_string(&stale).unwrap();
         let decoded: Envelope = serde_json::from_str(&encoded).unwrap();
         assert!(!decoded.is_current());
+    }
+
+    #[test]
+    fn event_round_trips_through_the_reverse_envelope() {
+        let events = [
+            Event::Ready { x: 42, y: 108 },
+            Event::Moved { x: -100, y: 900 },
+        ];
+        for event in events {
+            let env = EventEnvelope::wrap(event.clone());
+            assert!(env.is_current());
+            let encoded = serde_json::to_string(&env).expect("serialize");
+            let decoded: EventEnvelope =
+                serde_json::from_str(&encoded).expect("deserialize");
+            assert_eq!(decoded, env);
+        }
     }
 
     #[test]

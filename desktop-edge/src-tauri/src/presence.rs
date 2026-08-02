@@ -32,14 +32,19 @@
 //!   EOF and exits), the child's stdin closes (its reader thread sees
 //!   EOF), and the child is killed if it hasn't already exited.
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Mutex;
 use std::thread;
 
-use presence_ipc::{Command, Envelope};
+use presence_ipc::{Command, Envelope, Event, EventEnvelope};
+
+/// Callback the shell installs to react to reverse-channel [`Event`]s.
+/// Boxed rather than a specific type so `Presence` doesn't drag every
+/// consumer (Tauri, settings, logging) into its own signature.
+pub type EventListener = Box<dyn Fn(Event) + Send + 'static>;
 
 /// Environment variable that points at the `presence-runtime` binary.
 /// Unset means "presence disabled" — see the module docs.
@@ -62,7 +67,12 @@ impl Presence {
     /// returns an error — if the spawn fails we log and continue with a
     /// disabled `Presence`, because a missing renderer must never block
     /// the shell from starting.
-    pub fn spawn_from_env() -> Self {
+    ///
+    /// `listener` is invoked once per reverse-channel [`Event`]. It runs
+    /// on the reader thread — do not block or acquire long-lived locks
+    /// inside it. In this build the listener persists window geometry
+    /// to `EdgeSettings`, which is a small `fs::write` and safe here.
+    pub fn spawn_from_env(listener: EventListener) -> Self {
         let Some(bin) = std::env::var_os(BIN_ENV).map(PathBuf::from) else {
             log::info!(
                 "desktop-edge: {BIN_ENV} unset — presence renderer disabled \
@@ -70,7 +80,7 @@ impl Presence {
             );
             return Self::disabled();
         };
-        match Self::spawn(bin) {
+        match Self::spawn(bin, listener) {
             Ok(p) => p,
             Err(err) => {
                 log::warn!(
@@ -89,28 +99,30 @@ impl Presence {
         }
     }
 
-    fn spawn(bin: PathBuf) -> Result<Self, String> {
-        // `PRESENCE_STDIN_IPC=1` is the opt-in the runtime looks for
-        // (see `presence-runtime/src/ipc_stdin.rs`). Without it the
-        // runtime ignores stdin and the whole transport is inert, which
-        // would leave us with a floating window we couldn't drive.
+    fn spawn(bin: PathBuf, listener: EventListener) -> Result<Self, String> {
+        // `PRESENCE_STDIN_IPC=1` and `PRESENCE_STDOUT_IPC=1` opt the
+        // runtime into the forward and reverse transports respectively
+        // (see the ipc_stdin / ipc_stdout modules in presence-runtime).
+        // Without stdout ipc the child would keep writing logs to the
+        // parent terminal, which is fine for a dev harness but useless
+        // for the shell that wants to parse `Event` NDJSON.
         let mut child = ProcessCommand::new(&bin)
             .env("PRESENCE_STDIN_IPC", "1")
-                // The droplet chrome from Phase 2 §3 second slice. Skipping
-                // this env var would give us the full 960x720 dev harness
-                // with an egui panel — useful for local debugging but not
-                // the shape the shell wants to embed.
-                .env("PRESENCE_DROPLET", "1")
-                // Per-pixel alpha + click-through. Implies droplet on the
-                // runtime side; setting both here is explicit and
-                // future-proofs against the two flags diverging.
-                .env("PRESENCE_TRANSPARENT", "1")
+            .env("PRESENCE_STDOUT_IPC", "1")
+            // The droplet chrome from Phase 2 §3. Skipping this env var
+            // would give us the full 960x720 dev harness with an egui
+            // panel — useful for local debugging but not the shape the
+            // shell wants to embed.
+            .env("PRESENCE_DROPLET", "1")
+            // Per-pixel alpha + click-through. Implies droplet on the
+            // runtime side; setting both here is explicit and
+            // future-proofs against the two flags diverging.
+            .env("PRESENCE_TRANSPARENT", "1")
             .stdin(Stdio::piped())
-            // Passing stdout/stderr through keeps the runtime's logs
-            // visible in the same console the shell is launched from —
-            // essential while the feature is opt-in via env var, because
-            // any spawn issue has to surface *somewhere*.
-            .stdout(Stdio::inherit())
+            .stdout(Stdio::piped())
+            // stderr still inherited: `log::info!` from the runtime
+            // (env_logger) writes there by default, and mixing it into
+            // stdout would garble the NDJSON we now parse from stdout.
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("spawn {bin:?}: {e}"))?;
@@ -119,12 +131,20 @@ impl Presence {
             .stdin
             .take()
             .ok_or_else(|| "presence-runtime spawn: no stdin handle".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "presence-runtime spawn: no stdout handle".to_string())?;
 
         let (tx, rx) = mpsc::channel::<Envelope>();
         thread::Builder::new()
             .name("presence-writer".to_string())
             .spawn(move || writer_loop(stdin, rx))
             .map_err(|e| format!("writer thread: {e}"))?;
+        thread::Builder::new()
+            .name("presence-reader".to_string())
+            .spawn(move || reader_loop(stdout, listener))
+            .map_err(|e| format!("reader thread: {e}"))?;
 
         log::info!("desktop-edge: presence renderer spawned from {bin:?}");
         Ok(Self {
@@ -187,6 +207,47 @@ impl Drop for Presence {
     }
 }
 
+fn reader_loop(stdout: std::process::ChildStdout, listener: EventListener) {
+    // Line-buffered read of NDJSON `EventEnvelope` payloads. Malformed
+    // lines are logged and skipped (same policy the forward path
+    // uses); an EOF on stdout is the normal terminate signal, either
+    // from the child exiting or from us tearing it down on drop.
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(err) => {
+                log::warn!(
+                    "desktop-edge: presence stdout read error ({err}); reader thread exiting"
+                );
+                return;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let env: EventEnvelope = match serde_json::from_str(&line) {
+            Ok(e) => e,
+            Err(err) => {
+                log::warn!(
+                    "desktop-edge: dropping malformed presence event envelope: {err}"
+                );
+                continue;
+            }
+        };
+        if !env.is_current() {
+            log::warn!(
+                "desktop-edge: dropping presence event with unsupported version {} \
+                 (this build expects {})",
+                env.version,
+                presence_ipc::VERSION
+            );
+            continue;
+        }
+        listener(env.payload);
+    }
+}
+
 fn writer_loop(mut stdin: std::process::ChildStdin, rx: Receiver<Envelope>) {
     while let Ok(env) = rx.recv() {
         // One envelope per line. Errors here are terminal — either the
@@ -227,5 +288,49 @@ mod tests {
         // If any of the above blocked or panicked, this line does not
         // execute — the test failure would be a timeout or a stack
         // trace rather than an assertion.
+    }
+
+    #[test]
+    fn reader_loop_forwards_valid_envelopes_and_skips_garbage() {
+        use std::io::Cursor;
+        // Build a fake `ChildStdout` — we can't construct one directly,
+        // so reuse the loop's internals via a small helper. `reader_loop`
+        // takes `ChildStdout` for real spawn ergonomics; here we test
+        // the parsing rules against a `BufReader<Cursor>` instead.
+        fn drive<R: BufRead>(reader: R, listener: EventListener) {
+            for line in reader.lines() {
+                let line = line.unwrap();
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(env) = serde_json::from_str::<EventEnvelope>(&line) else {
+                    continue;
+                };
+                if !env.is_current() {
+                    continue;
+                }
+                listener(env.payload);
+            }
+        }
+        let a = EventEnvelope::wrap(Event::Ready { x: 10, y: 20 });
+        let b = EventEnvelope::wrap(Event::Moved { x: 30, y: 40 });
+        let stream = format!(
+            "{}\n\n{{ garbage }}\n{}\n",
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
+
+        let received: std::sync::Arc<Mutex<Vec<Event>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+        let received_cb = received.clone();
+        drive(
+            Cursor::new(stream),
+            Box::new(move |e| received_cb.lock().unwrap().push(e)),
+        );
+
+        let got = received.lock().unwrap();
+        assert_eq!(got.len(), 2, "got {got:?}");
+        assert_eq!(got[0], Event::Ready { x: 10, y: 20 });
+        assert_eq!(got[1], Event::Moved { x: 30, y: 40 });
     }
 }

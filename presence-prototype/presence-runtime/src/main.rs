@@ -6,6 +6,7 @@
 
 mod app;
 mod ipc_stdin;
+mod ipc_stdout;
 #[cfg(feature = "dev")]
 mod ui;
 

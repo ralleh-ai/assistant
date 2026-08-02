@@ -74,10 +74,16 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
       default. Focus grab lands via `Command::SetInteractive` and
       the dev panel's "Grab" toggle (2026-08-02); a global hotkey
       binding on the shell side is a UX follow-up but not blocking.
-   4. **Position and layout persistence.** Presence-side store; the
-      shell should not own window geometry. Multi-monitor placement is
-      still open (ADR-013 §"Not decided here"); land single-monitor
-      first, then add.
+   4. ~~**Position and layout persistence.**~~ **landed
+      (2026-08-02)** — reverse-channel `Event::Ready` / `Event::Moved`
+      on the runtime's stdout (opt-in `PRESENCE_STDOUT_IPC=1`) plus
+      `Command::SetPosition` on the way in. `desktop-edge` reads
+      events on a reader thread, persists to
+      `EdgeSettings.presence_position`, and echoes the value back on
+      the next launch so the droplet lands where the user last left
+      it. Multi-monitor placement is still open (deferred with
+      ADR-013 §"Not decided here"); the current wire is
+      single-screen physical pixels.
    5. **Launch and discovery.** How the shell finds / spawns the
       presence process. Options: shell-spawned child, user-launched
       alongside the shell, OS service. Not decided; prototype at least

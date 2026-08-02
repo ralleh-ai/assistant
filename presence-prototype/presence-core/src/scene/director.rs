@@ -139,6 +139,12 @@ pub struct SceneDirector {
     /// handle, which lives in the runtime, not in this crate.
     #[allow(dead_code)]
     pub(crate) pending_hittest: Option<bool>,
+    /// Window position (physical px, top-left) requested via
+    /// `Command::SetPosition`. Same one-shot pattern as
+    /// `pending_hittest` — the runtime owns the `winit::Window` and
+    /// applies the outer position between frames.
+    #[allow(dead_code)]
+    pub(crate) pending_position: Option<(i32, i32)>,
 }
 
 impl SceneDirector {
@@ -228,6 +234,7 @@ impl SceneDirector {
             tier,
             pending_palette: None,
             pending_hittest: None,
+            pending_position: None,
         }
     }
 

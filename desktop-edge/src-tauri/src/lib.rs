@@ -13,12 +13,13 @@ mod settings;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use mic::{mic_feature_enabled, run_mic_smoke, MicSmokeResult};
 use os_caps::{run_clipboard_smoke, ClipboardSmokeResult};
-use presence::Presence;
-use presence_ipc::{Command as PresenceCommand, PaletteId, PresenceMode, QualityTier};
+use presence::{EventListener, Presence};
+use presence_ipc::{Command as PresenceCommand, Event as PresenceEvent, PaletteId, PresenceMode, QualityTier};
+use settings::PresencePosition;
 use presence_mic::MicPump;
 use ralleh_audio_core::{run_mock_voice_pipeline, MockVoicePipelineResult};
 use settings::{load_settings, save_settings, settings_path_display, EdgeSettings};
@@ -298,18 +299,87 @@ fn presence_mic_stop(pump: State<'_, MicPumpState>) -> Result<PresenceMicStatus,
     })
 }
 
+/// Builds the reverse-channel listener that persists window geometry
+/// to `EdgeSettings`. Runs on the presence reader thread — kept small
+/// so a stream of `Moved` events during a drag does not stall the
+/// runtime. Failure to persist is logged; it must never bubble up.
+fn presence_event_listener(app: AppHandle) -> EventListener {
+    Box::new(move |event| match event {
+        // `PresenceEvent` is `#[non_exhaustive]` on the wire crate,
+        // so a wildcard is required. Any new event variant added
+        // later will fall through until it is explicitly handled —
+        // ignoring an unknown event is safer than crashing the shell
+        // on a runtime that speaks a newer wire.
+        PresenceEvent::Ready { x, y } | PresenceEvent::Moved { x, y } => {
+            // (0, 0) is the sentinel the runtime uses to mean "window
+            // manager did not tell us the position" (e.g. Wayland).
+            // Persisting it would clobber a real value from a previous
+            // session, so we skip.
+            if x == 0 && y == 0 {
+                return;
+            }
+            let mut settings = match load_settings(&app) {
+                Ok(s) => s,
+                Err(err) => {
+                    log::warn!(
+                        "desktop-edge: presence position not persisted \
+                         (load_settings failed: {err})"
+                    );
+                    return;
+                }
+            };
+            let next = PresencePosition { x, y };
+            if settings.presence_position == Some(next) {
+                // No-op writes are wasteful on a drag stream.
+                return;
+            }
+            settings.presence_position = Some(next);
+            if let Err(err) = save_settings(&app, &settings) {
+                log::warn!(
+                    "desktop-edge: presence position not persisted \
+                     (save_settings failed: {err})"
+                );
+            }
+        }
+        _ => {
+            log::debug!("desktop-edge: ignoring unknown presence event");
+        }
+    })
+}
+
+/// Sends a persisted position (if any) back to the presence right
+/// after spawn, so the droplet lands where the user last left it.
+/// A missing / partial settings file is a normal first-launch state
+/// and yields a no-op.
+fn restore_presence_position(app: &AppHandle, presence: &Presence) {
+    let Ok(settings) = load_settings(app) else {
+        return;
+    };
+    let Some(pos) = settings.presence_position else {
+        return;
+    };
+    presence.send(PresenceCommand::SetPosition { x: pos.x, y: pos.y });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Presence is spawned once at startup and installed as managed state.
-    // Every Tauri command that wants to nudge the visuals extracts it via
-    // `State<'_, Presence>`; on shutdown Tauri drops the state, which
-    // closes stdin and kills the child (see `presence::Presence::drop`).
-    let presence = Presence::spawn_from_env();
     let mic_pump: MicPumpState = Mutex::new(None);
 
     tauri::Builder::default()
-        .manage(presence)
         .manage(mic_pump)
+        // Presence is spawned inside `setup` so the reverse-channel
+        // listener can capture an `AppHandle` — we need one to load
+        // and save `EdgeSettings` from the reader thread. Everything
+        // else about the previous lifecycle carries over: on shutdown
+        // Tauri drops the managed `Presence`, which closes stdin and
+        // kills the child (see `presence::Presence::drop`).
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let presence = Presence::spawn_from_env(presence_event_listener(handle.clone()));
+            restore_presence_position(&handle, &presence);
+            app.manage(presence);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             core_ping,
             voice_smoke,

@@ -172,6 +172,13 @@ impl SceneDirector {
             Command::SetQualityTier { tier } => {
                 self.set_quality_tier(tier.into());
             }
+                Command::SetPosition { x, y } => {
+                    // Same one-shot pattern as hittest — the runtime
+                    // owns the window handle. Overwriting a queued
+                    // position is intentional: if the shell sends two
+                    // moves back-to-back only the latest matters.
+                    self.pending_position = Some((x, y));
+                }
                 Command::SetInteractive { interactive } => {
                     // Same pattern as `SetPalette` — the runtime is the
                     // side that owns the `winit::Window`, so we just
@@ -216,6 +223,13 @@ impl SceneDirector {
     /// `winit::Window::set_cursor_hittest`.
     pub fn take_pending_hittest(&mut self) -> Option<bool> {
         self.pending_hittest.take()
+    }
+
+    /// Consumes and returns any window-position change requested via
+    /// [`Command::SetPosition`]. Physical screen pixels, top-left
+    /// corner — the same units `WindowEvent::Moved` reports.
+    pub fn take_pending_position(&mut self) -> Option<(i32, i32)> {
+        self.pending_position.take()
     }
 }
 
@@ -323,6 +337,18 @@ mod tests {
         // frame must not apply the change twice or misinterpret a
         // stale value as a fresh request.
         assert_eq!(director.take_pending_hittest(), None);
+    }
+
+    #[test]
+    fn set_position_shows_up_in_take_pending_position_once() {
+        let mut director = SceneDirector::new();
+        director.apply_command(Command::SetPosition { x: 250, y: 400 });
+        // A second, later position wins — the runtime only needs the
+        // freshest one, and the wire may deliver two moves in the same
+        // frame during a fast drag.
+        director.apply_command(Command::SetPosition { x: 260, y: 410 });
+        assert_eq!(director.take_pending_position(), Some((260, 410)));
+        assert_eq!(director.take_pending_position(), None);
     }
 
     #[test]

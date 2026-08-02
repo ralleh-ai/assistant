@@ -64,6 +64,21 @@ pub struct App {
     /// `PRESENCE_STDIN_IPC` is not set to a truthy value — that is the
     /// default and keeps the runtime a stand-alone dev harness.
     ipc_commands: Option<Receiver<Command>>,
+    /// Reverse-channel sink (see [`crate::ipc_stdout`]). Emits an
+    /// [`Event::Ready`] once when the window opens and a throttled
+    /// stream of [`Event::Moved`] on drag. No-op when
+    /// `PRESENCE_STDOUT_IPC` is unset.
+    ipc_events: crate::ipc_stdout::EventSink,
+    /// Physical-pixel top-left corner most recently reported to the
+    /// shell. Used to suppress noise (winit fires `Moved` on every
+    /// pixel of a drag) and to skip apply-echoes (a `SetPosition`
+    /// from the shell arrives, we move the window, winit fires
+    /// `Moved`, we would otherwise send it right back).
+    last_reported_position: Option<(i32, i32)>,
+    /// Monotonic clock last time a `Moved` was emitted. Combined with
+    /// `MOVE_EMIT_INTERVAL` to rate-limit the drag stream to
+    /// something a settings writer can keep up with.
+    last_move_emit: Instant,
 }
 
 /// Smoothed FPS at or below this figure counts as under-budget.
@@ -78,6 +93,15 @@ const ADAPTIVE_DOWNSHIFT_FPS: f32 = 45.0;
 /// the tier, short enough that a genuinely slow machine gets its help before
 /// the user has decided to close the window.
 const ADAPTIVE_DOWNSHIFT_HOLD_SECONDS: f32 = 3.0;
+
+/// Minimum interval between `Event::Moved` emissions. winit fires a
+/// `WindowEvent::Moved` on every screen-pixel step of a drag; without
+/// throttling that would flood stdout at hundreds of events per
+/// second and the shell would spend real work persisting each one.
+/// 100 ms feels responsive to the user (the settings writer sees the
+/// final position within a frame of drag-end) and keeps the pipe
+/// depth trivial.
+const MOVE_EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Environment variable that flips the runtime into "droplet" chrome —
 /// frameless and always-on-top, sized like an indicator rather than a
@@ -137,6 +161,9 @@ impl App {
             fps_log_frames: 0,
             low_fps_seconds: 0.0,
             ipc_commands: crate::ipc_stdin::spawn_if_enabled(),
+            ipc_events: crate::ipc_stdout::EventSink::spawn_if_enabled(),
+            last_reported_position: None,
+            last_move_emit: Instant::now(),
         }
     }
 
@@ -167,6 +194,25 @@ impl App {
     /// `apply_pending_palette` — the director returns `None` once
     /// the request has been consumed, so a runtime restart or a
     /// missed frame does not double-apply.
+    /// If the shell has requested a window-position change via ipc,
+    /// move the outer window. Coordinates are physical screen pixels —
+    /// same units both `WindowEvent::Moved` reports and `Command::SetPosition`
+    /// accepts, so a shell that echoes a stored value back gets a no-op
+    /// or a corrective move as appropriate.
+    ///
+    /// After applying, `last_reported_position` is set to the new
+    /// value so the resulting winit `Moved` event does not bounce
+    /// straight back to the shell as a fresh "user drag" — that
+    /// would create an event loop between the two sides.
+    fn apply_pending_position(&mut self) {
+        let Some(live) = &mut self.live else { return };
+        if let Some((x, y)) = self.director.take_pending_position() {
+            live.window
+                .set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+            self.last_reported_position = Some((x, y));
+        }
+    }
+
     fn apply_pending_hittest(&mut self) {
         let Some(live) = &mut self.live else { return };
         if let Some(interactive) = self.director.take_pending_hittest() {
@@ -193,6 +239,7 @@ impl App {
         // frames influences *this* frame rather than trailing by one.
         self.drain_pending_commands();
         self.apply_pending_palette();
+        self.apply_pending_position();
         self.apply_pending_hittest();
 
         let Some(live) = &mut self.live else { return };
@@ -428,6 +475,25 @@ impl ApplicationHandler for App {
         #[cfg(feature = "dev")]
         let ui = EguiLayer::new(&renderer.device, renderer.surface_config.format, &window);
 
+        // Report the initial position over the reverse channel so a
+        // fresh shell that has never seen this presence has a value
+        // to persist immediately. Reading `outer_position` at this
+        // point picks up whatever the window manager placed us at —
+        // subsequent moves (either from the user dragging or from a
+        // `SetPosition` command) travel through `Moved` events.
+        if let Ok(pos) = window.outer_position() {
+            self.last_reported_position = Some((pos.x, pos.y));
+            self.ipc_events
+                .send(presence_ipc::Event::Ready { x: pos.x, y: pos.y });
+        } else {
+            // Some window managers (Wayland notably) don't expose an
+            // outer position. Still emit a Ready so the shell knows the
+            // runtime is alive; use (0, 0) as a sentinel that means
+            // "we don't know, don't persist this value".
+            self.ipc_events
+                .send(presence_ipc::Event::Ready { x: 0, y: 0 });
+        }
+
         window.request_redraw();
         self.last_frame = Instant::now();
         self.live = Some(Live {
@@ -479,7 +545,36 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.redraw();
             }
+            WindowEvent::Moved(pos) => {
+                self.on_window_moved(pos.x, pos.y);
+            }
             _ => {}
         }
+    }
+}
+
+impl App {
+    /// Handles a `WindowEvent::Moved`. Rate-limited to
+    /// `MOVE_EMIT_INTERVAL` and suppressed when the current position
+    /// equals the last one we told the shell about — which is what
+    /// prevents an echo loop for `Command::SetPosition` (shell sends
+    /// position, we move, winit fires `Moved`, we would otherwise
+    /// send the same coords back).
+    fn on_window_moved(&mut self, x: i32, y: i32) {
+        if self.last_reported_position == Some((x, y)) {
+            return;
+        }
+        let now = Instant::now();
+        if now.duration_since(self.last_move_emit) < MOVE_EMIT_INTERVAL {
+            // Drop, but keep the last-reported position stale so the
+            // final resting frame of a drag still fires when the
+            // interval elapses. Winit issues `Moved` on drag-end too,
+            // so the settled coordinate reliably lands.
+            return;
+        }
+        self.last_reported_position = Some((x, y));
+        self.last_move_emit = now;
+        self.ipc_events
+            .send(presence_ipc::Event::Moved { x, y });
     }
 }

@@ -22,6 +22,20 @@ pub struct EdgeSettings {
     /// Preferred speaking style for future TTS / persona (`calm` | `direct` | `warm`).
     #[serde(default)]
     pub voice_style: String,
+    /// Persisted presence-droplet top-left corner (physical screen
+    /// pixels). `None` on first launch, then populated by the
+    /// reverse-channel `Event::Ready` / `Event::Moved` from
+    /// `presence-runtime`. Written back out on every position change
+    /// so a crash keeps at most the last dragged-to position.
+    #[serde(default)]
+    pub presence_position: Option<PresencePosition>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PresencePosition {
+    pub x: i32,
+    pub y: i32,
 }
 
 impl Default for EdgeSettings {
@@ -33,6 +47,7 @@ impl Default for EdgeSettings {
             mcp_base_url: "http://127.0.0.1:8787".into(),
             mic_acknowledged: false,
             voice_style: String::new(),
+            presence_position: None,
         }
     }
 }
@@ -76,6 +91,7 @@ pub fn save_settings(app: &AppHandle, settings: &EdgeSettings) -> Result<EdgeSet
         mcp_base_url: settings.mcp_base_url.trim().to_string(),
         mic_acknowledged: settings.mic_acknowledged,
         voice_style: settings.voice_style.trim().to_string(),
+        presence_position: settings.presence_position,
     };
     if cleaned.tenant_id.is_empty() || cleaned.device_id.is_empty() || cleaned.actor_id.is_empty()
     {
@@ -117,6 +133,7 @@ mod tests {
             mcp_base_url: "http://127.0.0.1:8787".into(),
             mic_acknowledged: true,
             voice_style: "calm".into(),
+            presence_position: None,
         };
         assert!(s.is_complete());
     }
