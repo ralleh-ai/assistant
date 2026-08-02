@@ -1,8 +1,9 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-02 (Phase 2 §1–§6 complete; Phase 3 §1 landed —
-mic-pump VAD drives `PresenceMode::Listening` from real speech
-detection, not the dev panel)
+**As of:** 2026-08-02 (Phase 2 §1–§6 complete; Phase 3 §1 (VAD →
+Listening), §3.3 (`speaking` on TTS synthesis), and §3.5 (policy
+denials → `error`) landed — the presence now reflects real assistant
+outcomes rather than dev-panel toggles)
 
 ## Build/test state
 

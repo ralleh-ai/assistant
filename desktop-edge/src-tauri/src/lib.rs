@@ -75,22 +75,58 @@ fn core_ping() -> CoreStatus {
     }
 }
 
-#[tauri::command]
-fn voice_smoke() -> Result<MockVoicePipelineResult, String> {
-    run_mock_voice_pipeline()
+/// Fires the visual `Error` pulse when a smoke handler failed. Every
+/// user-triggered capability check maps `Err(_)` to either a policy
+/// denial (T13) or a handler failure (mic device gone, clipboard
+/// backend refused, etc.) — both are exactly the "map real outcomes
+/// → modes" cases Phase 3 §3.5 wants surfaced visually. Runs on the
+/// Tauri command thread; the pulse itself is async on the presence
+/// side (see `Presence::pulse_error`).
+fn pulse_on_err<T>(result: &Result<T, String>, presence: &Presence) {
+    if result.is_err() {
+        presence.pulse_error();
+    }
 }
 
 #[tauri::command]
-fn clipboard_smoke(app: AppHandle) -> Result<ClipboardSmokeResult, String> {
-    let settings = load_settings(&app)?;
-    run_clipboard_smoke(&settings)
+fn voice_smoke(presence: State<'_, Presence>) -> Result<MockVoicePipelineResult, String> {
+    let result = run_mock_voice_pipeline();
+    match &result {
+        Ok(r) => {
+            // Duration of the synthesized speech in wall-clock terms.
+            // Ceil is deliberate: sub-second utterances still get a
+            // full "the assistant is speaking" hold rather than a
+            // blink. Cast is safe — the mock pipeline produces
+            // fixed-size buffers on the order of tens of KB.
+            let ms = ((r.tts_samples as u64) * 1_000)
+                .checked_div(r.sample_rate_hz.max(1) as u64)
+                .unwrap_or(0);
+            presence.pulse_speaking(ms);
+        }
+        Err(_) => presence.pulse_error(),
+    }
+    result
 }
 
 #[tauri::command]
-fn mic_smoke(app: AppHandle) -> Result<MicSmokeResult, String> {
-    let settings = load_settings(&app)?;
+fn clipboard_smoke(
+    app: AppHandle,
+    presence: State<'_, Presence>,
+) -> Result<ClipboardSmokeResult, String> {
+    let result = load_settings(&app).and_then(|s| run_clipboard_smoke(&s));
+    pulse_on_err(&result, &presence);
+    result
+}
+
+#[tauri::command]
+fn mic_smoke(
+    app: AppHandle,
+    presence: State<'_, Presence>,
+) -> Result<MicSmokeResult, String> {
     // ~1s is enough to prove device open + frames without freezing the UI long.
-    run_mic_smoke(&settings, 1.0)
+    let result = load_settings(&app).and_then(|s| run_mic_smoke(&s, 1.0));
+    pulse_on_err(&result, &presence);
+    result
 }
 
 #[tauri::command]

@@ -176,6 +176,79 @@ impl Presence {
         self.tx.is_some()
     }
 
+    /// Fires a short `PresenceMode::Error` engagement and releases it
+    /// after the pulse hold. Matches the "brief error pulse,
+    /// self-clearing" signature in `PRESENCE_VISUAL_ENTITY.md` — the
+    /// runtime's own transition ramps handle the fade in and out; the
+    /// hold below sets the total on-air time.
+    ///
+    /// The release is scheduled on a small detached thread rather
+    /// than a `tokio::time::sleep`, because `Presence` predates any
+    /// async runtime in this crate and adding one just for a 600 ms
+    /// sleep is more surface area than a `thread::sleep` deserves.
+    /// The thread exits as soon as the release lands.
+    ///
+    /// No-op on a disabled `Presence` — the caller can invoke this
+    /// on every policy denial without checking `is_enabled` first.
+    pub fn pulse_error(&self) {
+        // Kept in one place so the hold matches everywhere it fires
+        // (three Tauri command handlers today, more later). ~600 ms
+        // sits inside the runtime's 300–900 ms transition window
+        // and reads as one deliberate flash rather than a stutter.
+        const ERROR_HOLD_MS: u64 = 600;
+        self.pulse_mode(presence_ipc::PresenceMode::Error, ERROR_HOLD_MS);
+    }
+
+    /// Fires `PresenceMode::Speaking` for `duration_ms` then releases.
+    /// The TTS path calls this with the wall-clock length of the
+    /// synthesized utterance, so the visual holds for as long as the
+    /// assistant would be talking. Once real playback is wired
+    /// through cpal, this can gain a companion pump that also drives
+    /// `audio_level` from chunked RMS of the outgoing samples — see
+    /// Phase 3 §3.3.
+    ///
+    /// No-op on a disabled `Presence`. Duration is clamped to a
+    /// small floor so a caller passing `0` still produces a visible
+    /// pulse (the runtime's own attack/release below ~200 ms is
+    /// visually indistinguishable from noise).
+    pub fn pulse_speaking(&self, duration_ms: u64) {
+        let hold = duration_ms.max(200);
+        self.pulse_mode(presence_ipc::PresenceMode::Speaking, hold);
+    }
+
+    /// Shared implementation for the two `pulse_*` helpers above.
+    /// Engage → sleep on a detached thread → release. Detached
+    /// because the caller (a Tauri command handler) has no reason to
+    /// wait, and joining would either block the UI or need an async
+    /// runtime this crate does not otherwise use.
+    fn pulse_mode(&self, mode: presence_ipc::PresenceMode, hold_ms: u64) {
+        let Some(tx) = &self.tx else {
+            return;
+        };
+        if tx
+            .send(Envelope::wrap(Command::SetMode {
+                mode,
+                engaged: true,
+            }))
+            .is_err()
+        {
+            return;
+        }
+        let release_tx = tx.clone();
+        // A shell shutdown drops the writer's channel, which makes
+        // the send below a no-op. Safe on either side.
+        thread::Builder::new()
+            .name(format!("presence-{:?}-pulse", mode))
+            .spawn(move || {
+                thread::sleep(std::time::Duration::from_millis(hold_ms));
+                let _ = release_tx.send(Envelope::wrap(Command::SetMode {
+                    mode,
+                    engaged: false,
+                }));
+            })
+            .ok();
+    }
+
     /// A clone of the envelope sender, for background pumps that need
     /// to push commands without going through a `send()` call per
     /// packet. `None` when presence is disabled — the caller must
@@ -288,6 +361,18 @@ mod tests {
         // If any of the above blocked or panicked, this line does not
         // execute — the test failure would be a timeout or a stack
         // trace rather than an assertion.
+    }
+
+    #[test]
+    fn pulse_helpers_are_safe_on_a_disabled_presence() {
+        // The Tauri command handlers call these on every failure /
+        // TTS run without checking `is_enabled` first. A machine that
+        // hasn't set `RALLEH_PRESENCE_BIN` must not panic, must not
+        // spawn a thread, and must not block.
+        let p = Presence::disabled();
+        p.pulse_error();
+        p.pulse_speaking(500);
+        // The line-reaching-this-point is the assertion.
     }
 
     #[test]

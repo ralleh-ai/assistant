@@ -118,13 +118,21 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
     2. Wire `ralleh-ai-router` and `ralleh-tool-gateway` (or a local
        stand-in) into the shell process so `thinking`/`tool_use` have
        a source. Neither is embedded in `desktop-edge` today.
-    3. Route real audio level to `speaking`'s brightness and its
-       phrase envelope to the pulse geometry (ADR-012 spring
-       bandwidth constraint). Audio-level side already lands
-       through the mic pump; what's missing is `speaking` engaging
-       from the TTS path rather than as a manual toggle.
+    3. **`speaking` engagement wired to TTS (2026-08-02)** — the
+       Tauri `voice_smoke` handler now fires
+       `Presence::pulse_speaking(duration_ms)` on a successful
+       synthesis, holding the mode for the wall-clock length of the
+       generated audio. What's still missing is real cpal playback +
+       chunked-RMS `audio_level` feed *during* the pulse; that
+       comes when TTS moves off the mock backend and is a small
+       companion pump.
     4. Add sparse secondary events (scan sweeps, inbound streams).
-    5. Map policy `Denied` / handler `Failed` outcomes to `error`.
+    5. ~~Map policy `Denied` / handler `Failed` outcomes to
+       `error`.~~ **landed (2026-08-02)** — the three Tauri smoke
+       commands (`voice_smoke`, `clipboard_smoke`, `mic_smoke`) fire
+       `Presence::pulse_error()` on every `Err(_)`. Detached ~600 ms
+       pulse via a shared `pulse_mode` helper; no async runtime
+       needed.
 
 10. **Phase 4 — hardening and options**:
     - 60 FPS budget confirmation on representative hardware (Phase 1's
