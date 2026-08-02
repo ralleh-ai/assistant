@@ -48,7 +48,7 @@ warning. Real OIDC / device attestation remains Phase 2.
 |---|---|---|---|---|
 | T1 | Cross-tenant capability use | High | Policy tenant scoping; **Bearer tokens bind tenant/actor(/device) when configured** | No OIDC/device attestation yet |
 | T2 | Path traversal via fs tools | High | Canonicalize + sandbox root in handlers (independent of policy) | — |
-| T3 | SSRF via http fetch | High | Hostname allowlist, no redirects, http(s) only, no userinfo | No DNS-rebinding / private-IP blocklist yet |
+| T3 | SSRF via http fetch | High | Hostname allowlist; no redirects; http(s) only; no userinfo; **block link-local/special IPs; hostname must resolve to public IPs (DNS-rebinding guard); private/loopback only via explicit IP allowlist** | — |
 | T4 | Unapproved destructive write | High | `RequireApproval` + parked invocation; approve is one-shot | Approvals not yet cryptographically bound to approver identity |
 | T5 | Audit gap / silent privilege | High | Every gateway outcome → `AuditSink` (JSONL) | JSONL not queryable / tamper-evident |
 | T6 | Prompt injection → tool misuse | Med | Tools still policy-gated; writes need approval | No output fencing / digest before model injection yet |

@@ -159,13 +159,22 @@ the store later without changing the HTTP contract.
 **Decision:** `HttpFetchHandler` refuses any URL whose host is not on an
 explicit `allowed_hosts` list configured at construction (and required
 non-empty in `config/default.toml`). Redirects are disabled; only
-`http`/`https` are accepted; userinfo in URLs is rejected.
+`http`/`https` are accepted; userinfo in URLs is rejected. After the
+allowlist match, destinations are checked again:
+
+- Link-local / special-use IPs (e.g. `169.254.169.254`) are **never**
+  allowed, even if listed.
+- Hostnames must resolve only to public unicast IPs (blocks DNS rebinding
+  to loopback/RFC1918).
+- Loopback/RFC1918 are allowed only as **explicit IP literals** on the
+  allowlist (for local mocks / intentional internal targets).
 
 **Why:** DEVELOPMENT.md §8.5 calls out "SSRF and egress controls for web
 fetch/search." Policy gating (`Allow` on `tool.http.fetch`) answers
 *whether* the capability may be used; the handler still enforces *where*
 egress is allowed — same layering as fs sandbox roots. An empty allowlist
 fails closed at config load time rather than registering a no-op tool.
+
 
 ## Live mic behind `mic` feature; default builds are headless-safe
 

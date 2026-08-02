@@ -63,7 +63,9 @@ who, from where, what capability, human confirmation needed?
 **Real (non-mocked) handlers implemented:**
 - `FsReadTextHandler` — sandboxed UTF-8 text file reader. Canonicalizes paths, rejects traversal outside a configured root.
 - `FsWriteTextHandler` — sandboxed UTF-8 text file writer. Same sandboxing approach (canonicalizes the *parent* directory since the target file may not exist yet). Refuses to overwrite existing files unless `overwrite: true` is explicitly passed. Does not auto-create parent directories.
-- `HttpFetchHandler` — HTTP(S) GET with an explicit hostname egress allowlist, redirects disabled, userinfo rejected (DEVELOPMENT.md §8.5 SSRF/egress).
+- `HttpFetchHandler` — HTTP(S) GET with hostname egress allowlist, no
+  redirects, userinfo rejected, private/link-local/special IP blocks, and
+  DNS-rebinding guard (hostname → public IPs only).
 
 **24 tests** cover both handlers (traversal rejection, missing args, overwrite semantics, sandbox boundary enforcement) plus gateway-level tests (deny-by-default, approval-required never invokes handler, cross-tenant isolation holds through the full dispatch path, handler failure reported distinctly from policy denial).
 

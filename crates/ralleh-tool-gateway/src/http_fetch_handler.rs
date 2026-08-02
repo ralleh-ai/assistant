@@ -2,10 +2,10 @@
 //!
 //! Implements DEVELOPMENT.md §8.5 / §11.1 egress controls: the handler will
 //! only contact hosts on an explicit allowlist, refuses non-http(s) schemes,
-//! and does not follow redirects (redirect-based SSRF). Policy still decides
-//! *whether* a tenant may call `tool.http.fetch`; this handler enforces its
-//! own egress sandbox regardless.
+//! does not follow redirects, and blocks private / link-local / special
+//! destinations after DNS resolution (SSRF / DNS-rebinding defense).
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::time::Duration;
 
 use reqwest::blocking::Client;
@@ -40,12 +40,118 @@ pub enum HttpFetchError {
     UserinfoForbidden,
     #[error("host '{host}' is not on the egress allowlist")]
     HostNotAllowed { host: String },
+    #[error("destination IP {ip} is blocked (private, loopback, link-local, or special-use)")]
+    BlockedDestination { ip: IpAddr },
+    #[error(
+        "host '{host}' resolves to non-public IP {ip} (DNS rebinding / SSRF guard); \
+         allowlist the IP literal only if intentional"
+    )]
+    NonPublicResolution { host: String, ip: IpAddr },
+    #[error("DNS resolution failed for host '{host}': {reason}")]
+    DnsFailed { host: String, reason: String },
     #[error("HTTP request failed: {0}")]
     Request(String),
     #[error("response body exceeds max_response_bytes ({0})")]
     ResponseTooLarge(usize),
     #[error("response body is not valid UTF-8")]
     NotUtf8,
+}
+
+/// Classification used for SSRF guards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IpClass {
+    /// Globally routable unicast — OK for hostname allowlists.
+    Public,
+    /// 127.0.0.0/8 or ::1 — only via explicit IP allowlist entry.
+    Loopback,
+    /// RFC1918 / ULA / CGNAT — only via explicit IP allowlist entry.
+    Private,
+    /// Link-local / metadata-adjacent — never allowed, even if allowlisted.
+    LinkLocal,
+    /// Multicast, unspecified, documentation, etc. — never allowed.
+    Special,
+}
+
+fn classify_ip(ip: IpAddr) -> IpClass {
+    match ip {
+        IpAddr::V4(v4) => classify_v4(v4),
+        IpAddr::V6(v6) => classify_v6(v6),
+    }
+}
+
+fn classify_v4(ip: Ipv4Addr) -> IpClass {
+    let o = ip.octets();
+    // Unspecified / "this" network
+    if o[0] == 0 {
+        return IpClass::Special;
+    }
+    // Loopback 127.0.0.0/8
+    if o[0] == 127 {
+        return IpClass::Loopback;
+    }
+    // Link-local 169.254.0.0/16 (includes cloud metadata 169.254.169.254)
+    if o[0] == 169 && o[1] == 254 {
+        return IpClass::LinkLocal;
+    }
+    // RFC1918
+    if o[0] == 10 {
+        return IpClass::Private;
+    }
+    if o[0] == 172 && (16..=31).contains(&o[1]) {
+        return IpClass::Private;
+    }
+    if o[0] == 192 && o[1] == 168 {
+        return IpClass::Private;
+    }
+    // CGNAT 100.64.0.0/10
+    if o[0] == 100 && (64..=127).contains(&o[1]) {
+        return IpClass::Private;
+    }
+    // Documentation / benchmark / benchmarking ranges commonly blocked for SSRF
+    if o[0] == 192 && o[1] == 0 && o[2] == 2 {
+        return IpClass::Special; // 192.0.2.0/24 TEST-NET-1
+    }
+    if o[0] == 198 && o[1] == 51 && o[2] == 100 {
+        return IpClass::Special; // TEST-NET-2
+    }
+    if o[0] == 203 && o[1] == 0 && o[2] == 113 {
+        return IpClass::Special; // TEST-NET-3
+    }
+    // Multicast / reserved
+    if o[0] >= 224 {
+        return IpClass::Special;
+    }
+    IpClass::Public
+}
+
+fn classify_v6(ip: Ipv6Addr) -> IpClass {
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return classify_v4(v4);
+    }
+    if ip.is_loopback() {
+        return IpClass::Loopback;
+    }
+    if ip.is_unspecified() {
+        return IpClass::Special;
+    }
+    // fe80::/10 link-local
+    let segments = ip.segments();
+    if (segments[0] & 0xffc0) == 0xfe80 {
+        return IpClass::LinkLocal;
+    }
+    // fc00::/7 unique local
+    if (segments[0] & 0xfe00) == 0xfc00 {
+        return IpClass::Private;
+    }
+    // Multicast ff00::/8
+    if (segments[0] & 0xff00) == 0xff00 {
+        return IpClass::Special;
+    }
+    IpClass::Public
+}
+
+fn is_never_allowable(class: IpClass) -> bool {
+    matches!(class, IpClass::LinkLocal | IpClass::Special)
 }
 
 impl HttpFetchHandler {
@@ -98,6 +204,47 @@ impl HttpFetchHandler {
         self.allowed_hosts.iter().any(|allowed| allowed == &host)
     }
 
+    /// After allowlist match: block unsafe literals and hostname→private DNS.
+    fn assert_safe_destination(&self, host: &str) -> Result<(), HttpFetchError> {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            let class = classify_ip(ip);
+            if is_never_allowable(class) {
+                return Err(HttpFetchError::BlockedDestination { ip });
+            }
+            // Loopback/private literals are only reachable because they were
+            // explicitly allowlisted (caller already checked host_allowed).
+            return Ok(());
+        }
+
+        // Hostname path: every resolved address must be public. This stops
+        // allowlisted names that rebind to loopback/RFC1918/metadata.
+        let mut addrs = (host, 0u16)
+            .to_socket_addrs()
+            .map_err(|e| HttpFetchError::DnsFailed {
+                host: host.to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let mut saw_any = false;
+        for addr in &mut addrs {
+            saw_any = true;
+            let ip = addr.ip();
+            if classify_ip(ip) != IpClass::Public {
+                return Err(HttpFetchError::NonPublicResolution {
+                    host: host.to_string(),
+                    ip,
+                });
+            }
+        }
+        if !saw_any {
+            return Err(HttpFetchError::DnsFailed {
+                host: host.to_string(),
+                reason: "no addresses returned".into(),
+            });
+        }
+        Ok(())
+    }
+
     fn validate_url(&self, raw: &str) -> Result<Url, HttpFetchError> {
         let url = Url::parse(raw).map_err(|e| HttpFetchError::InvalidUrl(e.to_string()))?;
         match url.scheme() {
@@ -115,6 +262,7 @@ impl HttpFetchHandler {
                 host: host.to_string(),
             });
         }
+        self.assert_safe_destination(host)?;
         Ok(url)
     }
 }
@@ -139,7 +287,7 @@ impl ToolHandler for HttpFetchHandler {
         let status = response.status().as_u16();
         let final_url = response.url().clone();
         // Defense in depth: even with redirects disabled, refuse if the
-        // client somehow ended on a different host.
+        // client somehow ended on a different / unsafe host.
         if let Some(host) = final_url.host_str() {
             if !self.host_allowed(host) {
                 return Err(HttpFetchError::HostNotAllowed {
@@ -147,6 +295,8 @@ impl ToolHandler for HttpFetchHandler {
                 }
                 .to_string());
             }
+            self.assert_safe_destination(host)
+                .map_err(|e| e.to_string())?;
         }
 
         let bytes = response
@@ -184,6 +334,21 @@ mod tests {
             actor_id: "u1".to_string(),
             arguments: serde_json::json!({ "url": url }),
         }
+    }
+
+    #[test]
+    fn classifies_common_ssrf_targets() {
+        assert_eq!(classify_ip("127.0.0.1".parse().unwrap()), IpClass::Loopback);
+        assert_eq!(classify_ip("10.0.0.5".parse().unwrap()), IpClass::Private);
+        assert_eq!(classify_ip("172.16.1.1".parse().unwrap()), IpClass::Private);
+        assert_eq!(classify_ip("192.168.1.1".parse().unwrap()), IpClass::Private);
+        assert_eq!(classify_ip("169.254.169.254".parse().unwrap()), IpClass::LinkLocal);
+        assert_eq!(classify_ip("8.8.8.8".parse().unwrap()), IpClass::Public);
+        assert_eq!(classify_ip("::1".parse().unwrap()), IpClass::Loopback);
+        assert_eq!(
+            classify_ip("::ffff:127.0.0.1".parse().unwrap()),
+            IpClass::Loopback
+        );
     }
 
     #[test]
@@ -233,9 +398,42 @@ mod tests {
     }
 
     #[test]
-    fn fetches_from_allowlisted_mock_server() {
-        // Tiny blocking HTTP server so we don't need the async wiremock
-        // runtime inside this sync ToolHandler test.
+    fn rejects_link_local_metadata_even_when_allowlisted() {
+        let handler = HttpFetchHandler::new(vec!["169.254.169.254".into()]).unwrap();
+        let err = handler
+            .invoke(&invocation("http://169.254.169.254/latest/meta-data/"))
+            .unwrap_err();
+        assert!(
+            err.contains("blocked") || err.contains("169.254"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_private_ip_literal_unless_allowlisted() {
+        let handler = HttpFetchHandler::new(vec!["example.com".into()]).unwrap();
+        let err = handler
+            .invoke(&invocation("http://192.168.0.1/"))
+            .unwrap_err();
+        assert!(err.contains("not on the egress allowlist"));
+    }
+
+    #[test]
+    fn rejects_localhost_name_even_if_allowlisted() {
+        // Hostname path must not reach loopback via DNS (rebinding guard).
+        let handler = HttpFetchHandler::new(vec!["localhost".into()]).unwrap();
+        let err = handler
+            .invoke(&invocation("http://localhost/"))
+            .unwrap_err();
+        assert!(
+            err.contains("non-public") || err.contains("resolves"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn fetches_from_allowlisted_loopback_literal() {
+        // Explicit IP allowlist is the supported way to hit local mocks.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         let host = format!("127.0.0.1:{}", addr.port());
@@ -267,17 +465,6 @@ mod tests {
     fn allowlisted_host_still_rejects_sibling_host() {
         let handler =
             HttpFetchHandler::new(vec!["127.0.0.1".into(), "example.com".into()]).unwrap();
-        // Port is part of host_str for URLs with an explicit port — ensure
-        // a bare IP allowlist entry does not accidentally permit :9999
-        // unless that exact host:port was listed. Here we listed "127.0.0.1"
-        // without a port, so http://127.0.0.1:1/ (port 1) should fail the
-        // host match (host_str is "127.0.0.1" actually for Url - wait,
-        // Url::host_str() returns hostname WITHOUT port. So 127.0.0.1
-        // allowlist WOULD match 127.0.0.1:anyport.
-        //
-        // That's correct hostname-based allowlisting: ports aren't part of
-        // the host identity for our matcher. Assert the happy path of
-        // hostname matching instead.
         assert!(handler.host_allowed("127.0.0.1"));
         assert!(handler.host_allowed("EXAMPLE.COM"));
         assert!(!handler.host_allowed("evil.com"));
