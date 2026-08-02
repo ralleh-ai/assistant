@@ -266,11 +266,16 @@ the debug panel is collapsed.
 
 `set PRESENCE_DROPLET=1` before launching to swap the standard 960×720
 resizable window for a **frameless, always-on-top 320×320 droplet** —
-the shape ADR-013 commits to for the shipping product. Per-pixel
-transparency (composite-shader alpha output) is a separate follow-up; in
-this pass the droplet is a small opaque always-on-top square, and the
-point of the flag is to exercise the chrome and z-order path before the
-alpha path is wired up.
+the shape ADR-013 commits to for the shipping product.
+
+`set PRESENCE_TRANSPARENT=1` (implies droplet) additionally asks the OS
+compositor for **per-pixel alpha** and makes the window **click-through**
+via `winit::Window::set_cursor_hittest(false)`. The composite shader
+switches to a coverage-derived alpha, so empty regions genuinely show the
+desktop underneath rather than a near-black rectangle. On adapters
+without `CompositeAlphaMode::PreMultiplied`/`PostMultiplied` support the
+runtime logs a warning and falls back to opaque — the droplet still
+draws, it just has its brand-ink background.
 
 ## Driving the presence from another process (stdin transport)
 

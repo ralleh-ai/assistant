@@ -96,11 +96,15 @@ impl Presence {
         // would leave us with a floating window we couldn't drive.
         let mut child = ProcessCommand::new(&bin)
             .env("PRESENCE_STDIN_IPC", "1")
-            // The droplet chrome from Phase 2 §3 second slice. Skipping
-            // this env var would give us the full 960x720 dev harness
-            // with an egui panel — useful for local debugging but not
-            // the shape the shell wants to embed.
-            .env("PRESENCE_DROPLET", "1")
+                // The droplet chrome from Phase 2 §3 second slice. Skipping
+                // this env var would give us the full 960x720 dev harness
+                // with an egui panel — useful for local debugging but not
+                // the shape the shell wants to embed.
+                .env("PRESENCE_DROPLET", "1")
+                // Per-pixel alpha + click-through. Implies droplet on the
+                // runtime side; setting both here is explicit and
+                // future-proofs against the two flags diverging.
+                .env("PRESENCE_TRANSPARENT", "1")
             .stdin(Stdio::piped())
             // Passing stdout/stderr through keeps the runtime's logs
             // visible in the same console the shell is launched from —

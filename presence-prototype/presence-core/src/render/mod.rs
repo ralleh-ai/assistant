@@ -73,8 +73,32 @@ pub struct Renderer {
     instance_capacity: usize,
 }
 
+/// Construction-time options. Grouping them here rather than as
+/// positional args keeps the runtime's `new(...)` call readable and
+/// leaves room for the next few knobs (custom point budget, vsync
+/// override) without another API break.
+#[derive(Debug, Clone, Copy)]
+pub struct RendererOptions {
+    /// Ask for a per-pixel alpha swapchain and drive the composite in
+    /// premultiplied-alpha mode. Falls back to the platform default
+    /// (opaque) with a `warn!` log if the adapter reports no
+    /// compatible alpha mode — no visual difference on that path,
+    /// which is what we want on machines that can't do it.
+    pub transparent: bool,
+}
+
+impl Default for RendererOptions {
+    fn default() -> Self {
+        Self { transparent: false }
+    }
+}
+
 impl Renderer {
     pub async fn new(window: Arc<Window>) -> Self {
+        Self::new_with_options(window, RendererOptions::default()).await
+    }
+
+    pub async fn new_with_options(window: Arc<Window>, options: RendererOptions) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -116,13 +140,57 @@ impl Renderer {
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
 
+        // Alpha mode selection. When `transparent` is requested, prefer
+        // `PreMultiplied` (Windows/DX12 supports it) then `PostMultiplied`;
+        // otherwise use the adapter's first preference (usually `Opaque`).
+        // Falling back to Opaque with a warn keeps this path safe on
+        // adapters that can't do per-pixel alpha — the droplet just shows
+        // its brand-ink background there.
+        let alpha_mode = if options.transparent {
+            let picked = surface_caps
+                .alpha_modes
+                .iter()
+                .copied()
+                .find(|m| {
+                    matches!(
+                        m,
+                        wgpu::CompositeAlphaMode::PreMultiplied
+                            | wgpu::CompositeAlphaMode::PostMultiplied
+                    )
+                });
+            match picked {
+                Some(m) => m,
+                None => {
+                    log::warn!(
+                        "presence-core: transparent surface requested, but no \
+                         per-pixel alpha mode is available on this adapter \
+                         (falling back to {:?}). Droplet will render opaque.",
+                        surface_caps.alpha_modes[0]
+                    );
+                    surface_caps.alpha_modes[0]
+                }
+            }
+        } else {
+            surface_caps.alpha_modes[0]
+        };
+        // Only claim we're transparent to the composite shader when the
+        // surface actually is — otherwise the coverage-alpha output would
+        // pre-darken every pixel by its own alpha over an opaque swapchain,
+        // which reads as a heavy vignette on adapters that fell back.
+        let transparent_effective = options.transparent
+            && matches!(
+                alpha_mode,
+                wgpu::CompositeAlphaMode::PreMultiplied
+                    | wgpu::CompositeAlphaMode::PostMultiplied
+            );
+
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
-            alpha_mode: surface_caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -295,12 +363,13 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
-        let post = PostChain::new(
+        let mut post = PostChain::new(
             &device,
             surface_config.format,
             surface_config.width,
             surface_config.height,
         );
+        post.transparent = transparent_effective;
 
         Self {
             surface,

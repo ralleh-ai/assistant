@@ -2,7 +2,8 @@
 
 **As of:** 2026-08-02 (Phase 2 §1–§3 landed: crate split, `presence-ipc`,
 stdio transport, shell-side `Presence` + `MicPump` driving live audio
-level into `Command::SetSignalsScalars`)
+level into `Command::SetSignalsScalars`; per-pixel alpha + click-through
+droplet)
 
 ## Build/test state
 

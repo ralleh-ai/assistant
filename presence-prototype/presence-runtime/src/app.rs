@@ -10,7 +10,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId, WindowLevel};
 
-use presence_core::render::Renderer;
+use presence_core::render::{Renderer, RendererOptions};
 use presence_core::scene::mode::PresenceMode;
 use presence_core::scene::SceneDirector;
 
@@ -98,8 +98,24 @@ const DROPLET_ENV: &str = "PRESENCE_DROPLET";
 const DROPLET_SIZE_PX: f64 = 320.0;
 
 fn droplet_enabled() -> bool {
+    truthy_env(DROPLET_ENV)
+}
+
+/// Per-pixel alpha + click-through opt-in. Implies droplet chrome
+/// because a full-window transparent 960×720 dev harness would be
+/// worse than either mode on its own — the debug panel would float
+/// over a huge invisible rectangle. Off by default; the shell sets
+/// this env var when it spawns the runtime for real use (see
+/// `desktop-edge/src-tauri/src/presence.rs`).
+const TRANSPARENT_ENV: &str = "PRESENCE_TRANSPARENT";
+
+fn transparent_enabled() -> bool {
+    truthy_env(TRANSPARENT_ENV)
+}
+
+fn truthy_env(name: &str) -> bool {
     matches!(
-        std::env::var(DROPLET_ENV)
+        std::env::var(name)
             .unwrap_or_default()
             .to_ascii_lowercase()
             .as_str(),
@@ -319,17 +335,20 @@ impl ApplicationHandler for App {
         // near-term opt-in until Phase 4 wires this to a persisted
         // setting.
         //
-        // Per-pixel transparency (composite-shader alpha output) is
-        // deliberately *not* here — that is a separate change that
-        // touches `presence-core::render::post`, and mixing it into
-        // the chrome commit would obscure whether a visual regression
-        // came from the frame changes or the alpha path.
-        let attrs = if droplet_enabled() {
+        // Transparency implies droplet — see the note on
+        // `TRANSPARENT_ENV`. Combining the two gives the shape
+        // ADR-013 commits to: a frameless, always-on-top, per-pixel
+        // alpha droplet that ignores clicks by default.
+        let transparent = transparent_enabled();
+        let droplet = droplet_enabled() || transparent;
+
+        let attrs = if droplet {
             log::info!(
-                "presence-runtime: {DROPLET_ENV}=1 — frameless, always-on-top, \
-                 {DROPLET_SIZE_PX:.0}x{DROPLET_SIZE_PX:.0}"
+                "presence-runtime: droplet mode ({DROPLET_ENV}/{TRANSPARENT_ENV}) — \
+                 frameless, always-on-top, {DROPLET_SIZE_PX:.0}x{DROPLET_SIZE_PX:.0}, \
+                 transparent={transparent}"
             );
-            Window::default_attributes()
+            let mut a = Window::default_attributes()
                 .with_title("Ralleh — Presence")
                 .with_decorations(false)
                 .with_resizable(false)
@@ -337,7 +356,16 @@ impl ApplicationHandler for App {
                 .with_inner_size(winit::dpi::LogicalSize::new(
                     DROPLET_SIZE_PX,
                     DROPLET_SIZE_PX,
-                ))
+                ));
+            if transparent {
+                // Ask the OS compositor to composite this window with
+                // per-pixel alpha. Without this the swapchain can still
+                // be configured PreMultiplied but the window itself
+                // shows an opaque black background, which defeats the
+                // whole point.
+                a = a.with_transparent(true);
+            }
+            a
         } else {
             Window::default_attributes()
                 .with_title("Ralleh — Point Cloud Presence (Phase 1 Prototype)")
@@ -349,7 +377,28 @@ impl ApplicationHandler for App {
                 .expect("failed to create window"),
         );
 
-        let renderer = pollster::block_on(Renderer::new(window.clone()));
+        // Click-through: the droplet must not eat mouse events meant
+        // for the app underneath it, or the user will find their own
+        // desktop half-usable whenever the presence is on. `false`
+        // means "cursor events pass through to whatever is under
+        // this window"; winit routes to WS_EX_TRANSPARENT on Windows
+        // and the equivalents on macOS/Linux. Non-fatal on error —
+        // some platforms report `NotSupported`, and a droplet that
+        // grabs clicks is worse than no droplet only for the click,
+        // not for the visuals.
+        if transparent {
+            if let Err(err) = window.set_cursor_hittest(false) {
+                log::warn!(
+                    "presence-runtime: set_cursor_hittest(false) failed ({err}); \
+                     clicks on the droplet will not pass through to windows behind it"
+                );
+            }
+        }
+
+        let renderer = pollster::block_on(Renderer::new_with_options(
+            window.clone(),
+            RendererOptions { transparent },
+        ));
         #[cfg(feature = "dev")]
         let ui = EguiLayer::new(&renderer.device, renderer.surface_config.format, &window);
 

@@ -159,15 +159,43 @@ fn fs_composite(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = tonemap_aces(hdr);
 
-    // The field is added after tonemapping so the brand ink stays exactly
-    // the intended near-black instead of being crushed by the ACES toe.
-    color = color + composite.field.rgb;
+    // `field.a` is the background *opacity*: 1.0 keeps the current
+    // opaque behaviour (window is a solid brand-ink rectangle), 0.0
+    // makes the window pass-through everywhere the presence itself
+    // is not painting light. Only lerp along that axis, so a fractional
+    // value in the future can dim the whole droplet gracefully.
+    let background = composite.field.a;
+
+    // The field is added after tonemapping so the brand ink stays
+    // exactly the intended near-black instead of being crushed by the
+    // ACES toe. In the transparent path this contribution is zero, so
+    // the window truly shows through in dim regions rather than
+    // punching a near-black square out of the desktop.
+    color = color + composite.field.rgb * background;
 
     let vignette_strength = composite.params.z;
     let vignette_inner = composite.params.w;
     let centered = in.uv - vec2<f32>(0.5, 0.5);
     let radius = length(centered) * 1.41421356;
     let vignette = 1.0 - smoothstep(vignette_inner, 1.0, radius) * vignette_strength;
+    color = color * vignette;
 
-    return vec4<f32>(color * vignette, 1.0);
+    // Coverage-from-luminance. Empty space has near-zero color and
+    // maps to alpha ≈ 0; dense cores clip to alpha 1. The 4.0 scale
+    // matches the composite's typical mid-tone luminance (~0.15..0.25
+    // on the skin) landing at ~0.6..1.0 alpha, so a body reads as
+    // "mostly there" while corners fade. Tuning knob if the droplet
+    // reads too faint or too solid.
+    let color_luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let coverage = clamp(color_luma * 4.0, 0.0, 1.0);
+
+    // `background` acts as the alpha floor: opaque mode pins alpha
+    // to 1.0 (unchanged from before), transparent mode uses coverage.
+    let alpha = mix(coverage, 1.0, background);
+
+    // Premultiplied output. Matches wgpu's `CompositeAlphaMode::PreMultiplied`
+    // (Windows/DX12) — a straight-alpha output would ghost over dark
+    // desktop content because the compositor would multiply the already
+    // additive-blended color a second time.
+    return vec4<f32>(color * alpha, alpha);
 }

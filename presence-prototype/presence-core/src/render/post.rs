@@ -137,6 +137,15 @@ struct BloomLevel {
 /// are built once.
 pub struct PostChain {
     pub settings: PostSettings,
+    /// True iff the swapchain surface is configured for per-pixel
+    /// alpha (`CompositeAlphaMode::PreMultiplied`) and the composite
+    /// should therefore output a transparent background outside the
+    /// presence's own painted region. The composite shader picks the
+    /// path via `CompositeUniform::field.a`; see `post.wgsl`. Public
+    /// so a runtime that reconfigures the surface at runtime (e.g.
+    /// toggling droplet mode) can flip this without recreating the
+    /// whole `PostChain`.
+    pub transparent: bool,
 
     bright_pipeline: wgpu::RenderPipeline,
     down_pipeline: wgpu::RenderPipeline,
@@ -310,6 +319,7 @@ impl PostChain {
             composite_layout,
             sampler,
             targets,
+            transparent: false,
         }
     }
 
@@ -429,7 +439,16 @@ impl PostChain {
                 self.settings.vignette_strength,
                 self.settings.vignette_inner,
             ],
-            field: [ink[0], ink[1], ink[2], 1.0],
+            // `field.a` is the background opacity switch: 1.0 keeps
+            // the classic near-black rectangle, 0.0 tells the composite
+            // shader to output premultiplied alpha derived from
+            // per-pixel coverage — the droplet path. See `post.wgsl`.
+            field: [
+                ink[0],
+                ink[1],
+                ink[2],
+                if self.transparent { 0.0 } else { 1.0 },
+            ],
             highlight: [
                 self.settings.highlight_desaturation,
                 self.settings.highlight_start,

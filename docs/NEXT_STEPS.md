@@ -64,9 +64,14 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
       wasteful for a 60 Hz signal stream. Enforce the T9/T14 constraint
       in the *type*: no field capable of holding raw audio, transcript,
       or prompt/completion content.
-   3. **Frameless / transparent / always-on-top droplet (Windows first).**
-      Per-pixel alpha, click-through by default, hover-hold or global
-      hotkey to grab focus. macOS and Linux follow.
+   3. ~~**Frameless / transparent / always-on-top droplet (Windows
+      first).**~~ **transparency + click-through landed
+      (2026-08-02)** — `PRESENCE_TRANSPARENT=1` (auto-implies droplet
+      chrome) asks winit for a transparent window, configures the
+      swapchain for `CompositeAlphaMode::PreMultiplied`, and switches
+      the composite shader to coverage-derived premultiplied alpha.
+      `set_cursor_hittest(false)` makes clicks pass through by
+      default. Hover-hold / global-hotkey focus grab still pending.
    4. **Position and layout persistence.** Presence-side store; the
       shell should not own window geometry. Multi-monitor placement is
       still open (ADR-013 §"Not decided here"); land single-monitor
