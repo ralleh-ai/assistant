@@ -1,0 +1,75 @@
+# Optional audio e2e — NOT part of default PR CI.
+# Runs WhisperCli / PiperCli ignored tests (and optionally in-process whisper-rs).
+name: audio-e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_whisper_rs:
+        description: "Also build --features whisper and run whisper_rs_e2e"
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CI: "true"
+
+jobs:
+  cli-e2e:
+    name: whisper-cli + piper-cli e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Download whisper CLI + model + sample
+        run: |
+          chmod +x scripts/download-whisper-cli.sh scripts/download-whisper-model.sh
+          ./scripts/download-whisper-cli.sh
+          ./scripts/download-whisper-model.sh
+          CLI="$(find tools/whisper -type f -name whisper-cli | head -n 1)"
+          echo "WHISPER_CLI_PATH=${CLI}" >> "$GITHUB_ENV"
+          echo "WHISPER_MODEL_PATH=${GITHUB_WORKSPACE}/models/ggml-tiny.en.bin" >> "$GITHUB_ENV"
+
+      - name: Download piper CLI + voice
+        run: |
+          chmod +x scripts/download-piper.sh
+          ./scripts/download-piper.sh
+          EXE="$(find tools/piper -type f -name piper | head -n 1)"
+          echo "PIPER_CLI_PATH=${EXE}" >> "$GITHUB_ENV"
+          echo "PIPER_MODEL_PATH=${GITHUB_WORKSPACE}/models/en_US-lessac-low.onnx" >> "$GITHUB_ENV"
+
+      - name: Run ignored CLI e2e tests
+        run: cargo test -p ralleh-audio-core -- --ignored whisper_cli_e2e piper_cli_e2e
+
+  whisper-rs-e2e:
+    name: in-process whisper-rs e2e
+    if: ${{ inputs.run_whisper_rs }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: whisper-rs
+
+      - name: Download ggml model
+        run: |
+          chmod +x scripts/download-whisper-model.sh
+          ./scripts/download-whisper-model.sh
+          echo "WHISPER_MODEL_PATH=${GITHUB_WORKSPACE}/models/ggml-tiny.en.bin" >> "$GITHUB_ENV"
+
+      - name: Run ignored whisper-rs e2e
+        run: cargo test -p ralleh-audio-core --features whisper -- --ignored whisper_rs_e2e

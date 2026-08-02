@@ -176,7 +176,16 @@ egress is allowed — same layering as fs sandbox roots. An empty allowlist
 fails closed at config load time rather than registering a no-op tool.
 
 
-## Commit `Cargo.lock` for reproducible app builds
+## Optional Linux audio e2e (not default CI)
+
+**Decision:** Keep real ggml/ONNX e2e off the default `ci.yml` path. Add
+`audio-e2e` as a manual GitHub Actions workflow plus Linux download
+scripts mirroring the Windows `.ps1` helpers. In-process `whisper-rs` is
+an optional input (`run_whisper_rs`) because it needs cmake/libclang and
+a longer compile.
+
+**Why:** Default PR CI must stay fast and headless-safe; model/tool
+downloads and native STT builds are opt-in validation, not merge gates.
 
 **Decision:** Track `Cargo.lock` in git (removed from `.gitignore`). This
 workspace ships a runnable binary (`ralleh-mcp-server`) and CI; a lockfile

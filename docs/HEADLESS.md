@@ -45,10 +45,22 @@ cargo run -p ralleh-audio-core --features mic --bin mic-capture -- --seconds 5 -
 ### Real STT / TTS models
 
 ```bash
-# Windows scripts under scripts/; download ggml + whisper-cli / piper + voice
+# Windows
+./scripts/download-whisper-cli.ps1
+./scripts/download-whisper-model.ps1
+./scripts/download-piper.ps1
+
+# Linux
+./scripts/download-whisper-cli.sh
+./scripts/download-whisper-model.sh
+./scripts/download-piper.sh
+
 cargo test -p ralleh-audio-core -- --ignored whisper_cli_e2e
 cargo test -p ralleh-audio-core -- --ignored piper_cli_e2e
 ```
+
+GitHub: Actions → **audio-e2e** → Run workflow (optional
+`run_whisper_rs` for in-process whisper.cpp on Linux).
 
 Env: `WHISPER_CLI_PATH`, `WHISPER_MODEL_PATH`, `PIPER_CLI_PATH`,
 `PIPER_MODEL_PATH` — see [`ENVIRONMENT.md`](./ENVIRONMENT.md).

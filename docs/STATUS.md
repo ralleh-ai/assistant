@@ -1,19 +1,22 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (Cargo.lock + headless CI workflow)
+**As of:** 2026-08-01 (Linux audio-e2e workflow + Cargo.lock CI)
 
 ## Build/test state
 
 ```
-cargo test --workspace → 134 passed, 2 ignored (CI=true)
-GitHub Actions: .github/workflows/ci.yml (ubuntu, default features)
+cargo test --workspace → default features (headless CI on every push/PR)
+workflow_dispatch: audio-e2e (whisper-cli + piper; optional whisper-rs)
 ```
 
 ## Highlights
 
-- **`Cargo.lock` tracked** for reproducible CI/app builds.
-- **Headless CI** — `cargo test --workspace` on push/PR to `master`.
-- Http-fetch SSRF harden (T3); mic-capture; audio defaults headless-safe.
+- **`.github/workflows/audio-e2e.yml`** — manual Linux job downloads CLI
+  tools/models and runs ignored Whisper/Piper e2e; optional
+  `--features whisper` job.
+- Linux download scripts: `scripts/download-whisper-*.sh`,
+  `scripts/download-piper.sh`.
+- Default CI + `Cargo.lock` unchanged (no mic/whisper on every PR).
 
 ## Next up
 

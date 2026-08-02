@@ -16,6 +16,12 @@ carried over from the environment this was originally built in.
   dependency versions.
 - GitHub Actions (`.github/workflows/ci.yml`) runs headless
   `cargo test --workspace` on push/PR to `master`.
+- Optional audio e2e (`.github/workflows/audio-e2e.yml`) is
+  **workflow_dispatch only** — downloads Linux whisper-cli/piper and runs
+  ignored tests; set `run_whisper_rs` to also exercise `--features whisper`.
+- Linux download helpers: `scripts/download-whisper-cli.sh`,
+  `download-whisper-model.sh`, `download-piper.sh` (PowerShell twins for
+  Windows).
 - If not using the bootstrap script, the three manual steps it performs:
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
