@@ -111,10 +111,24 @@ pub struct Signals {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Command {
-    /// Replaces the presence's continuous signal state wholesale. This is
-    /// the hot path — the shell sends this every tick (or coalesced to
-    /// ~30 Hz, whichever is cheaper) once real signals are wired up.
+    /// Replaces the presence's continuous signal state wholesale.
+    /// **Authoritative** on `active_modes` — modes not in the list are
+    /// released. Use this when the shell has a snapshot of the whole
+    /// desired state to converge on; use [`Command::SetSignalsScalars`]
+    /// when you want to update only the scalars (e.g. a mic pump that
+    /// has no business touching mode engagement).
     SetSignals(Signals),
+    /// Scalars-only signal update. The presence updates
+    /// `intensity`, `audio_level`, and `progress` but leaves the
+    /// engaged-modes set untouched. This is the hot path the mic pump
+    /// uses — it fires many times per second and must never
+    /// accidentally release a mode the shell engaged for a different
+    /// reason.
+    SetSignalsScalars {
+        intensity: f32,
+        audio_level: f32,
+        progress: f32,
+    },
     /// Engages or disengages a single mode. The presence handles fades on
     /// its own timeline (`docs/adr/adr-012-additive-mode-composition.md`);
     /// this message just flips the "wanted" state.
@@ -247,6 +261,11 @@ mod tests {
             Command::SetMode {
                 mode: PresenceMode::Thinking,
                 engaged: true,
+            },
+            Command::SetSignalsScalars {
+                intensity: 0.5,
+                audio_level: 0.9,
+                progress: 0.0,
             },
             Command::SetRingWanted { wanted: true },
             Command::SetReducedMotion { enabled: false },

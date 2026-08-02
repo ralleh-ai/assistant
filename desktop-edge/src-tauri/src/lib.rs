@@ -7,7 +7,10 @@
 mod mic;
 mod os_caps;
 mod presence;
+mod presence_mic;
 mod settings;
+
+use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -16,6 +19,7 @@ use mic::{mic_feature_enabled, run_mic_smoke, MicSmokeResult};
 use os_caps::{run_clipboard_smoke, ClipboardSmokeResult};
 use presence::Presence;
 use presence_ipc::{Command as PresenceCommand, PaletteId, PresenceMode, QualityTier};
+use presence_mic::MicPump;
 use ralleh_audio_core::{run_mock_voice_pipeline, MockVoicePipelineResult};
 use settings::{load_settings, save_settings, settings_path_display, EdgeSettings};
 
@@ -208,6 +212,79 @@ fn presence_set_quality_tier(
     Ok(())
 }
 
+/// Handle to the active mic pump (if any). Mutex because Tauri hands
+/// out shared references to managed state and we need to swap the
+/// `Option` in-place from the start/stop commands.
+type MicPumpState = Mutex<Option<MicPump>>;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceMicStatus {
+    pub running: bool,
+    pub mic_feature: bool,
+}
+
+#[tauri::command]
+fn presence_mic_status(pump: State<'_, MicPumpState>) -> PresenceMicStatus {
+    PresenceMicStatus {
+        running: pump.lock().map(|p| p.is_some()).unwrap_or(false),
+        mic_feature: mic_feature_enabled(),
+    }
+}
+
+#[tauri::command]
+fn presence_mic_start(
+    app: AppHandle,
+    presence: State<'_, Presence>,
+    pump: State<'_, MicPumpState>,
+) -> Result<PresenceMicStatus, String> {
+    // Same clearance gate as `mic_smoke`. Live capture without an
+    // explicit acknowledgement is exactly the case T13 (policy +
+    // capabilities) rules out.
+    let settings = load_settings(&app)?;
+    if !settings.mic_acknowledged {
+        return Err(
+            "mic clearance not stamped — open the station log (Voice) and acknowledge OS mic guidance first"
+                .into(),
+        );
+    }
+
+    let mut guard = pump.lock().map_err(|e| e.to_string())?;
+    if guard.is_some() {
+        // Already running — idempotent success. Restarting would drop
+        // the current stream and open a new one; the UI has no way to
+        // know it did that from a click and it would be a spec change.
+        return Ok(PresenceMicStatus {
+            running: true,
+            mic_feature: mic_feature_enabled(),
+        });
+    }
+    let Some(sender) = presence.sender_clone() else {
+        return Err(
+            "presence renderer is not running (set RALLEH_PRESENCE_BIN before starting the shell)"
+                .into(),
+        );
+    };
+    let started = MicPump::start(sender)?;
+    *guard = Some(started);
+    Ok(PresenceMicStatus {
+        running: true,
+        mic_feature: mic_feature_enabled(),
+    })
+}
+
+#[tauri::command]
+fn presence_mic_stop(pump: State<'_, MicPumpState>) -> Result<PresenceMicStatus, String> {
+    let mut guard = pump.lock().map_err(|e| e.to_string())?;
+    if let Some(mut p) = guard.take() {
+        p.stop();
+    }
+    Ok(PresenceMicStatus {
+        running: false,
+        mic_feature: mic_feature_enabled(),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Presence is spawned once at startup and installed as managed state.
@@ -215,9 +292,11 @@ pub fn run() {
     // `State<'_, Presence>`; on shutdown Tauri drops the state, which
     // closes stdin and kills the child (see `presence::Presence::drop`).
     let presence = Presence::spawn_from_env();
+    let mic_pump: MicPumpState = Mutex::new(None);
 
     tauri::Builder::default()
         .manage(presence)
+        .manage(mic_pump)
         .invoke_handler(tauri::generate_handler![
             core_ping,
             voice_smoke,
@@ -233,6 +312,9 @@ pub fn run() {
             presence_set_palette,
             presence_set_ring_wanted,
             presence_set_quality_tier,
+            presence_mic_status,
+            presence_mic_start,
+            presence_mic_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

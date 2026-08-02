@@ -82,8 +82,13 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
       unknown/missing values fall back to defaults, never blocking
       startup. On startup and change the shell IPC's the resolved
       values into the presence.
-   7. **Still driven by synthetic signals** — this phase proves the
-      window + IPC + settings mechanics, not real assistant state.
+   7. ~~**Still driven by synthetic signals**~~ **first real signal
+      wired (2026-08-02)** — live mic → smoothed audio level →
+      `Command::SetSignalsScalars` via the shell's `MicPump`. The pump
+      is opt-in (dev-panel toggle, requires mic clearance) and the
+      wire path now supports scalars-only updates that never touch
+      mode engagement. `intensity` and `progress` are still synthetic;
+      those move under Phase 3 alongside the VAD/router work.
 
 9. **Phase 3 — real signals** (blocked on #13 below plus a wiring
     prerequisite):

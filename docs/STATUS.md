@@ -1,8 +1,8 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-02 (presence prototype: improvement-guidance pass;
-material modes, hierarchy dampening, quality tiers, ADR-013 window/process
-decisions locked)
+**As of:** 2026-08-02 (Phase 2 §1–§3 landed: crate split, `presence-ipc`,
+stdio transport, shell-side `Presence` + `MicPump` driving live audio
+level into `Command::SetSignalsScalars`)
 
 ## Build/test state
 
@@ -76,12 +76,15 @@ explicitly before invoking `npm`/`cargo`.
 
 ## Next up
 
-- **Presence Phase 2** — implement ADR-013's window and process model
-  (Windows first for the fussy per-pixel-alpha + click-through path),
-  wire the IPC channel to `desktop-edge`, and persist palette / quality
-  tier / reduced-motion in `EdgeSettings`. See `NEXT_STEPS.md` §7–8 for
-  the concrete task list and `PRESENCE_INTEGRATION_PLAN.md` §4 Phase 2
-  for the phasing.
+- **Presence Phase 2 (in progress)** — crate split (`presence-core` /
+  `presence-runtime`), `presence-ipc` wire crate, stdio transport,
+  droplet chrome flag, shell-side `Presence` spawner, Tauri command
+  surface (`presence_set_*`), React dev panel, and live mic pump
+  (`MicPump` → `Command::SetSignalsScalars`) all landed. Remaining:
+  per-pixel-alpha + click-through droplet on Windows, position/layout
+  persistence, `EdgeSettings.presence_*` fields, and Phase 3's real
+  `intensity` / `progress` signals from VAD / router. See
+  `NEXT_STEPS.md` §8 and `PRESENCE_INTEGRATION_PLAN.md` §4 Phase 2.
 - Medium-priority backlog (OIDC when control plane exists, live mic →
   VAD → STT beyond capture metrics, real screen/hotkey OS backends,
   etc.) — see NEXT_STEPS.md.

@@ -151,6 +151,16 @@ impl Presence {
     pub fn is_enabled(&self) -> bool {
         self.tx.is_some()
     }
+
+    /// A clone of the envelope sender, for background pumps that need
+    /// to push commands without going through a `send()` call per
+    /// packet. `None` when presence is disabled — the caller must
+    /// treat the absence as "no pump, no error". `Sender<Envelope>` is
+    /// `Clone` so multiple pumps can hold their own copy without
+    /// contention on a mutex.
+    pub fn sender_clone(&self) -> Option<Sender<Envelope>> {
+        self.tx.clone()
+    }
 }
 
 impl Drop for Presence {

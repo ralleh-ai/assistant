@@ -141,6 +141,25 @@ impl SceneDirector {
                     self.modes.set(mode, wanted);
                 }
             }
+            Command::SetSignalsScalars {
+                intensity,
+                audio_level,
+                progress,
+            } => {
+                // Scalars-only path. Same NaN-fold + clamp as SetSignals,
+                // but ModeLayer is untouched — this is the message the
+                // mic pump fires at ~30 Hz, and letting it churn mode
+                // engagement would be exactly the collision the two
+                // commands exist to keep separate.
+                let sanitize = |v: f32, lo: f32, hi: f32| {
+                    if v.is_nan() { lo } else { v.clamp(lo, hi) }
+                };
+                self.signals = PresenceSignals {
+                    intensity: sanitize(intensity, 0.0, 1.5),
+                    audio_level: sanitize(audio_level, 0.0, 1.0),
+                    progress: sanitize(progress, 0.0, 1.0),
+                };
+            }
             Command::SetMode { mode, engaged } => {
                 self.modes.set(mode.into(), engaged);
             }
@@ -249,6 +268,33 @@ mod tests {
         assert_eq!(director.tier(), QualityTier::Low);
         let after = director.assistant_cloud.particles.len();
         assert_ne!(before, after, "point set should have been regenerated");
+    }
+
+    #[test]
+    fn set_signals_scalars_updates_scalars_and_leaves_modes_alone() {
+        let mut director = SceneDirector::new();
+        director.set_mode(PresenceMode::Thinking, true);
+        director.apply_command(Command::SetSignalsScalars {
+            intensity: 0.6,
+            audio_level: 0.4,
+            progress: 0.0,
+        });
+        assert!((director.signals.audio_level - 0.4).abs() < 1e-6);
+        // The whole point of this variant: no mode churn.
+        assert!(director.modes.is_engaged(PresenceMode::Thinking));
+    }
+
+    #[test]
+    fn set_signals_scalars_sanitises_nan_and_out_of_range_like_set_signals() {
+        let mut director = SceneDirector::new();
+        director.apply_command(Command::SetSignalsScalars {
+            intensity: 999.0,
+            audio_level: f32::NAN,
+            progress: -1.0,
+        });
+        assert!(director.signals.intensity <= 1.5);
+        assert!(!director.signals.audio_level.is_nan());
+        assert!(director.signals.progress >= 0.0);
     }
 
     #[test]

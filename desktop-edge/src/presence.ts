@@ -81,6 +81,38 @@ export function presenceSetSignals(signals: PresenceSignals): Promise<void> {
   return safeInvoke("presence_set_signals", { signals }).then(() => undefined);
 }
 
+/**
+ * Live-mic pump status. `micFeature` is `false` on a shell built
+ * without the `mic` Cargo feature — the pump can never start there, and
+ * the UI should say why rather than silently doing nothing.
+ */
+export type PresenceMicStatus = {
+  running: boolean;
+  micFeature: boolean;
+};
+
+export async function presenceMicStatus(): Promise<PresenceMicStatus> {
+  const s = await safeInvoke<PresenceMicStatus>("presence_mic_status");
+  return s ?? { running: false, micFeature: false };
+}
+
+/**
+ * Starts the live-mic pump. Fails synchronously (rejects) if the shell
+ * has not had mic clearance stamped, if the presence runtime is not
+ * spawned, or if the OS reports no default input device. The dev panel
+ * surfaces the error so the operator can react.
+ */
+export async function presenceMicStart(): Promise<PresenceMicStatus> {
+  // Cannot use safeInvoke here — a failure to start is *actionable*,
+  // and swallowing it would leave the toggle button perpetually stuck
+  // in "off" with no explanation.
+  return (await invoke<PresenceMicStatus>("presence_mic_start")) as PresenceMicStatus;
+}
+
+export async function presenceMicStop(): Promise<PresenceMicStatus> {
+  return (await invoke<PresenceMicStatus>("presence_mic_stop")) as PresenceMicStatus;
+}
+
 export function presenceSetReducedMotion(enabled: boolean): Promise<void> {
   return safeInvoke("presence_set_reduced_motion", { enabled }).then(() => undefined);
 }
