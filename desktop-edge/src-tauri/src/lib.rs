@@ -267,6 +267,21 @@ fn presence_apply_reduced_motion(
     Ok(())
 }
 
+/// Read-only snapshot of the modes the shell currently believes are
+/// engaged on the runtime (Phase 4 accessibility). Returns
+/// `PresenceMode::label()` strings so the caller doesn't need the
+/// enum bindings; the aria-live status line consumes this directly
+/// on a ~5 Hz timer. Sorted by label for deterministic UI order —
+/// see the tracker in `presence::Presence::current_modes`.
+#[tauri::command]
+fn presence_current_modes(presence: State<'_, Presence>) -> Vec<String> {
+    presence
+        .current_modes()
+        .into_iter()
+        .map(|m| m.label().to_string())
+        .collect()
+}
+
 #[tauri::command]
 fn presence_set_palette(
     palette: PaletteId,
@@ -726,6 +741,7 @@ pub fn run() {
             presence_set_signals,
             presence_set_reduced_motion,
             presence_apply_reduced_motion,
+            presence_current_modes,
             presence_set_palette,
             presence_set_ring_wanted,
             presence_set_quality_tier,

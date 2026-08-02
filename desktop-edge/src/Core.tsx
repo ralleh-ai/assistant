@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { EdgeSettings } from "./settings";
 import { presenceStatus } from "./presence";
 import { PresenceDevPanel } from "./PresenceDevPanel";
+import { PresenceStatusLine } from "./PresenceStatusLine";
 
 type Props = {
   settings: EdgeSettings;
@@ -81,6 +82,7 @@ export function Core({ settings, onOpenSettings }: Props) {
           <span>{styleLabel}</span>
         </p>
 
+        {presenceEnabled && <PresenceStatusLine />}
         {presenceEnabled && <PresenceDevPanel />}
       </div>
     </section>

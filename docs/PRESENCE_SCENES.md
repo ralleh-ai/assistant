@@ -627,6 +627,62 @@ To add a new mode (§4.3):
 4. If the term responds to a live signal, check the signal's rate against the surface behavior's spring bandwidth first (`PRESENCE_VISUAL_ENTITY.md` §6) — anything much above 1 Hz has to drive brightness rather than position.
 5. Confirm the shell still stays inside its radius band when the new term runs alongside the existing ones.
 
+To add a new entity kind (Phase 4 addendum):
+
+An `EntityKind` (`presence-core/src/scene/entity.rs`) is a stable
+identity tag for a distinct kind of visual object — different from
+a *scene* (which is a way of composing entities) and different from
+a *mode* (which is state layered on top of the shell). Most new
+work is a scene or a mode. Add a new kind when the *motion model*
+or the *point-generator contract* actually differs from anything
+that already exists — e.g. a physically-simulated splash, a
+volumetric fog layer, a text glyph swarm. Reuse the two existing
+kinds (`AssistantCloud`, `LoadingRing`) whenever the new visual
+can be expressed as a `SurfaceGenerator` + `SurfaceBehavior`
+pair; the shell is already tuned around that pair's cost profile.
+
+1. Confirm the new kind actually needs its own type. If the motion
+   is a surface deform with a spring settle, it is
+   `SurfaceBehavior` in different clothing — write a new
+   `SurfaceShape` (path above) instead, and stop here.
+2. Implement `PointGenerator` (`presence-core/src/sim/generators.rs`)
+   for the new kind. `generate(budget, params) -> Vec<Particle>`
+   must be deterministic on `(budget, params)` so the quality-tier
+   path can regenerate without a re-seed. Keep the per-particle
+   work bounded — see §8 "Point budgets" above.
+3. Implement `PointBehavior`
+   (`presence-core/src/sim/behaviors.rs`) for the new kind. `place`
+   runs every particle every step; `deform` runs on a quarter-rate
+   stagger. Anything faster than ~15 Hz belongs in `place`;
+   everything else in `deform`. This is the single biggest
+   performance decision in a new kind.
+4. Add the variant to `EntityKind` (`scene/entity.rs`) and give it
+   a label in `EntityKind::label`. The label is what appears in
+   the debug overlay and in future telemetry — pick something
+   grep-able.
+5. Instantiate one in `SceneDirector::new` (`scene/director.rs`)
+   alongside `assistant_cloud` / `loading_ring`. Pick a `priority`
+   (higher wins on the crowding rules — see §4.3). Wire it into
+   `set_quality_tier` so a tier switch regenerates its points at
+   the new budget the same way the existing entities do.
+6. If the new kind is engaged by a mode or a signal (rather than
+   always-on like the assistant shell), map the trigger in the
+   same file's mode-toggle / signal-consumer paths.
+7. Register a `SceneId` for at least one scene that uses the new
+   kind (`scene/registry.rs::SceneRegistry::with_builtin_scenes`).
+   The `builtins_match_the_scene_director` test guards against
+   registry drift; leave it to fail first as the reminder.
+8. Add a test that the new kind's `update` stays inside the shell
+   radius band under representative signal input, and add a
+   screenshot to `presence-prototype/README.md`. If the kind can
+   coexist with another entity, add a `*_dampens_active_modes_*`
+   pattern test too.
+9. Document the new kind's cost profile: how many noise
+   evaluations `deform` does, how many term multiplications
+   `place` does, and its measured FPS at the Balanced budget on
+   the reference machine. `PRESENCE_VISUAL_ENTITY.md` §9 is where
+   these numbers live.
+
 To add a new scene:
 
 1. Decide the intent and the visual character.

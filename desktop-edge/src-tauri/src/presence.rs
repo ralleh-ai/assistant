@@ -32,14 +32,29 @@
 //!   EOF and exits), the child's stdin closes (its reader thread sees
 //!   EOF), and the child is killed if it hasn't already exited.
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
-use presence_ipc::{Command, Envelope, Event, EventEnvelope};
+use presence_ipc::{Command, Envelope, Event, EventEnvelope, PresenceMode};
+
+/// Shared, thread-safe set of currently-engaged modes. Every code
+/// path that engages or releases a mode on the wire also updates
+/// this set, so the shell has a truthful answer to
+/// "what's on air right now?" without needing a reverse-channel
+/// event from the runtime. Consumed by the aria-live status line
+/// (Phase 4 accessibility) and by future observers (telemetry).
+///
+/// `Arc<Mutex<_>>` (not `RwLock`) because the write side fires far
+/// more often than the read side (every mode change vs. one poll
+/// every 200 ms), and the critical sections are two-line
+/// `HashSet::insert`/`remove` — a spinny `RwLock` would cost more
+/// than it saves.
+type ModeSet = Arc<Mutex<HashSet<PresenceMode>>>;
 
 /// Callback the shell installs to react to reverse-channel [`Event`]s.
 /// Boxed rather than a specific type so `Presence` doesn't drag every
@@ -53,7 +68,12 @@ pub type EventListener = Box<dyn Fn(Event) + Send + 'static>;
 /// Tauri async command handlers.
 pub struct ModeHold {
     tx: Option<Sender<Envelope>>,
-    mode: presence_ipc::PresenceMode,
+    mode: PresenceMode,
+    /// Cloned handle to `Presence::engaged_modes` so `Drop` can
+    /// update the shell-side tracker in the same critical path
+    /// that sends the release envelope. `None` on an inert guard
+    /// (disabled presence or dead writer) — mirrors `tx`.
+    tracker: Option<ModeSet>,
 }
 
 impl Drop for ModeHold {
@@ -61,6 +81,11 @@ impl Drop for ModeHold {
         let Some(tx) = self.tx.take() else {
             return;
         };
+        if let Some(tracker) = self.tracker.take() {
+            if let Ok(mut set) = tracker.lock() {
+                set.remove(&self.mode);
+            }
+        }
         // Best-effort release. If the writer thread has since exited,
         // the send fails silently — the runtime will lose the mode
         // engagement on its next crossfade tick, which is the same
@@ -86,6 +111,12 @@ pub struct Presence {
     /// `Mutex` for interior mutability — `Presence` lives inside
     /// Tauri's `State`, which hands out shared references.
     child: Mutex<Option<Child>>,
+    /// Shell-side truth for currently-engaged modes. Populated by
+    /// every path that flips a mode on the wire (`send(SetMode)`,
+    /// `hold_mode` + `ModeHold::drop`, `pulse_mode` engage +
+    /// delayed release). Read by [`Presence::current_modes`] for
+    /// the aria-live status line.
+    engaged_modes: ModeSet,
 }
 
 impl Presence {
@@ -122,6 +153,7 @@ impl Presence {
         Self {
             tx: None,
             child: Mutex::new(None),
+            engaged_modes: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -176,6 +208,7 @@ impl Presence {
         Ok(Self {
             tx: Some(tx),
             child: Mutex::new(Some(child)),
+            engaged_modes: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -188,11 +221,51 @@ impl Presence {
         let Some(tx) = &self.tx else {
             return;
         };
+        // Update the shell-side tracker *before* the send so a poll
+        // that lands in between here and the child ACK still returns
+        // an accurate on-air set. The runtime treats a duplicate
+        // engage/release as idempotent, so the local set can lead
+        // the wire by a few microseconds without visual consequence.
+        if let Command::SetMode { mode, engaged } = &command {
+            self.record_mode(*mode, *engaged);
+        }
         if tx.send(Envelope::wrap(command)).is_err() {
             log::warn!(
                 "desktop-edge: presence writer thread has exited; dropping command"
             );
         }
+    }
+
+    /// Snapshot of currently-engaged modes. Sorted by label for
+    /// deterministic UI order — the aria-live status line reads the
+    /// first element in a specific priority order (see
+    /// `PresenceStatusLine.tsx`), and shuffling the set on every
+    /// poll would produce spurious re-announcements.
+    pub fn current_modes(&self) -> Vec<PresenceMode> {
+        let set = self.engaged_modes.lock();
+        let Ok(set) = set else {
+            return Vec::new();
+        };
+        let mut out: Vec<PresenceMode> = set.iter().copied().collect();
+        out.sort_by_key(|m| m.label());
+        out
+    }
+
+    fn record_mode(&self, mode: PresenceMode, engaged: bool) {
+        if let Ok(mut set) = self.engaged_modes.lock() {
+            if engaged {
+                set.insert(mode);
+            } else {
+                set.remove(&mode);
+            }
+        }
+    }
+
+    /// Shared handle to the tracker for background paths (the pulse
+    /// release thread most notably) that need to update it without
+    /// holding a `&Presence` across a `.sleep`.
+    fn tracker_clone(&self) -> ModeSet {
+        self.engaged_modes.clone()
     }
 
     /// True iff the child was successfully spawned and the writer
@@ -275,10 +348,15 @@ impl Presence {
     ///
     /// No-op on a disabled `Presence`: the returned guard's `Drop`
     /// is inert. Callers do not need to check `is_enabled` first.
-    pub fn hold_mode(&self, mode: presence_ipc::PresenceMode) -> ModeHold {
+    pub fn hold_mode(&self, mode: PresenceMode) -> ModeHold {
         let Some(tx) = &self.tx else {
-            return ModeHold { tx: None, mode };
+            return ModeHold {
+                tx: None,
+                mode,
+                tracker: None,
+            };
         };
+        self.record_mode(mode, true);
         if tx
             .send(Envelope::wrap(Command::SetMode {
                 mode,
@@ -286,15 +364,22 @@ impl Presence {
             }))
             .is_err()
         {
-            // Writer thread has exited — return an inert guard rather
-            // than one that will try to send a release into a dead
-            // channel. Result is the same either way (nothing happens
-            // on drop), but this keeps the branch obvious in profiling.
-            return ModeHold { tx: None, mode };
+            // Writer thread has exited — roll back the tracker so we
+            // don't advertise a mode that's not actually on air, and
+            // return an inert guard. Result on drop is the same
+            // either way (nothing happens), but the tracker rollback
+            // matters for the status-line poll.
+            self.record_mode(mode, false);
+            return ModeHold {
+                tx: None,
+                mode,
+                tracker: None,
+            };
         }
         ModeHold {
             tx: Some(tx.clone()),
             mode,
+            tracker: Some(self.tracker_clone()),
         }
     }
 
@@ -303,10 +388,11 @@ impl Presence {
     /// because the caller (a Tauri command handler) has no reason to
     /// wait, and joining would either block the UI or need an async
     /// runtime this crate does not otherwise use.
-    fn pulse_mode(&self, mode: presence_ipc::PresenceMode, hold_ms: u64) {
+    fn pulse_mode(&self, mode: PresenceMode, hold_ms: u64) {
         let Some(tx) = &self.tx else {
             return;
         };
+        self.record_mode(mode, true);
         if tx
             .send(Envelope::wrap(Command::SetMode {
                 mode,
@@ -314,15 +400,20 @@ impl Presence {
             }))
             .is_err()
         {
+            self.record_mode(mode, false);
             return;
         }
         let release_tx = tx.clone();
+        let tracker = self.tracker_clone();
         // A shell shutdown drops the writer's channel, which makes
         // the send below a no-op. Safe on either side.
         thread::Builder::new()
             .name(format!("presence-{:?}-pulse", mode))
             .spawn(move || {
                 thread::sleep(std::time::Duration::from_millis(hold_ms));
+                if let Ok(mut set) = tracker.lock() {
+                    set.remove(&mode);
+                }
                 let _ = release_tx.send(Envelope::wrap(Command::SetMode {
                     mode,
                     engaged: false,
@@ -454,6 +545,7 @@ mod tests {
         let p = Presence {
             tx: Some(tx),
             child: Mutex::new(None),
+            engaged_modes: Arc::new(Mutex::new(HashSet::new())),
         };
 
         {
@@ -481,6 +573,29 @@ mod tests {
     }
 
     #[test]
+    fn current_modes_reflects_hold_and_release() {
+        let (tx, _rx) = mpsc::channel::<Envelope>();
+        let p = Presence {
+            tx: Some(tx),
+            child: Mutex::new(None),
+            engaged_modes: Arc::new(Mutex::new(HashSet::new())),
+        };
+        assert!(p.current_modes().is_empty());
+        {
+            let _thinking = p.hold_mode(PresenceMode::Thinking);
+            let _tool = p.hold_mode(PresenceMode::ToolUse);
+            let modes = p.current_modes();
+            assert_eq!(modes.len(), 2, "expected 2 engaged, got {modes:?}");
+            assert!(modes.contains(&PresenceMode::Thinking));
+            assert!(modes.contains(&PresenceMode::ToolUse));
+        }
+        assert!(
+            p.current_modes().is_empty(),
+            "modes must clear after guards drop"
+        );
+    }
+
+    #[test]
     fn hold_mode_on_disabled_presence_is_inert() {
         // The Tauri command handlers use `hold_mode` unconditionally.
         // Constructing and dropping the guard against a disabled
@@ -489,6 +604,62 @@ mod tests {
         let p = Presence::disabled();
         let hold = p.hold_mode(presence_ipc::PresenceMode::Thinking);
         drop(hold);
+    }
+
+    #[test]
+    fn rapid_mode_flips_stay_balanced_and_never_leak_tracker_state() {
+        // Phase 4 stress test. The failure mode this guards against
+        // is asymmetric bookkeeping — an engage that skips the
+        // tracker update, or a drop path that doesn't decrement —
+        // which would leave `current_modes()` reporting a stuck
+        // engagement after all real work has ended. 5,000 iterations
+        // is well past the settle time of any realistic burst
+        // (voice_smoke fires ~10 SetMode messages per pulse, so
+        // this is ~500 pulses of load compressed into microseconds).
+        let (tx, rx) = mpsc::channel::<Envelope>();
+        let p = Presence {
+            tx: Some(tx),
+            child: Mutex::new(None),
+            engaged_modes: Arc::new(Mutex::new(HashSet::new())),
+        };
+
+        for i in 0..5_000_u32 {
+            // Alternate between three sustained modes so the set
+            // grows and shrinks rather than trivially toggling one.
+            let mode = match i % 3 {
+                0 => PresenceMode::Thinking,
+                1 => PresenceMode::ToolUse,
+                _ => PresenceMode::Listening,
+            };
+            let hold = p.hold_mode(mode);
+            drop(hold);
+        }
+
+        // Every guard was scope-owned above, so on entry to this
+        // assertion the tracker MUST be empty regardless of channel
+        // health. If it isn't, the engage/release paths have drifted
+        // out of sync somewhere.
+        assert!(
+            p.current_modes().is_empty(),
+            "tracker leaked: {:?} still engaged after 5000 balanced flips",
+            p.current_modes()
+        );
+
+        // Also drain the channel and confirm we see exactly
+        // 5000 engages + 5000 releases — no dropped sends and no
+        // duplicates. This is the wire-level counterpart to the
+        // tracker check above.
+        let mut engages = 0_u32;
+        let mut releases = 0_u32;
+        while let Ok(env) = rx.try_recv() {
+            match env.payload {
+                Command::SetMode { engaged: true, .. } => engages += 1,
+                Command::SetMode { engaged: false, .. } => releases += 1,
+                other => panic!("unexpected envelope in stress stream: {other:?}"),
+            }
+        }
+        assert_eq!(engages, 5_000, "engage count mismatch");
+        assert_eq!(releases, 5_000, "release count mismatch");
     }
 
     #[test]

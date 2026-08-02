@@ -6,8 +6,10 @@
 `audio_level` scalar pump, §3.4 sparse `attention` pulses + opt-in
 scan sweep, §3.5 policy denials → `error`. Every presence mode has
 a real work source and every scalar has a real driver. **Phase 4
-begun** — OS `prefers-reduced-motion` auto-detection layers over
-the runtime without stomping the user's persisted toggle.)
+in progress** — OS `prefers-reduced-motion` auto-detection, aria-
+live text status line for accessibility, rapid-state-change stress
+test, and entity-kind extension docs all landed. Remaining Phase 4
+item is target-hardware 60 FPS budget confirmation.)
 
 ## Build/test state
 

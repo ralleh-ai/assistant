@@ -181,11 +181,35 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
       still goes through the persisting `presence_set_reduced_motion`
       and survives restart. On next boot the persisted value applies
       first, then the OS pref reapplies on top.
-    - Optional text status line for accessibility (present-tense
-      "listening", "thinking", etc.).
-    - Rapid-state-change stress test with the real signal path.
-    - Extension-point documentation for new entity types
-      (`PRESENCE_SCENES.md` §8 already covers scenes; add entities).
+    - ~~Optional text status line for accessibility (present-tense
+      "listening", "thinking", etc.).~~ **landed (2026-08-02)** —
+      `Presence` now tracks engaged modes in a shared
+      `Arc<Mutex<HashSet<PresenceMode>>>` updated by every wire
+      path (`send`, `hold_mode`, `pulse_mode`). New Tauri command
+      `presence_current_modes` returns a sorted label snapshot;
+      React `PresenceStatusLine` polls at 5 Hz and renders one
+      present-tense phrase in an `aria-live="polite"` region. Uses
+      a strict priority order (error > speaking > attention >
+      listening > thinking > tool_use > idle) so screen readers
+      announce the single most salient state rather than a list.
+    - ~~Rapid-state-change stress test with the real signal path.~~
+      **landed (2026-08-02)** — new
+      `rapid_mode_flips_stay_balanced_and_never_leak_tracker_state`
+      unit test in `presence.rs` fires 5,000 `hold_mode` /
+      drop-guard cycles across three sustained modes and asserts
+      (a) `current_modes()` is empty afterward and (b) the on-wire
+      stream contains exactly 5,000 engages and 5,000 releases.
+      Guards against asymmetric bookkeeping between the tracker
+      and the wire.
+    - ~~Extension-point documentation for new entity types.~~
+      **landed (2026-08-02)** — `PRESENCE_SCENES.md` §8 gains a
+      "To add a new entity kind" subsection with concrete file
+      paths (`sim/generators.rs`, `sim/behaviors.rs`,
+      `scene/entity.rs`, `scene/director.rs`,
+      `scene/registry.rs`) and a nine-step walkthrough. Calls out
+      the case for reusing `SurfaceGenerator` + `SurfaceBehavior`
+      instead of a new kind, and requires cost-profile
+      documentation on the way in.
 
 ## Medium priority
 

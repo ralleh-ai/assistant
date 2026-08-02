@@ -58,6 +58,26 @@ pub enum PresenceMode {
     Error,
 }
 
+impl PresenceMode {
+    /// Stable wire / UI label. Same string the serde
+    /// `rename_all = "snake_case"` produces — colocated as a method
+    /// so non-serde callers (the shell's aria-live status line,
+    /// telemetry) don't need to round-trip through `serde_json` for
+    /// a display string. Renaming a variant is a wire break; this
+    /// method exists to make that break impossible to miss (both
+    /// the serde attribute and this match must change together).
+    pub fn label(self) -> &'static str {
+        match self {
+            PresenceMode::Thinking => "thinking",
+            PresenceMode::Speaking => "speaking",
+            PresenceMode::ToolUse => "tool_use",
+            PresenceMode::Listening => "listening",
+            PresenceMode::Attention => "attention",
+            PresenceMode::Error => "error",
+        }
+    }
+}
+
 /// A performance tier — the shell picks it (or leaves auto-downshift to
 /// the runtime) and the presence adopts it on the next tick. Mirrors
 /// `presence_core::scene::QualityTier`.
