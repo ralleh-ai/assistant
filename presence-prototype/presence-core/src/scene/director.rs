@@ -125,6 +125,14 @@ pub struct SceneDirector {
     /// `set_quality_tier` so the entities are regenerated at the new budget
     /// rather than the value drifting out of sync with the point sets.
     tier: QualityTier,
+    /// A palette change requested by a shell command (`presence_ipc`'s
+    /// `Command::SetPalette`) that the runtime has not yet copied into
+    /// `Renderer::palette`. `None` when nothing is pending. Only touched
+    /// by `SceneDirector::apply_command` / `take_pending_palette` in
+    /// `crate::ipc` — those live behind the `ipc` feature, so this field
+    /// is `#[allow(dead_code)]` under a no-features build.
+    #[allow(dead_code)]
+    pub(crate) pending_palette: Option<crate::palette::PaletteId>,
 }
 
 impl SceneDirector {
@@ -212,6 +220,7 @@ impl SceneDirector {
             activity_scale: 1.0,
             reduced_motion: false,
             tier,
+            pending_palette: None,
         }
     }
 

@@ -1,0 +1,16 @@
+[package]
+name = "presence-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Wire types shared between the presence renderer and its shell host (Tauri edge). No GPU, no windowing — this crate must build headless in CI. See Phase 2 §2 of docs/PRESENCE_INTEGRATION_PLAN.md."
+publish = false
+
+[lib]
+name = "presence_ipc"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -14,3 +14,9 @@ pub mod palette;
 pub mod render;
 pub mod scene;
 pub mod sim;
+
+#[cfg(feature = "ipc")]
+pub mod ipc;
+
+#[cfg(feature = "ipc")]
+pub use presence_ipc;

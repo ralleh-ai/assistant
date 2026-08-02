@@ -10,6 +10,15 @@ description = "Point Cloud Presence — simulation, scene director, and GPU rend
 name = "presence_core"
 path = "src/lib.rs"
 
+[features]
+default = ["ipc"]
+# The `ipc` feature pulls in the `presence-ipc` wire types (from the
+# root workspace at `../../crates/presence-ipc`) and adds the
+# `SceneDirector::apply_command` bridge. On by default because there is
+# no cost to having it — the ipc crate is tiny — and it is the natural
+# entry point for the shell integration in Phase 2 §3.
+ipc = ["dep:presence-ipc"]
+
 [dependencies]
 winit = { workspace = true }
 wgpu = { workspace = true }
@@ -19,3 +28,10 @@ glam = { workspace = true }
 noise = { workspace = true }
 rand = { workspace = true }
 log = { workspace = true }
+
+# `presence-ipc` lives in the root workspace (headless-safe). Depending on
+# it by path across workspaces is fine — cargo treats it as a normal path
+# dep — but it does mean the `Cargo.lock` here and the one at the repo
+# root are separate files. That is already the case for every other dep
+# this crate has, so nothing new to reconcile.
+presence-ipc = { path = "../../crates/presence-ipc", optional = true }
