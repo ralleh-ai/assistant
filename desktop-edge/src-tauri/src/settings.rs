@@ -1,0 +1,77 @@
+//! Local edge settings persisted under the OS app config directory.
+//! Written only via allowlisted Tauri commands (no webview FS access).
+
+use std::fs;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeSettings {
+    pub tenant_id: String,
+    pub device_id: String,
+    pub actor_id: String,
+    /// Base URL for the local mcp-server (e.g. http://127.0.0.1:8787).
+    pub mcp_base_url: String,
+    /// Operator acknowledged Windows/macOS mic permission guidance.
+    pub mic_acknowledged: bool,
+}
+
+impl Default for EdgeSettings {
+    fn default() -> Self {
+        Self {
+            tenant_id: "local".into(),
+            device_id: "desktop-1".into(),
+            actor_id: "operator".into(),
+            mcp_base_url: "http://127.0.0.1:8787".into(),
+            mic_acknowledged: false,
+        }
+    }
+}
+
+fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("app config dir: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("create config dir: {e}"))?;
+    Ok(dir.join("edge-settings.json"))
+}
+
+pub fn load_settings(app: &AppHandle) -> Result<EdgeSettings, String> {
+    let path = settings_file(app)?;
+    if !path.exists() {
+        return Ok(EdgeSettings::default());
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| format!("read settings: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("parse settings: {e}"))
+}
+
+pub fn save_settings(app: &AppHandle, settings: &EdgeSettings) -> Result<EdgeSettings, String> {
+    let cleaned = EdgeSettings {
+        tenant_id: settings.tenant_id.trim().to_string(),
+        device_id: settings.device_id.trim().to_string(),
+        actor_id: settings.actor_id.trim().to_string(),
+        mcp_base_url: settings.mcp_base_url.trim().to_string(),
+        mic_acknowledged: settings.mic_acknowledged,
+    };
+    if cleaned.tenant_id.is_empty() || cleaned.device_id.is_empty() || cleaned.actor_id.is_empty()
+    {
+        return Err("tenant, device, and actor labels cannot be empty".into());
+    }
+    if !(cleaned.mcp_base_url.starts_with("http://")
+        || cleaned.mcp_base_url.starts_with("https://"))
+    {
+        return Err("mcp base URL must start with http:// or https://".into());
+    }
+    let path = settings_file(app)?;
+    let raw = serde_json::to_string_pretty(&cleaned).map_err(|e| e.to_string())?;
+    fs::write(&path, raw).map_err(|e| format!("write settings: {e}"))?;
+    Ok(cleaned)
+}
+
+pub fn settings_path_display(app: &AppHandle) -> Result<String, String> {
+    Ok(settings_file(app)?.display().to_string())
+}

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Setup } from "./Setup";
 import "./App.css";
 
 type CoreStatus = {
@@ -15,7 +16,9 @@ type VoiceSmoke = {
   sampleRateHz: number;
 };
 
-function App() {
+type View = "home" | "setup";
+
+function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
   const [status, setStatus] = useState<CoreStatus | null>(null);
   const [voice, setVoice] = useState<VoiceSmoke | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,50 +51,65 @@ function App() {
   }
 
   return (
-    <main className="shell">
-      <div className="atmosphere" aria-hidden="true" />
-      <section className="hero">
-        <p className="brand">Ralleh</p>
-        <h1 className="headline">Your private operator at the edge.</h1>
-        <p className="lede">
-          Desktop shell Phase 1 — React over Rust. Ping the core, then run a
-          mock voice pipeline (no microphone).
+    <section className="hero">
+      <p className="brand">Ralleh</p>
+      <h1 className="headline">Your private operator at the edge.</h1>
+      <p className="lede">
+        Desktop shell Phase 1 — prove the Rust core, run a mock voice pass,
+        then file your station log.
+      </p>
+      <div className="actions">
+        <button
+          type="button"
+          className="cta"
+          onClick={pingCore}
+          disabled={busy !== null}
+        >
+          {busy === "ping" ? "Contacting core…" : "Ping Rust core"}
+        </button>
+        <button
+          type="button"
+          className="cta secondary"
+          onClick={runVoiceSmoke}
+          disabled={busy !== null}
+        >
+          {busy === "voice" ? "Running pipeline…" : "Voice smoke (mock)"}
+        </button>
+      </div>
+      <button type="button" className="text-nav home-setup" onClick={onOpenSetup}>
+        Open station log →
+      </button>
+      {status && (
+        <p className="status" role="status">
+          {status.product} {status.edge} v{status.version} — {status.message}
         </p>
-        <div className="actions">
-          <button
-            type="button"
-            className="cta"
-            onClick={pingCore}
-            disabled={busy !== null}
-          >
-            {busy === "ping" ? "Contacting core…" : "Ping Rust core"}
-          </button>
-          <button
-            type="button"
-            className="cta secondary"
-            onClick={runVoiceSmoke}
-            disabled={busy !== null}
-          >
-            {busy === "voice" ? "Running pipeline…" : "Voice smoke (mock)"}
-          </button>
-        </div>
-        {status && (
-          <p className="status" role="status">
-            {status.product} {status.edge} v{status.version} — {status.message}
-          </p>
-        )}
-        {voice && (
-          <p className="status" role="status">
-            Transcript “{voice.transcript}” · TTS {voice.ttsSamples} samples @{" "}
-            {voice.sampleRateHz} Hz
-          </p>
-        )}
-        {error && (
-          <p className="status error" role="alert">
-            {error}
-          </p>
-        )}
-      </section>
+      )}
+      {voice && (
+        <p className="status" role="status">
+          Transcript “{voice.transcript}” · TTS {voice.ttsSamples} samples @{" "}
+          {voice.sampleRateHz} Hz
+        </p>
+      )}
+      {error && (
+        <p className="status error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function App() {
+  const [view, setView] = useState<View>("home");
+
+  return (
+    <main className={view === "setup" ? "shell shell-setup" : "shell"}>
+      <div className="atmosphere" aria-hidden="true" />
+      {view === "home" ? (
+        <Home onOpenSetup={() => setView("setup")} />
+      ) : (
+        <Setup onDone={() => setView("home")} />
+      )}
     </main>
   );
 }

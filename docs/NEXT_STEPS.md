@@ -2,16 +2,16 @@
 
 ## Done recently
 
-- Tauri `voice_smoke` IPC wired to `ralleh-audio-core` mock pipeline;
-  Windows `tauri-dev.cmd` helpers; Phase 1 scaffold + `core_ping`.
+- Tauri **station log** settings/onboarding UI + `edge-settings.json` persistence;
+  `voice_smoke` IPC; Windows `tauri-dev.cmd` helpers; Phase 1 scaffold.
 
 ## High priority — Tauri desktop shell (Phase 1 continued)
 
 1. ~~Scaffold `desktop-edge/`~~ **done**
 2. ~~Wire health / echo IPC (`core_ping`)~~ **done**
 3. ~~Embed voice core (mock pipeline via `voice_smoke`)~~ **done**
-4. **Settings / onboarding UI** — tenant/device labels, mic permission copy,
-   link to local mcp-server config (no OIDC yet).
+4. ~~Settings / onboarding UI~~ **done** (station log plates; tenant/device/actor,
+   mcp base URL, mic clearance; Rust-only write to app config dir).
 5. **OS capabilities only as needed** — clipboard/screen/hotkeys behind
    features + policy (T13); never raw FS/net to JS.
 6. Optional live mic from the shell (`--features mic` on edge / audio-core).

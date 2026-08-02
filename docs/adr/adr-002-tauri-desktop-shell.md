@@ -1,6 +1,6 @@
 # ADR-002: Tauri v2 Desktop Edge Client, Rust-First Core
 
-**Status:** Accepted (planning-time decision, copied from DEVELOPMENT.md §20) — **not yet implemented**
+**Status:** Accepted — Phase 1 scaffold in progress (`desktop-edge/`)
 
 ## Decision
 
@@ -20,7 +20,8 @@ code with server-side Rust services.
 
 ## Implementation status
 
-**Scaffold + voice smoke:** [`../../desktop-edge/`](../../desktop-edge/)
-Tauri v2 + React/TS; IPC `core_ping` and `voice_smoke` (mock pipeline via
-`ralleh-audio-core`). Live mic and OS capabilities not wired yet.
+**Scaffold + voice smoke + station log:** [`../../desktop-edge/`](../../desktop-edge/)
+Tauri v2 + React/TS; IPC `core_ping`, `voice_smoke` (mock pipeline via
+`ralleh-audio-core`), and edge settings load/save (app config dir only —
+no webview FS). Live mic and OS capabilities not wired yet.
 Forward threats T11–T16; headless rules in [`../HEADLESS.md`](../HEADLESS.md).
