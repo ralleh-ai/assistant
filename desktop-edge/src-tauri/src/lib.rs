@@ -180,18 +180,22 @@ fn presence_set_signals(
 #[tauri::command]
 fn presence_set_reduced_motion(
     enabled: bool,
+    app: AppHandle,
     presence: State<'_, Presence>,
 ) -> Result<(), String> {
     presence.send(PresenceCommand::SetReducedMotion { enabled });
+    update_presence_settings(&app, |s| s.presence_reduced_motion = enabled);
     Ok(())
 }
 
 #[tauri::command]
 fn presence_set_palette(
     palette: PaletteId,
+    app: AppHandle,
     presence: State<'_, Presence>,
 ) -> Result<(), String> {
     presence.send(PresenceCommand::SetPalette { palette });
+    update_presence_settings(&app, |s| s.presence_palette = Some(palette));
     Ok(())
 }
 
@@ -207,9 +211,11 @@ fn presence_set_ring_wanted(
 #[tauri::command]
 fn presence_set_quality_tier(
     tier: QualityTier,
+    app: AppHandle,
     presence: State<'_, Presence>,
 ) -> Result<(), String> {
     presence.send(PresenceCommand::SetQualityTier { tier });
+    update_presence_settings(&app, |s| s.presence_quality_tier = Some(tier));
     Ok(())
 }
 
@@ -347,18 +353,62 @@ fn presence_event_listener(app: AppHandle) -> EventListener {
     })
 }
 
-/// Sends a persisted position (if any) back to the presence right
-/// after spawn, so the droplet lands where the user last left it.
-/// A missing / partial settings file is a normal first-launch state
-/// and yields a no-op.
-fn restore_presence_position(app: &AppHandle, presence: &Presence) {
+/// Sends every persisted presence preference back to the runtime
+/// right after spawn. Runs once, after `manage(presence)`, so a fresh
+/// child receives the shell's view of "what the user last chose"
+/// before the first frame lands. Every field is optional on the
+/// settings side; missing values mean "use the runtime's default"
+/// and skip the corresponding command.
+///
+/// The reduced-motion field is always sent because it is a plain
+/// `bool` — sending `false` on a fresh install matches the runtime
+/// default and costs one envelope, which is cheaper than tracking
+/// an "explicitly set" sentinel.
+fn restore_presence_state(app: &AppHandle, presence: &Presence) {
     let Ok(settings) = load_settings(app) else {
         return;
     };
-    let Some(pos) = settings.presence_position else {
-        return;
+    if let Some(pos) = settings.presence_position {
+        presence.send(PresenceCommand::SetPosition { x: pos.x, y: pos.y });
+    }
+    if let Some(palette) = settings.presence_palette {
+        presence.send(PresenceCommand::SetPalette { palette });
+    }
+    if let Some(tier) = settings.presence_quality_tier {
+        presence.send(PresenceCommand::SetQualityTier { tier });
+    }
+    // Only send if the user opted in — sending `false` on every launch
+    // would fire an unnecessary transition on the runtime.
+    if settings.presence_reduced_motion {
+        presence.send(PresenceCommand::SetReducedMotion { enabled: true });
+    }
+}
+
+/// Load-modify-save helper for the persisted presence preferences.
+/// Runs on the Tauri command thread, which is fine — Tauri already
+/// serializes command invocations for us, and the file writes are
+/// small enough that a slow disk still lands within one frame.
+/// Errors are logged rather than surfaced; a settings write failure
+/// must not fail the visual command that triggered it, because the
+/// user has no way to correct it and the visual side already
+/// happened.
+fn update_presence_settings<F>(app: &AppHandle, mutate: F)
+where
+    F: FnOnce(&mut EdgeSettings),
+{
+    let mut settings = match load_settings(app) {
+        Ok(s) => s,
+        Err(err) => {
+            log::warn!(
+                "desktop-edge: presence preference not persisted (load: {err})"
+            );
+            return;
+        }
     };
-    presence.send(PresenceCommand::SetPosition { x: pos.x, y: pos.y });
+    mutate(&mut settings);
+    if let Err(err) = save_settings(app, &settings) {
+        log::warn!("desktop-edge: presence preference not persisted (save: {err})");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -376,7 +426,7 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let presence = Presence::spawn_from_env(presence_event_listener(handle.clone()));
-            restore_presence_position(&handle, &presence);
+            restore_presence_state(&handle, &presence);
             app.manage(presence);
             Ok(())
         })

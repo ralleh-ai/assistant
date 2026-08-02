@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use presence_ipc::{PaletteId, QualityTier};
+
 const VOICE_STYLES: &[&str] = &["calm", "direct", "warm"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +31,24 @@ pub struct EdgeSettings {
     /// so a crash keeps at most the last dragged-to position.
     #[serde(default)]
     pub presence_position: Option<PresencePosition>,
+    /// Colour scheme applied to the presence on startup. `None` uses
+    /// the runtime's compiled-in default (Teal). Wire type mirrors
+    /// `presence_ipc::PaletteId` so the same enum flows through
+    /// settings, Tauri commands, and the ipc envelope without
+    /// re-mapping. Every `presence_set_palette` invocation writes
+    /// back here — see `run` in `lib.rs`.
+    #[serde(default)]
+    pub presence_palette: Option<PaletteId>,
+    /// Adaptive-quality tier the shell pins on startup. `None` lets
+    /// the runtime's adaptive downshift start from `Balanced`.
+    #[serde(default)]
+    pub presence_quality_tier: Option<QualityTier>,
+    /// Accessibility preset. Persisted as a plain bool because the
+    /// only two shell states are on/off; the runtime handles the
+    /// crossfade. `#[serde(default)]` keeps older settings files
+    /// (before this field existed) loadable as `false`.
+    #[serde(default)]
+    pub presence_reduced_motion: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,6 +68,9 @@ impl Default for EdgeSettings {
             mic_acknowledged: false,
             voice_style: String::new(),
             presence_position: None,
+            presence_palette: None,
+            presence_quality_tier: None,
+            presence_reduced_motion: false,
         }
     }
 }
@@ -92,6 +115,9 @@ pub fn save_settings(app: &AppHandle, settings: &EdgeSettings) -> Result<EdgeSet
         mic_acknowledged: settings.mic_acknowledged,
         voice_style: settings.voice_style.trim().to_string(),
         presence_position: settings.presence_position,
+        presence_palette: settings.presence_palette,
+        presence_quality_tier: settings.presence_quality_tier,
+        presence_reduced_motion: settings.presence_reduced_motion,
     };
     if cleaned.tenant_id.is_empty() || cleaned.device_id.is_empty() || cleaned.actor_id.is_empty()
     {
@@ -125,6 +151,55 @@ mod tests {
     }
 
     #[test]
+    fn presence_fields_are_optional_and_default_out_of_older_settings() {
+        // A settings file written before the presence fields existed
+        // must still load — that is what `#[serde(default)]` on every
+        // new field is buying. If this test breaks, an existing user
+        // hits a hard error on startup and has to nuke their config.
+        let older = r#"{
+            "tenantId": "acme",
+            "deviceId": "desk-1",
+            "actorId": "rico",
+            "mcpBaseUrl": "http://127.0.0.1:8787",
+            "micAcknowledged": true,
+            "voiceStyle": "calm"
+        }"#;
+        let parsed: EdgeSettings = serde_json::from_str(older).expect("older settings load");
+        assert_eq!(parsed.presence_position, None);
+        assert_eq!(parsed.presence_palette, None);
+        assert_eq!(parsed.presence_quality_tier, None);
+        assert!(!parsed.presence_reduced_motion);
+    }
+
+    #[test]
+    fn presence_fields_round_trip_through_serde() {
+        let settings = EdgeSettings {
+            tenant_id: "acme".into(),
+            device_id: "desk-1".into(),
+            actor_id: "rico".into(),
+            mcp_base_url: "http://127.0.0.1:8787".into(),
+            mic_acknowledged: true,
+            voice_style: "calm".into(),
+            presence_position: Some(PresencePosition { x: 200, y: 300 }),
+            presence_palette: Some(PaletteId::Ember),
+            presence_quality_tier: Some(QualityTier::Low),
+            presence_reduced_motion: true,
+        };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let decoded: EdgeSettings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.presence_position, settings.presence_position);
+        assert_eq!(decoded.presence_palette, settings.presence_palette);
+        assert_eq!(
+            decoded.presence_quality_tier,
+            settings.presence_quality_tier
+        );
+        assert_eq!(
+            decoded.presence_reduced_motion,
+            settings.presence_reduced_motion
+        );
+    }
+
+    #[test]
     fn complete_when_all_critical_set() {
         let s = EdgeSettings {
             tenant_id: "acme".into(),
@@ -134,6 +209,9 @@ mod tests {
             mic_acknowledged: true,
             voice_style: "calm".into(),
             presence_position: None,
+            presence_palette: None,
+            presence_quality_tier: None,
+            presence_reduced_motion: false,
         };
         assert!(s.is_complete());
     }

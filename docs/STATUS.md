@@ -1,9 +1,10 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-02 (Phase 2 §1–§4 landed: crate split, `presence-ipc`,
-bidirectional stdio transport, shell-side `Presence` + `MicPump` driving
-live audio level, per-pixel alpha + click-through droplet, focus grab,
-window position persisted via `Event::Moved`/`Command::SetPosition`)
+**As of:** 2026-08-02 (Phase 2 §1–§6 landed: crate split, `presence-ipc`,
+bidirectional stdio transport, `MicPump`, transparent+click-through
+droplet, focus grab, window position persistence, and full
+`EdgeSettings.presence_*` write-through for palette / quality tier /
+reduced motion)
 
 ## Build/test state
 

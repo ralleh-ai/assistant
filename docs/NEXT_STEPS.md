@@ -89,12 +89,14 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
       alongside the shell, OS service. Not decided; prototype at least
       shell-spawned in this phase since it is the simplest and does
       not preclude the others.
-   6. **`EdgeSettings.presence_*` fields** (D3 already asked for
-      `presence_palette`; this phase adds `presence_quality_tier` and
-      `presence_reduced_motion`). Validated like `voice_style`;
-      unknown/missing values fall back to defaults, never blocking
-      startup. On startup and change the shell IPC's the resolved
-      values into the presence.
+   6. ~~**`EdgeSettings.presence_*` fields**~~ **landed
+      (2026-08-02)** — `presence_palette`, `presence_quality_tier`,
+      and `presence_reduced_motion` on `EdgeSettings`, all
+      `#[serde(default)]` for backwards-compat. Every
+      `presence_set_*` Tauri command now writes through to settings;
+      `restore_presence_state` echoes them into the runtime right
+      after spawn, so a user's chosen colour/tier/accessibility
+      preset survives a restart.
    7. ~~**Still driven by synthetic signals**~~ **first real signal
       wired (2026-08-02)** — live mic → smoothed audio level →
       `Command::SetSignalsScalars` via the shell's `MicPump`. The pump
