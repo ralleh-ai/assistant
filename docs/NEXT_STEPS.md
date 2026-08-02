@@ -213,6 +213,28 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
 
 ## Medium priority
 
+**First product surface (2026-08-02).** `desktop-edge/src/Conversation.tsx`
+lands the first UX on top of `assistant_think`: input, send, message
+list, error surface, pending indicator, Enter/Shift+Enter keybinds,
+`aria-live="polite"` log region. Wired into `Core.tsx` above the
+dev panel. Completion is still `EchoBackend` — the reply is
+`"echo: <prompt>"` — so this is a plumbing demo more than a
+product feature, but the surface is intentionally identical to
+what a real backend will drive. Presence engages `thinking` for
+the call duration, then releases; the status line and the visual
+both reflect that from the same tracker.
+
+Natural follow-ups on top of this surface:
+- Real completion backend behind `CompletionBackend`
+  (`AnthropicMessagesBackend` and `HttpCompletionBackend` already
+  exist in the router crate) — configuration flow is the open
+  question, not the wiring.
+- Streaming replies — grows a `partial` state on `Conversation`
+  and a `route_stream` variant on the router.
+- Persistence — first design decision is whether history lives
+  in `EdgeSettings` (device-local) or the not-yet-built control
+  plane (portable across devices).
+
 11. **OIDC / device attestation** — when NestJS control plane exists (T1/T18).
 12. Optional `allow_private_targets` for http-fetch internal APIs.
 13. Live mic → VAD → STT path in the shell (beyond capture metrics).

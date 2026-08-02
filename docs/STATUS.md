@@ -9,7 +9,10 @@ a real work source and every scalar has a real driver. **Phase 4
 in progress** — OS `prefers-reduced-motion` auto-detection, aria-
 live text status line for accessibility, rapid-state-change stress
 test, and entity-kind extension docs all landed. Remaining Phase 4
-item is target-hardware 60 FPS budget confirmation.)
+item is target-hardware 60 FPS budget confirmation. **First
+product surface landed** — minimal `Conversation` component on
+`Core` wired to `assistant_think`; router → presence loop now
+demoable end-to-end from a user prompt.)
 
 ## Build/test state
 

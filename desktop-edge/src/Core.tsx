@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { EdgeSettings } from "./settings";
 import { presenceStatus } from "./presence";
+import { Conversation } from "./Conversation";
 import { PresenceDevPanel } from "./PresenceDevPanel";
 import { PresenceStatusLine } from "./PresenceStatusLine";
 
@@ -62,10 +63,6 @@ export function Core({ settings, onOpenSettings }: Props) {
 
       <div className="core-body">
         <p className="brand">Ralleh</p>
-        <h1 className="core-headline">Your edge is ready.</h1>
-        <p className="core-lede">
-          Private operator at the edge — conversation design comes next.
-        </p>
         <p className="core-identity">
           <span>{settings.tenantId}</span>
           <span className="core-sep" aria-hidden="true">
@@ -83,6 +80,7 @@ export function Core({ settings, onOpenSettings }: Props) {
         </p>
 
         {presenceEnabled && <PresenceStatusLine />}
+        <Conversation />
         {presenceEnabled && <PresenceDevPanel />}
       </div>
     </section>
