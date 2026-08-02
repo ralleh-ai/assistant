@@ -5,7 +5,9 @@
 → `thinking` / `tool_use`, §3.3 `speaking` engagement + live
 `audio_level` scalar pump, §3.4 sparse `attention` pulses + opt-in
 scan sweep, §3.5 policy denials → `error`. Every presence mode has
-a real work source and every scalar has a real driver.)
+a real work source and every scalar has a real driver. **Phase 4
+begun** — OS `prefers-reduced-motion` auto-detection layers over
+the runtime without stomping the user's persisted toggle.)
 
 ## Build/test state
 

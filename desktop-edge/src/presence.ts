@@ -117,6 +117,19 @@ export function presenceSetReducedMotion(enabled: boolean): Promise<void> {
   return safeInvoke("presence_set_reduced_motion", { enabled }).then(() => undefined);
 }
 
+/**
+ * Session-only reduced-motion apply (Phase 4). Unlike
+ * `presenceSetReducedMotion`, this does **not** persist to
+ * `EdgeSettings` — used by the OS-preference watcher so the
+ * accessibility setting layers over the runtime without stomping
+ * an explicit user toggle stored on disk. Explicit user toggles
+ * continue to go through `presenceSetReducedMotion` and take
+ * precedence on next boot.
+ */
+export function presenceApplyReducedMotion(enabled: boolean): Promise<void> {
+  return safeInvoke("presence_apply_reduced_motion", { enabled }).then(() => undefined);
+}
+
 export function presenceSetPalette(palette: PaletteId): Promise<void> {
   return safeInvoke("presence_set_palette", { palette }).then(() => undefined);
 }

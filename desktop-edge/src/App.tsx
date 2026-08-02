@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { presenceApplyReducedMotion } from "./presence";
 import { Core } from "./Core";
 import { SettingsView } from "./SettingsView";
 import {
@@ -42,6 +43,31 @@ function App() {
   useEffect(() => {
     const raf = requestAnimationFrame(() => setFaded(false));
     return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // Phase 4 kickoff — OS accessibility preference drives the presence's
+  // reduced-motion state for the session. Uses the non-persisting
+  // `presenceApplyReducedMotion` so the OS pref layers over the runtime
+  // without silently rewriting a user's explicit dev-panel toggle: their
+  // stored value survives restart, while the OS pref reapplies on top of
+  // it every boot. Subscribes to media-query changes so an in-session
+  // accessibility flip (e.g. turning "Reduce motion" on in system
+  // settings) is honored immediately.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const apply = (reduce: boolean) => {
+      presenceApplyReducedMotion(reduce).catch(() => {
+        // Presence may be disabled or not spawned yet — the persisting
+        // startup path in Rust's `restore_presence_state` still runs,
+        // so this session-only apply failing is not fatal. Swallowed
+        // rather than surfaced because the user did not initiate it.
+      });
+    };
+    apply(mq.matches);
+    const listener = (e: MediaQueryListEvent) => apply(e.matches);
+    mq.addEventListener("change", listener);
+    return () => mq.removeEventListener("change", listener);
   }, []);
 
   // When the target view changes, fade the current one out, swap the

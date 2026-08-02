@@ -244,6 +244,29 @@ fn presence_set_reduced_motion(
     Ok(())
 }
 
+/// OS-preference companion to `presence_set_reduced_motion`
+/// (Phase 4 kickoff). Applies reduced motion to the running
+/// presence **without** persisting to `EdgeSettings`, so the OS
+/// accessibility preference can drive the runtime for a session
+/// without silently overwriting a user's explicit toggle on the
+/// dev panel. The frontend hooks
+/// `matchMedia('(prefers-reduced-motion: reduce)')` and calls
+/// this on mount + on change.
+///
+/// Design note: this is a session-only override deliberately. If
+/// the user explicitly toggles via the dev panel, that goes
+/// through the persisting `presence_set_reduced_motion` command
+/// and survives restart — the OS pref can layer over that on
+/// next boot without corrupting the stored value.
+#[tauri::command]
+fn presence_apply_reduced_motion(
+    enabled: bool,
+    presence: State<'_, Presence>,
+) -> Result<(), String> {
+    presence.send(PresenceCommand::SetReducedMotion { enabled });
+    Ok(())
+}
+
 #[tauri::command]
 fn presence_set_palette(
     palette: PaletteId,
@@ -702,6 +725,7 @@ pub fn run() {
             presence_set_mode,
             presence_set_signals,
             presence_set_reduced_motion,
+            presence_apply_reduced_motion,
             presence_set_palette,
             presence_set_ring_wanted,
             presence_set_quality_tier,

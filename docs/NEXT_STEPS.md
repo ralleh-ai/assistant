@@ -167,11 +167,20 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
        pulse via a shared `pulse_mode` helper; no async runtime
        needed.
 
-10. **Phase 4 — hardening and options**:
+10. **Phase 4 — hardening and options** (in progress):
     - 60 FPS budget confirmation on representative hardware (Phase 1's
       2-core measurement is a floor, not a target-machine test).
-    - OS-level reduced-motion preference honored automatically
-      alongside the runtime toggle.
+    - ~~OS-level reduced-motion preference honored automatically
+      alongside the runtime toggle.~~ **landed (2026-08-02)** —
+      `App.tsx` subscribes to
+      `matchMedia('(prefers-reduced-motion: reduce)')` on mount and
+      calls the new `presence_apply_reduced_motion` Tauri command
+      on the initial value and on every change. Deliberately
+      non-persisting: the OS pref layers over the runtime for the
+      session, while the user's explicit toggle via the dev panel
+      still goes through the persisting `presence_set_reduced_motion`
+      and survives restart. On next boot the persisted value applies
+      first, then the OS pref reapplies on top.
     - Optional text status line for accessibility (present-tense
       "listening", "thinking", etc.).
     - Rapid-state-change stress test with the real signal path.
