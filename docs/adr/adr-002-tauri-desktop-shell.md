@@ -20,9 +20,8 @@ code with server-side Rust services.
 
 ## Implementation status
 
-Not started. `ralleh-audio-core` in this repo exists as the *logic* that
-would eventually sit behind this shell (VAD, wake-word state machines) but
-operates only on synthetic/mock audio today — no real capture, no Tauri
-app, no React UI exists yet. Forward threats for this shell are sketched
-in [`../THREAT_MODEL.md`](../THREAT_MODEL.md) (T11–T16). See
-[`../NEXT_STEPS.md`](../NEXT_STEPS.md) and [`../HEADLESS.md`](../HEADLESS.md).
+Not started — **next implementation track** per
+[`../NEXT_STEPS.md`](../NEXT_STEPS.md). `ralleh-audio-core` is the voice
+logic that should sit behind this shell (VAD, wake-word, optional `mic`).
+Forward threats: [`../THREAT_MODEL.md`](../THREAT_MODEL.md) T11–T16.
+Headless rules for OS caps: [`../HEADLESS.md`](../HEADLESS.md).

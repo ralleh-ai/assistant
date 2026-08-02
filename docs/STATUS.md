@@ -1,20 +1,20 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (crate naming map + Tauri/NestJS threat expansion)
+**As of:** 2026-08-01 (backlog: Tauri Phase 1 is next)
 
 ## Build/test state
 
 ```
-cargo test --workspace → unchanged (docs-only change this step)
+cargo test --workspace → headless-safe default features
 ```
 
 ## Highlights
 
-- **`docs/CRATE_NAMING.md`** — §16 ↔ actual crate map; mass rename deferred.
-- **`docs/THREAT_MODEL.md`** — forward Tauri (T11–T16) and NestJS (T17–T22)
-  threats without claiming those surfaces exist yet.
+- Rust spine validated (policy, gateway, mcp-server, ai-router, audio,
+  audit); http-fetch SSRF hardened; mic opt-in + `mic-capture`.
+- Docs: crate naming map; Tauri/NestJS threats T11–T22.
 
 ## Next up
 
-OIDC when control plane exists; optional `allow_private_targets` for
-http-fetch — see NEXT_STEPS.md.
+**Tauri v2 desktop shell** — scaffold `desktop-edge/`, then IPC + audio
+wiring. See [`NEXT_STEPS.md`](./NEXT_STEPS.md) (high-priority Tauri track).
