@@ -1,10 +1,8 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-02 (Phase 2 §1–§6 landed: crate split, `presence-ipc`,
-bidirectional stdio transport, `MicPump`, transparent+click-through
-droplet, focus grab, window position persistence, and full
-`EdgeSettings.presence_*` write-through for palette / quality tier /
-reduced motion)
+**As of:** 2026-08-02 (Phase 2 §1–§6 complete; Phase 3 §1 landed —
+mic-pump VAD drives `PresenceMode::Listening` from real speech
+detection, not the dev panel)
 
 ## Build/test state
 

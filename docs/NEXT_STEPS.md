@@ -105,16 +105,24 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
       mode engagement. `intensity` and `progress` are still synthetic;
       those move under Phase 3 alongside the VAD/router work.
 
-9. **Phase 3 — real signals** (blocked on #13 below plus a wiring
-    prerequisite):
-    1. Replace synthetic signals with the real VAD state machine
-       (#13). `idle`/`listening` become real.
+9. **Phase 3 — real signals** (in progress):
+    1. ~~Replace synthetic signals with the real VAD state machine.~~
+       **VAD → `Listening` landed (2026-08-02)** — the mic pump now
+       runs `ralleh-audio-core`'s `VoiceActivityDetector` alongside
+       the RMS integrator and engages `PresenceMode::Listening`
+       on the debounced `Speech` boundary. Releases the mode on
+       both silence *and* pump stop, so a click-off cleans up.
+       Remaining sub-step of §3.1 is `idle` becoming a real
+       "no assistant work in flight" signal rather than the mic-off
+       default — needs the router integration below.
     2. Wire `ralleh-ai-router` and `ralleh-tool-gateway` (or a local
        stand-in) into the shell process so `thinking`/`tool_use` have
        a source. Neither is embedded in `desktop-edge` today.
     3. Route real audio level to `speaking`'s brightness and its
        phrase envelope to the pulse geometry (ADR-012 spring
-       bandwidth constraint).
+       bandwidth constraint). Audio-level side already lands
+       through the mic pump; what's missing is `speaking` engaging
+       from the TTS path rather than as a manual toggle.
     4. Add sparse secondary events (scan sweeps, inbound streams).
     5. Map policy `Denied` / handler `Failed` outcomes to `error`.
 

@@ -27,6 +27,8 @@ use std::sync::mpsc::Sender;
 use presence_ipc::{Command, Envelope};
 
 #[cfg(feature = "mic")]
+use presence_ipc::PresenceMode;
+#[cfg(feature = "mic")]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "mic")]
 use std::sync::Arc;
@@ -35,7 +37,9 @@ use std::thread::{self, JoinHandle};
 #[cfg(feature = "mic")]
 use std::time::{Duration, Instant};
 #[cfg(feature = "mic")]
-use ralleh_audio_core::{AudioSource, CpalMicSource};
+use ralleh_audio_core::{
+    AudioSource, CpalMicSource, VadConfig, VadState, VoiceActivityDetector,
+};
 
 /// Nominal send cadence. 30 Hz is the same figure the React slider
 /// throttle uses; anything higher is wasted (the runtime ticks the
@@ -171,6 +175,22 @@ fn pump_loop(
     let mut level: f32 = 0.0;
     let mut last_sent = Instant::now();
 
+    // Phase 3 kickoff: a real signal drives `PresenceMode::Listening`.
+    // Same detector `run_mic_smoke` uses, run alongside the RMS
+    // integrator so the visual has *two* sources of truth from one
+    // frame — the audio level (continuous, smooth) and the debounced
+    // VAD verdict (discrete, hysteretic). We only send a mode change
+    // when the debounced state crosses the Speech boundary; the
+    // detector's own hysteresis (2 loud frames in, 3 silent frames
+    // out with `VadConfig::default`) is what keeps the presence from
+    // flickering mid-sentence or on a cough.
+    //
+    // Reusing `VadConfig::default()` keeps this in step with the mic
+    // smoke — if that threshold ever proves wrong in real captures,
+    // both paths get corrected together rather than drifting.
+    let mut vad = VoiceActivityDetector::new(VadConfig::default());
+    let mut last_listening = false;
+
     // Poll cadence: fast enough that the level's attack phase is not
     // aliased away, slow enough that this thread does not spin. 5 ms
     // is well below the 33 ms send interval and well above the ~20 ms
@@ -187,6 +207,28 @@ fn pump_loop(
             let raw = (frame.rms_energy() * LEVEL_GAIN).min(1.0);
             let alpha = if raw > level { LEVEL_ATTACK } else { LEVEL_RELEASE };
             level += (raw - level) * alpha;
+
+            // VAD updates on every frame, but we only fire a mode
+            // change on the debounced Speech transition. `MaybeSpeech`
+            // and `MaybeSilence` are held-off states — they exist so a
+            // single-frame spike or a mid-word pause does not create a
+            // visible flicker.
+            let vad_state = vad.process_frame(&frame);
+            let now_listening = matches!(vad_state, VadState::Speech);
+            if now_listening != last_listening {
+                let env = Envelope::wrap(Command::SetMode {
+                    mode: PresenceMode::Listening,
+                    engaged: now_listening,
+                });
+                if sender.send(env).is_err() {
+                    log::warn!(
+                        "desktop-edge: presence writer disconnected; \
+                         mic pump exiting mid-VAD transition"
+                    );
+                    return;
+                }
+                last_listening = now_listening;
+            }
         }
 
         let now = Instant::now();
@@ -217,6 +259,18 @@ fn pump_loop(
         }
 
         thread::sleep(poll);
+    }
+
+    // Graceful stop: release Listening if we were holding it. Without
+    // this the runtime would keep the mode engaged after the user
+    // clicked "Mic pump" off, and it would only clear on the next
+    // shell-authored `SetSignals` snapshot — which might not arrive
+    // for a while.
+    if last_listening {
+        let _ = sender.send(Envelope::wrap(Command::SetMode {
+            mode: PresenceMode::Listening,
+            engaged: false,
+        }));
     }
     log::info!("desktop-edge: presence mic pump stopped");
 }
