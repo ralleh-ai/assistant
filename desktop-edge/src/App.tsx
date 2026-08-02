@@ -13,6 +13,11 @@ import "./App.css";
 
 type View = "splash" | "settings" | "core";
 
+// One calm, consistent crossfade for every view change: fade + blur + settle
+// the outgoing view out, then bring the incoming view in the same way. Kept
+// in one place so splash → settings → core never snaps or double-animates.
+const FADE_MS = 420;
+
 function Splash() {
   return (
     <section className="splash" aria-busy="true" aria-label="Starting">
@@ -22,10 +27,34 @@ function Splash() {
   );
 }
 
+function shellClassFor(view: View): string {
+  return view === "settings" ? "shell shell-setup" : "shell";
+}
+
 function App() {
   const [view, setView] = useState<View>("splash");
+  const [renderedView, setRenderedView] = useState<View>("splash");
+  const [faded, setFaded] = useState(true);
   const [settings, setSettings] = useState<EdgeSettings | null>(null);
   const [settingsRequired, setSettingsRequired] = useState(true);
+
+  // Bring the very first view in gently instead of popping in at full paint.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setFaded(false));
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // When the target view changes, fade the current one out, swap the
+  // rendered content while invisible, then fade the new one in.
+  useEffect(() => {
+    if (view === renderedView) return;
+    setFaded(true);
+    const swap = window.setTimeout(() => {
+      setRenderedView(view);
+      requestAnimationFrame(() => setFaded(false));
+    }, FADE_MS);
+    return () => window.clearTimeout(swap);
+  }, [view, renderedView]);
 
   useEffect(() => {
     let cancelled = false;
@@ -81,24 +110,23 @@ function App() {
     }
   }
 
-  const shellClass =
-    view === "settings" ? "shell shell-setup" : "shell";
-
   return (
-    <main className={shellClass}>
+    <main className={shellClassFor(renderedView)}>
       <div className="atmosphere" aria-hidden="true" />
-      {view === "splash" && <Splash />}
-      {view === "settings" && (
-        <SettingsView
-          required={settingsRequired}
-          initial={settings}
-          onComplete={onSettingsComplete}
-          onCancel={settingsRequired ? undefined : onSettingsCancel}
-        />
-      )}
-      {view === "core" && settings && (
-        <Core settings={settings} onOpenSettings={openSettings} />
-      )}
+      <div className={faded ? "view-fade is-hidden" : "view-fade"}>
+        {renderedView === "splash" && <Splash />}
+        {renderedView === "settings" && (
+          <SettingsView
+            required={settingsRequired}
+            initial={settings}
+            onComplete={onSettingsComplete}
+            onCancel={settingsRequired ? undefined : onSettingsCancel}
+          />
+        )}
+        {renderedView === "core" && settings && (
+          <Core settings={settings} onOpenSettings={openSettings} />
+        )}
+      </div>
     </main>
   );
 }

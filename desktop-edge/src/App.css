@@ -6,6 +6,8 @@
   --teal-deep: #146257;
   --line: rgba(215, 228, 223, 0.22);
   --amber: #c4a574;
+  --motion-duration: 420ms;
+  --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
   font-family: "Manrope", system-ui, sans-serif;
   font-size: 16px;
   line-height: 1.5;
@@ -43,6 +45,39 @@ body {
 .shell-setup {
   place-items: stretch;
   padding: 0;
+}
+
+/* One crossfade for every splash → settings → core transition. Content
+   swaps while fully hidden, so layout changes (grid vs. flex, padding)
+   never show as a snap — only a calm dissolve in and out. */
+.view-fade {
+  width: 100%;
+  transition:
+    opacity var(--motion-duration) var(--motion-ease),
+    filter var(--motion-duration) var(--motion-ease),
+    transform var(--motion-duration) var(--motion-ease);
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0);
+}
+
+.view-fade.is-hidden {
+  opacity: 0;
+  filter: blur(4px);
+  transform: translateY(6px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-fade {
+    transition: opacity var(--motion-duration) linear;
+    filter: none;
+    transform: none;
+  }
+
+  .view-fade.is-hidden {
+    filter: none;
+    transform: none;
+  }
 }
 
 .atmosphere {
@@ -166,7 +201,6 @@ body {
   position: relative;
   z-index: 1;
   text-align: left;
-  animation: rise 0.55s ease-out both;
 }
 
 .splash-brand {
@@ -203,7 +237,6 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  animation: rise 0.65s ease-out both;
 }
 
 .core-gear {
@@ -277,7 +310,6 @@ body {
   display: grid;
   grid-template-columns: minmax(11rem, 15rem) 1fr;
   min-height: 100vh;
-  animation: rise 0.55s ease-out both;
 }
 
 .setup-loading {
@@ -383,13 +415,13 @@ body {
   justify-content: center;
   padding: 3rem clamp(1.5rem, 5vw, 4rem);
   max-width: 40rem;
-  animation: plate-in 0.4s ease-out both;
+  animation: plate-in 0.38s var(--motion-ease) both;
 }
 
 @keyframes plate-in {
   from {
     opacity: 0;
-    transform: translateX(0.6rem);
+    transform: translateX(0.4rem);
   }
   to {
     opacity: 1;
