@@ -172,7 +172,14 @@ impl SceneDirector {
             Command::SetQualityTier { tier } => {
                 self.set_quality_tier(tier.into());
             }
-            Command::SetPalette { palette } => {
+                Command::SetInteractive { interactive } => {
+                    // Same pattern as `SetPalette` — the runtime is the
+                    // side that owns the `winit::Window`, so we just
+                    // record the desired state and let the runtime
+                    // apply it between frames.
+                    self.pending_hittest = Some(interactive);
+                }
+                Command::SetPalette { palette } => {
                 // The palette is a *render* setting, not a director one —
                 // it lives on `Renderer::palette`. The director records
                 // the wanted id so the runtime can read it back and apply
@@ -200,6 +207,15 @@ impl SceneDirector {
     /// applies the returned id to `Renderer::palette`.
     pub fn take_pending_palette(&mut self) -> Option<PaletteId> {
         self.pending_palette.take()
+    }
+
+    /// Consumes and returns any interactivity change requested via
+    /// [`Command::SetInteractive`]. `true` means "grab clicks",
+    /// `false` means "pass them through". The runtime calls this
+    /// between ticks and applies the value via
+    /// `winit::Window::set_cursor_hittest`.
+    pub fn take_pending_hittest(&mut self) -> Option<bool> {
+        self.pending_hittest.take()
     }
 }
 
@@ -295,6 +311,18 @@ mod tests {
         assert!(director.signals.intensity <= 1.5);
         assert!(!director.signals.audio_level.is_nan());
         assert!(director.signals.progress >= 0.0);
+    }
+
+    #[test]
+    fn set_interactive_shows_up_in_take_pending_hittest_once() {
+        let mut director = SceneDirector::new();
+        assert_eq!(director.take_pending_hittest(), None);
+        director.apply_command(Command::SetInteractive { interactive: true });
+        assert_eq!(director.take_pending_hittest(), Some(true));
+        // Idempotent take: a runtime that reads twice in the same
+        // frame must not apply the change twice or misinterpret a
+        // stale value as a fresh request.
+        assert_eq!(director.take_pending_hittest(), None);
     }
 
     #[test]

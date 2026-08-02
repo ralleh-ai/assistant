@@ -130,6 +130,17 @@ export function presenceSetQualityTier(tier: QualityTier): Promise<void> {
 }
 
 /**
+ * Toggles click-through on the presence droplet. `false` (default at
+ * spawn) lets clicks fall through to windows behind the droplet;
+ * `true` grabs mouse events so the user can drag or right-click it.
+ * On a non-transparent build this is a no-op that logs on the runtime
+ * side — safe to call unconditionally from the UI.
+ */
+export function presenceSetInteractive(interactive: boolean): Promise<void> {
+  return safeInvoke("presence_set_interactive", { interactive }).then(() => undefined);
+}
+
+/**
  * The list of modes in the order the debug panel should render them.
  * Order matches `PresenceMode::ALL` in `presence-core::scene::mode` so
  * the two UIs (this one and the runtime's egui overlay) stay

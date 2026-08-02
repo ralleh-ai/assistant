@@ -133,6 +133,12 @@ pub struct SceneDirector {
     /// is `#[allow(dead_code)]` under a no-features build.
     #[allow(dead_code)]
     pub(crate) pending_palette: Option<crate::palette::PaletteId>,
+    /// A hittest / interactivity change requested by
+    /// `Command::SetInteractive`. Same idiom as `pending_palette`
+    /// because winit's `set_cursor_hittest` needs the `Window`
+    /// handle, which lives in the runtime, not in this crate.
+    #[allow(dead_code)]
+    pub(crate) pending_hittest: Option<bool>,
 }
 
 impl SceneDirector {
@@ -221,6 +227,7 @@ impl SceneDirector {
             reduced_motion: false,
             tier,
             pending_palette: None,
+            pending_hittest: None,
         }
     }
 

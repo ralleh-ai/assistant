@@ -17,6 +17,7 @@ import {
     presenceMicStart,
     presenceMicStatus,
     presenceMicStop,
+    presenceSetInteractive,
     presenceSetMode,
     presenceSetPalette,
     presenceSetReducedMotion,
@@ -41,9 +42,17 @@ export function PresenceDevPanel() {
   // toggle button reflects the last request. If the runtime is behaving
   // and no other process is sending commands, the two match.
   const [engaged, setEngaged] = useState<Set<PresenceMode>>(new Set());
-  const [ring, setRing] = useState(false);
-  const [reducedMotion, setReducedMotion] = useState(false);
-  const [palette, setPalette] = useState<PaletteId>("teal");
+    const [ring, setRing] = useState(false);
+    const [reducedMotion, setReducedMotion] = useState(false);
+    // Click-through defaults to `false` — the runtime starts the
+    // droplet with hittest off (see `PRESENCE_TRANSPARENT` in
+    // `presence-runtime/src/app.rs`). This state tracks the last
+    // request we sent, not the runtime truth: on a non-transparent
+    // build the wire command is a no-op there, and we would rather
+    // reflect what the button did than lie about the underlying
+    // state.
+    const [interactive, setInteractive] = useState(false);
+    const [palette, setPalette] = useState<PaletteId>("teal");
 
   // Continuous signals: mirrors `PresenceSignals::default()` on the
   // runtime side. `0.15` intensity is the idle baseline the shell was
@@ -132,11 +141,17 @@ export function PresenceDevPanel() {
     await presenceSetRingWanted(next);
   }, [ring]);
 
-  const onReducedMotionToggle = useCallback(async () => {
-    const next = !reducedMotion;
-    setReducedMotion(next);
-    await presenceSetReducedMotion(next);
-  }, [reducedMotion]);
+    const onReducedMotionToggle = useCallback(async () => {
+        const next = !reducedMotion;
+        setReducedMotion(next);
+        await presenceSetReducedMotion(next);
+    }, [reducedMotion]);
+
+    const onInteractiveToggle = useCallback(async () => {
+        const next = !interactive;
+        setInteractive(next);
+        await presenceSetInteractive(next);
+    }, [interactive]);
 
   const onPaletteChange = useCallback(async (id: PaletteId) => {
     setPalette(id);
@@ -208,6 +223,18 @@ export function PresenceDevPanel() {
                     onClick={onReducedMotionToggle}
                 >
                     Reduced motion
+                </button>
+                <button
+                    type="button"
+                    className={
+                        interactive
+                            ? "presence-dev-chip is-engaged"
+                            : "presence-dev-chip"
+                    }
+                    onClick={onInteractiveToggle}
+                    title="Grab clicks on the droplet (default: click-through)"
+                >
+                    {interactive ? "Grab ●" : "Grab"}
                 </button>
                 <button
                     type="button"

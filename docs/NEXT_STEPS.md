@@ -71,7 +71,9 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
       swapchain for `CompositeAlphaMode::PreMultiplied`, and switches
       the composite shader to coverage-derived premultiplied alpha.
       `set_cursor_hittest(false)` makes clicks pass through by
-      default. Hover-hold / global-hotkey focus grab still pending.
+      default. Focus grab lands via `Command::SetInteractive` and
+      the dev panel's "Grab" toggle (2026-08-02); a global hotkey
+      binding on the shell side is a UX follow-up but not blocking.
    4. **Position and layout persistence.** Presence-side store; the
       shell should not own window geometry. Multi-monitor placement is
       still open (ADR-013 §"Not decided here"); land single-monitor

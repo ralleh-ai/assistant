@@ -212,6 +212,19 @@ fn presence_set_quality_tier(
     Ok(())
 }
 
+#[tauri::command]
+fn presence_set_interactive(
+    interactive: bool,
+    presence: State<'_, Presence>,
+) -> Result<(), String> {
+    // Click-through toggle. Only meaningful when the runtime is in
+    // transparent mode (see `Presence::spawn` env var), but harmless
+    // otherwise — the wire type accepts it either way and the runtime
+    // just calls `set_cursor_hittest` on whatever window it has.
+    presence.send(PresenceCommand::SetInteractive { interactive });
+    Ok(())
+}
+
 /// Handle to the active mic pump (if any). Mutex because Tauri hands
 /// out shared references to managed state and we need to swap the
 /// `Option` in-place from the start/stop commands.
@@ -312,6 +325,7 @@ pub fn run() {
             presence_set_palette,
             presence_set_ring_wanted,
             presence_set_quality_tier,
+            presence_set_interactive,
             presence_mic_status,
             presence_mic_start,
             presence_mic_stop,

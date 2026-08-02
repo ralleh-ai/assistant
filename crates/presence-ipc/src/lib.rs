@@ -151,6 +151,16 @@ pub enum Command {
     SetQualityTier { tier: QualityTier },
     /// Switches the colour scheme.
     SetPalette { palette: PaletteId },
+    /// Toggles whether the droplet accepts mouse events. When `false`
+    /// (the shipping default), clicks fall through to windows behind
+    /// the droplet — set by the runtime at startup under
+    /// `PRESENCE_TRANSPARENT=1`. When `true`, the droplet grabs
+    /// clicks and keyboard focus so the user can drag it, right-click
+    /// for context, or otherwise interact. Meaningless on an opaque /
+    /// non-transparent build (the runtime never registers as
+    /// click-through there), but harmless to send — the runtime just
+    /// applies the flag and moves on.
+    SetInteractive { interactive: bool },
 }
 
 /// Every message on the wire is wrapped in one of these so a peer can
@@ -275,6 +285,7 @@ mod tests {
             Command::SetPalette {
                 palette: PaletteId::Ember,
             },
+            Command::SetInteractive { interactive: true },
         ];
         for cmd in commands {
             let env = Envelope::wrap(cmd.clone());

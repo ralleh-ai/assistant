@@ -162,12 +162,38 @@ impl App {
         }
     }
 
+    /// If the shell has requested an interactivity change via ipc,
+    /// flip the window's hittest flag. Same one-shot semantics as
+    /// `apply_pending_palette` — the director returns `None` once
+    /// the request has been consumed, so a runtime restart or a
+    /// missed frame does not double-apply.
+    fn apply_pending_hittest(&mut self) {
+        let Some(live) = &mut self.live else { return };
+        if let Some(interactive) = self.director.take_pending_hittest() {
+            // `hittest=true` means "receive clicks" — the wire
+            // command's `interactive` flag maps 1:1. On error we
+            // log rather than panic: a droplet that could not
+            // flip is still visually correct, and yelling louder
+            // than the log tells us nothing new.
+            if let Err(err) = live.window.set_cursor_hittest(interactive) {
+                log::warn!(
+                    "presence-runtime: set_cursor_hittest({interactive}) failed ({err})"
+                );
+            } else {
+                log::info!(
+                    "presence-runtime: cursor hittest -> {interactive}"
+                );
+            }
+        }
+    }
+
     fn redraw(&mut self) {
         // Apply anything the shell has sent since the last frame before we
         // advance the simulation, so a `SetSignals` that arrives between
         // frames influences *this* frame rather than trailing by one.
         self.drain_pending_commands();
         self.apply_pending_palette();
+        self.apply_pending_hittest();
 
         let Some(live) = &mut self.live else { return };
 
