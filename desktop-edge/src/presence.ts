@@ -60,6 +60,27 @@ export function presenceSetMode(mode: PresenceMode, engaged: boolean): Promise<v
   return safeInvoke("presence_set_mode", { mode, engaged }).then(() => undefined);
 }
 
+/**
+ * Continuous signal packet. Wire-level shape matches
+ * `presence_ipc::Signals` — the runtime treats `activeModes` as
+ * authoritative (modes not in the list get released), so pass the
+ * caller's currently-engaged set if you don't want to disturb them.
+ * All scalars are clamped by the runtime to conservative ranges
+ * (`intensity` to `[0.0, 1.5]`, the other two to `[0.0, 1.0]`), and
+ * `NaN` is folded to the low bound — a misbehaving sender cannot
+ * corrupt the simulation, only fail to command it.
+ */
+export type PresenceSignals = {
+  intensity: number;
+  audioLevel: number;
+  progress: number;
+  activeModes: PresenceMode[];
+};
+
+export function presenceSetSignals(signals: PresenceSignals): Promise<void> {
+  return safeInvoke("presence_set_signals", { signals }).then(() => undefined);
+}
+
 export function presenceSetReducedMotion(enabled: boolean): Promise<void> {
   return safeInvoke("presence_set_reduced_motion", { enabled }).then(() => undefined);
 }

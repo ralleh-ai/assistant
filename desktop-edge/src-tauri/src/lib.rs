@@ -142,6 +142,36 @@ fn presence_set_mode(
     Ok(())
 }
 
+/// Continuous-signal packet. Matches `presence_ipc::Signals` verbatim
+/// (serde-side rename_all = "camelCase" to match the pattern the other
+/// Tauri commands use for JS args). Kept as a local struct rather than
+/// reusing the ipc type directly so a future divergence — for example a
+/// clamped `audio_level_smoothed` computed on the shell side — doesn't
+/// require a wire-version bump.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceSignalsArgs {
+    pub intensity: f32,
+    pub audio_level: f32,
+    pub progress: f32,
+    #[serde(default)]
+    pub active_modes: Vec<PresenceMode>,
+}
+
+#[tauri::command]
+fn presence_set_signals(
+    signals: PresenceSignalsArgs,
+    presence: State<'_, Presence>,
+) -> Result<(), String> {
+    presence.send(PresenceCommand::SetSignals(presence_ipc::Signals {
+        intensity: signals.intensity,
+        audio_level: signals.audio_level,
+        progress: signals.progress,
+        active_modes: signals.active_modes,
+    }));
+    Ok(())
+}
+
 #[tauri::command]
 fn presence_set_reduced_motion(
     enabled: bool,
@@ -198,6 +228,7 @@ pub fn run() {
             edge_settings_path,
             presence_status,
             presence_set_mode,
+            presence_set_signals,
             presence_set_reduced_motion,
             presence_set_palette,
             presence_set_ring_wanted,

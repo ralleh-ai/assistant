@@ -11,17 +11,26 @@
 // `?debug=1` query flag. Isolating it now keeps that cleanup a
 // single-file diff.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PRESENCE_MODES,
   presenceSetMode,
   presenceSetPalette,
   presenceSetReducedMotion,
   presenceSetRingWanted,
+  presenceSetSignals,
   PaletteId,
   PALETTES,
   PresenceMode,
 } from "./presence";
+
+// Send at most one signals packet per this many milliseconds. The
+// runtime takes SetSignals at whatever rate it arrives, but every
+// packet is a Tauri round-trip + a JSON encode + a pipe write, and
+// firing on every slider `input` event would coalesce badly on slow
+// hardware. 30 Hz matches the cadence the eventual mic pump will use
+// and is fine-grained enough that a dragging slider feels continuous.
+const SIGNALS_MIN_INTERVAL_MS = 33;
 
 export function PresenceDevPanel() {
   // Presence engagement state is authoritative in the runtime — we do
@@ -32,6 +41,42 @@ export function PresenceDevPanel() {
   const [ring, setRing] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [palette, setPalette] = useState<PaletteId>("teal");
+
+  // Continuous signals: mirrors `PresenceSignals::default()` on the
+  // runtime side. `0.15` intensity is the idle baseline the shell was
+  // tuned against; a fresh session starts there rather than at zero so
+  // the entity has visible life before the user touches anything.
+  const [intensity, setIntensity] = useState(0.15);
+  const [audioLevel, setAudioLevel] = useState(0.0);
+  const [progress, setProgress] = useState(0.0);
+
+  // Last emitted timestamp — the send throttle looks at this so a
+  // slider drag can update local state at 60+ Hz for a smooth thumb
+  // without flooding the pipe. `useRef` because a re-render every 33ms
+  // just to bump a throttle timer would defeat the point.
+  const lastSentAtRef = useRef(0);
+  const engagedRef = useRef(engaged);
+  useEffect(() => {
+    engagedRef.current = engaged;
+  }, [engaged]);
+
+  const sendSignals = useCallback(
+    (next: { intensity: number; audioLevel: number; progress: number }) => {
+      const now = performance.now();
+      if (now - lastSentAtRef.current < SIGNALS_MIN_INTERVAL_MS) return;
+      lastSentAtRef.current = now;
+      // `active_modes` is authoritative on the wire — omitting it would
+      // release every engaged mode on the next tick. Pass the current
+      // set so the sliders touch scalars only.
+      void presenceSetSignals({
+        intensity: next.intensity,
+        audioLevel: next.audioLevel,
+        progress: next.progress,
+        activeModes: Array.from(engagedRef.current),
+      });
+    },
+    [],
+  );
 
   const toggleMode = useCallback(
     async (mode: PresenceMode) => {
@@ -61,6 +106,30 @@ export function PresenceDevPanel() {
     setPalette(id);
     await presenceSetPalette(id);
   }, []);
+
+  const onIntensityChange = useCallback(
+    (v: number) => {
+      setIntensity(v);
+      sendSignals({ intensity: v, audioLevel, progress });
+    },
+    [audioLevel, progress, sendSignals],
+  );
+
+  const onAudioLevelChange = useCallback(
+    (v: number) => {
+      setAudioLevel(v);
+      sendSignals({ intensity, audioLevel: v, progress });
+    },
+    [intensity, progress, sendSignals],
+  );
+
+  const onProgressChange = useCallback(
+    (v: number) => {
+      setProgress(v);
+      sendSignals({ intensity, audioLevel, progress: v });
+    },
+    [intensity, audioLevel, sendSignals],
+  );
 
   return (
     <section className="presence-dev" aria-label="Presence dev controls">
@@ -123,6 +192,54 @@ export function PresenceDevPanel() {
           </button>
         ))}
       </div>
+
+      <div className="presence-dev-signals">
+        <SignalSlider
+          label="Intensity"
+          value={intensity}
+          min={0}
+          max={1.5}
+          onChange={onIntensityChange}
+        />
+        <SignalSlider
+          label="Audio level"
+          value={audioLevel}
+          min={0}
+          max={1}
+          onChange={onAudioLevelChange}
+        />
+        <SignalSlider
+          label="Progress"
+          value={progress}
+          min={0}
+          max={1}
+          onChange={onProgressChange}
+        />
+      </div>
     </section>
+  );
+}
+
+function SignalSlider(props: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (v: number) => void;
+}) {
+  const { label, value, min, max, onChange } = props;
+  return (
+    <label className="presence-dev-slider">
+      <span className="presence-dev-slider-label">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={0.01}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.currentTarget.value))}
+      />
+      <span className="presence-dev-slider-value">{value.toFixed(2)}</span>
+    </label>
   );
 }
