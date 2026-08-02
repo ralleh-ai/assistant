@@ -264,6 +264,14 @@ step alone runs for a couple of minutes.
 `set PRESENCE_LOG_FPS=1` to log the smoothed frame rate periodically when
 the debug panel is collapsed.
 
+`set PRESENCE_DROPLET=1` before launching to swap the standard 960×720
+resizable window for a **frameless, always-on-top 320×320 droplet** —
+the shape ADR-013 commits to for the shipping product. Per-pixel
+transparency (composite-shader alpha output) is a separate follow-up; in
+this pass the droplet is a small opaque always-on-top square, and the
+point of the flag is to exercise the chrome and z-order path before the
+alpha path is wired up.
+
 ## Driving the presence from another process (stdin transport)
 
 `presence-runtime` can accept a live stream of commands from stdin, so a

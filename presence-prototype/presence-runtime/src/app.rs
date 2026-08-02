@@ -8,7 +8,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::window::{Window, WindowId, WindowLevel};
 
 use presence_core::render::Renderer;
 use presence_core::scene::mode::PresenceMode;
@@ -78,6 +78,34 @@ const ADAPTIVE_DOWNSHIFT_FPS: f32 = 45.0;
 /// the tier, short enough that a genuinely slow machine gets its help before
 /// the user has decided to close the window.
 const ADAPTIVE_DOWNSHIFT_HOLD_SECONDS: f32 = 3.0;
+
+/// Environment variable that flips the runtime into "droplet" chrome —
+/// frameless and always-on-top, sized like an indicator rather than a
+/// window. Off by default because the dev harness needs decorations to
+/// exercise the resize path and needs standard z-order to read the
+/// debug panel alongside a browser or terminal.
+///
+/// See ADR-013 for the shipping product's window model. This env var is
+/// the near-term way to opt in from the same binary; Phase 4 replaces
+/// it with a persistent setting.
+const DROPLET_ENV: &str = "PRESENCE_DROPLET";
+
+/// Inner size when droplet chrome is active. Sized to be *legible*
+/// rather than *maximal* — a 320-pixel square is roughly the smallest
+/// the shell + halo read as a coherent surface rather than as a blob;
+/// dropping below that flattens the fold silhouette that carries most
+/// of the identity.
+const DROPLET_SIZE_PX: f64 = 320.0;
+
+fn droplet_enabled() -> bool {
+    matches!(
+        std::env::var(DROPLET_ENV)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    )
+}
 
 impl App {
     pub fn new() -> Self {
@@ -284,9 +312,37 @@ impl ApplicationHandler for App {
             return;
         }
 
-        let attrs = Window::default_attributes()
-            .with_title("Ralleh — Point Cloud Presence (Phase 1 Prototype)")
-            .with_inner_size(winit::dpi::LogicalSize::new(960.0, 720.0));
+        // Two chrome profiles from the same binary: a resizable dev
+        // harness by default, and a small always-on-top droplet under
+        // PRESENCE_DROPLET=1. The droplet path is the shape ADR-013
+        // commits to for the shipping product; the env var is the
+        // near-term opt-in until Phase 4 wires this to a persisted
+        // setting.
+        //
+        // Per-pixel transparency (composite-shader alpha output) is
+        // deliberately *not* here — that is a separate change that
+        // touches `presence-core::render::post`, and mixing it into
+        // the chrome commit would obscure whether a visual regression
+        // came from the frame changes or the alpha path.
+        let attrs = if droplet_enabled() {
+            log::info!(
+                "presence-runtime: {DROPLET_ENV}=1 — frameless, always-on-top, \
+                 {DROPLET_SIZE_PX:.0}x{DROPLET_SIZE_PX:.0}"
+            );
+            Window::default_attributes()
+                .with_title("Ralleh — Presence")
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_window_level(WindowLevel::AlwaysOnTop)
+                .with_inner_size(winit::dpi::LogicalSize::new(
+                    DROPLET_SIZE_PX,
+                    DROPLET_SIZE_PX,
+                ))
+        } else {
+            Window::default_attributes()
+                .with_title("Ralleh — Point Cloud Presence (Phase 1 Prototype)")
+                .with_inner_size(winit::dpi::LogicalSize::new(960.0, 720.0))
+        };
         let window = Arc::new(
             event_loop
                 .create_window(attrs)
