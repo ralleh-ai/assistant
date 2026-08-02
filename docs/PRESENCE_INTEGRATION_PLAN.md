@@ -1,8 +1,10 @@
 # Presence Integration Plan — Point Cloud Entity
 
 **Status:** Phase 0 (design) complete. **Phase 1 (standalone Rust
-prototype) in progress** — see `presence-prototype/` at the repo root.
-Phases 2–4 are planning only, nothing built yet.
+prototype) substantially complete (2026-08-02)** — see
+`presence-prototype/` at the repo root. Phase 2's design decisions are
+now locked ([ADR-013](./adr/adr-013-presence-window-and-process-model.md))
+but the implementation has not started. Phases 3–4 are planning only.
 
 **Companion documents:**
 - [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md) — the visual
@@ -94,16 +96,16 @@ with its own `Cargo.toml` and no `[workspace]` table (same shape as
 GPU/window surface, so it must never be required by headless
 `cargo test --workspace` / CI (`HEADLESS.md`'s rule).
 
-### D1 — Render/embedding target: deferred to Phase 2. Phase 1 is a fully standalone window/binary.
+### D1 — Render/embedding target: **resolved (2026-08-02) by [ADR-013](./adr/adr-013-presence-window-and-process-model.md)**.
 
-The original plan (first revision) tried to lock "in-window vs. floating
-companion window" during Phase 0/1. That's now explicitly deferred: with a
-`winit`+`wgpu` renderer, the eventual production question is really "does
-the `wgpu` surface attach to a Tauri-managed raw window (same process as
-`desktop-edge`) or does it live in a fully separate window/process?" — a
-question that doesn't need answering to build and tune the prototype.
-Phase 1 runs as its own `cargo run` binary, no relationship to
-`desktop-edge` at all yet. Revisit in Phase 2 once the visual language is proven.
+The presence runs in its own OS process, as a frameless transparent
+always-on-top droplet, click-through by default. The original deferral is
+now settled — see ADR-013 for the four-way pick (process model,
+presentation, chrome, settings location) and the rationale. Phase 1
+continued as a fully standalone binary; Phase 2 is the implementation of
+this decision. What is still open per ADR-013's "Not decided here"
+section: the specific IPC transport and encoding, the launch/discovery
+model, and multi-monitor placement.
 
 ### D2 — Rendering stack: `winit` + `wgpu` + `noise`, in a new Rust crate. Not Three.js.
 
@@ -146,21 +148,25 @@ in the shader. The concrete consequences for this plan:
 - **Phase 4**'s "color variant" line item is therefore already done by the
   time Phase 4 starts — see §4.
 
-### D4 — State bridge (future, Phase 2+): in-process Rust, no serialization boundary at all — simpler than the original Tauri-event design.
+### D4 — State bridge: **cross-process IPC (2026-08-02, via ADR-013's D1 resolution)**.
 
-The first revision of this plan assumed the renderer would be a Tauri
-webview consumer, so it designed a `presence.rs` IPC module emitting
-`PresenceState` over `app.emit(...)` (Rust → JSON → JS). With a Rust-native
-renderer, **that serialization boundary disappears entirely**: if the
-production renderer ends up sharing a process with `desktop-edge/src-tauri`
-(see D1), presence state can be a plain shared Rust struct (behind a
-mutex/channel) read directly by the render loop — no JSON, no IPC, no
-webview round-trip. If it ends up as a separate process instead, some
-channel (even just an in-memory `crossbeam`/`tokio` channel if same process,
-or a tiny local socket/pipe if not) replaces the JSON event, but the shape
-(`PresenceSignals`/`PresenceState`, `PRESENCE_SCENES.md` §7) is unchanged
-either way. Concrete choice deferred to Phase 2, same as D1 — both are
-strictly simpler than the design this replaces.
+D1's resolution to run the presence in its own process settles this too:
+the bridge is a small local IPC channel from `desktop-edge` to the
+presence, carrying `PresenceSignals` (`PRESENCE_SCENES.md` §7) and a
+settings-update message. The webview / JSON boundary the first revision
+of this plan worried about is still gone — both ends are Rust — but there
+is now a serialization step. The transport and encoding are open per
+ADR-013's "Not decided here"; the leading candidate is
+protobuf-over-length-prefixed-frames because JSON at 60 Hz is wasteful.
+The type shape at the Rust API is unchanged from what the Phase 1
+prototype's dev panel already drives, which is the whole point of
+having modelled `PresenceSignals` up front.
+
+The T9/T14 constraint from §6 (no raw audio, transcript, or
+prompt/completion content on the wire) has to be enforced in the *type*
+rather than by convention. The `PresenceSignals` fields today are all
+either enums or scalars in `[0, 1]`, which already satisfies this;
+Phase 2 must not relax it.
 
 Unchanged from the first revision: presence state must only ever be
 derived scalars (mode, intensity, audio *level*, progress, confidence) —
@@ -190,7 +196,7 @@ complete until both prerequisites land. See §4.
 - Primary modes, entity types, visual signatures, palette, and initial
   tunables agreed.
 
-### Phase 1 — Standalone Rust prototype (`presence-prototype/`) — **in progress**
+### Phase 1 — Standalone Rust prototype (`presence-prototype/`) — **substantially complete (2026-08-02)**
 Goal: tune the entity's feel and scene differentiation in a real, running
 Rust binary, with zero coupling to `desktop-edge`. Scope per
 `PRESENCE_SCENES.md` §9:
@@ -259,33 +265,81 @@ Rust binary, with zero coupling to `desktop-edge`. Scope per
   code is not rewritten in Phase 2.
 - `egui` debug overlay: active entities, engaged modes and their resolved
   term weights, raw signal values, fps.
-- **Exit criteria:** Idle and Loading are clearly, immediately
-  distinguishable (density/motion/character, not just color), Idle reads
-  as calm within a few seconds, the ring's on/off toggle proves multi-entity
-  composition works, each activity mode is distinguishable from idle and
-  from the others, two modes at once read as both rather than as either, and
-  transitions feel continuous, not a hard cut. Record this as an informal
-  manual QA pass, not a unit test — see §5. `listening`, `error`, and
-  `attention` are explicitly **not** in this phase's scope; they need no
-  geometry and will sit on the mode layer built here
-  (`PRESENCE_SCENES.md` §4.3 / `PRESENCE_VISUAL_ENTITY.md` §5.1).
+- **Exit criteria — met (2026-08-02):** Idle and Loading are clearly,
+  immediately distinguishable (density/motion/character, not just
+  color); Idle reads as calm within a few seconds (further softened by
+  the 2026-08-02 idle-calm pass — halved evolution/breath cadence plus
+  a slow crease-brightness rest); the ring's on/off toggle proves
+  multi-entity composition works, and the `activity_scale` hierarchy
+  makes composition with active modes read cleanly rather than as two
+  entities fighting for attention; each activity mode is
+  distinguishable from idle and from the others; two modes at once
+  read as both rather than as either; transitions are continuous, not
+  hard cuts. Recorded as an informal manual QA pass — see §5.
+- **Pulled forward from the improvement-guidance pass (2026-08-02),
+  originally scoped for later phases:**
+  - `listening`, `attention`, `error` implemented as material-only
+    modes on the same `ModeLayer` (no new geometry — the invariant is
+    tested in `material_modes_never_reach_the_shell_drive`). Formerly
+    Phase 3 signal work.
+  - Reduced-motion preset (R key). Formerly Phase 4.
+  - Quality tiers `Balanced` / `Low` with runtime `deform_stride` and
+    adaptive downshift after 3 s under 45 FPS. Formerly Phase 4.
+  - `SceneRegistry` productized with `entity_kind`/`priority`/
+    `default_active` and a sync-with-director test; §8 of
+    `PRESENCE_SCENES.md` now names files and functions for the
+    "adding a scene" flow.
+- **Remaining Phase 1 items** (opportunistic, not blocking Phase 2):
+  - Very-long-run (30+ minutes) peripheral-idle QA — currently
+    informal.
+  - Optional `High` quality tier (100k+) if a target machine warrants
+    it — measurement, not design.
+  - GPU compute path for deformation — deferred per ADR-011's
+    fallback ordering; not needed at current numbers.
 
-### Phase 2 — Core integration (window behavior + real embedding decision)
-- Resolve D1/D4's deferred choice: Tauri-managed raw window vs. separate
-  process, and how state actually reaches the render loop.
-- Frameless / always-on-top / position-persistence window behavior.
-- Basic user controls surfaced somewhere real (opacity, density scale,
-  reduced-motion) — extend `EdgeSettings` rather than inventing a second
-  settings store, if the renderer ends up sharing `desktop-edge`'s process.
-- **`EdgeSettings.presence_palette`** (D3): a `String` validated against
-  the fixed `teal`/`lime`/`ice`/`ember` list, mirroring `voice_style`'s
-  const-list validation in `desktop-edge/src-tauri/src/settings.rs`. Not a
-  critical field — an unknown or missing value falls back to `teal` rather
-  than failing the load, since colour is cosmetic and must never block
-  startup. The Phase 1 selector already drives the same `PaletteId`, so
-  this is persistence and UI, not new render plumbing.
-- Still driven by **mocked/synthetic** signals — this phase proves the
-  window/embedding mechanics, not real assistant state.
+### Phase 2 — Core integration (window productization + desktop-edge bridge)
+
+Design locked in [ADR-013](./adr/adr-013-presence-window-and-process-model.md).
+Concrete work in rough execution order:
+
+1. **Split the prototype into a shippable shape.** Refactor
+   `presence-prototype/` into `presence-core` (renderer + simulation
+   library — no `winit`, no key handling, no debug overlay) and
+   `presence-runtime` (the binary opening a window and running the
+   loop). The dev panel becomes a `dev` feature on the runtime so a
+   production build does not ship it. Do not rewrite — promote,
+   per §7 open item #2.
+2. **Define the IPC surface.** New `presence-ipc` crate holding the
+   wire type for `PresenceSignals` (already shaped by the Phase 1 dev
+   panel) plus a settings-update message (palette, quality tier,
+   reduced-motion, window bounds). Transport and encoding are open
+   per ADR-013 "Not decided here"; leading candidate is
+   protobuf-over-length-prefixed-frames because JSON at 60 Hz is
+   wasteful. Enforce the T9/T14 constraint in the type — see D4.
+3. **Frameless / transparent / always-on-top droplet, Windows first.**
+   Per-pixel alpha, click-through by default, hover-hold or global
+   hotkey to bring focus. Windows first because per-pixel alpha +
+   click-through is where the platform is fussiest; macOS and Linux
+   follow.
+4. **Position and layout persistence.** Presence-side layout store —
+   the shell does not own window geometry. Single monitor first;
+   multi-monitor placement is still open per ADR-013.
+5. **Launch and discovery.** How the shell finds or spawns the
+   presence process. Options: shell-spawned child, user-launched
+   alongside the shell, OS service. Not decided; prototype
+   shell-spawned first because it is the simplest and does not
+   preclude the others.
+6. **`EdgeSettings.presence_*`** — persist palette (D3), plus
+   `presence_quality_tier` and `presence_reduced_motion`. All three
+   are validated against a fixed list (mirroring `voice_style` in
+   `desktop-edge/src-tauri/src/settings.rs`) and fall back on
+   unknown/missing values rather than failing the load. On startup
+   and on change the shell IPCs the resolved values into the
+   presence. The Phase 1 selectors already drive the same
+   `PaletteId`/`QualityTier`, so this is persistence and UI, not new
+   render plumbing.
+7. **Still driven by synthetic signals** — this phase proves the
+   window + IPC + settings mechanics, not real assistant state.
 
 ### Phase 3 — Real signal enrichment (blocked on D5 prerequisites)
 1. Replace synthetic signals with the real VAD state machine once
@@ -390,19 +444,29 @@ implementation actually starts — recorded here first so it isn't lost:
 These are recommendations, not blockers — recorded so they're visible
 rather than decided silently:
 
-1. Phase 2's D1/D4 embedding decision (Tauri-managed window vs. separate
-   process) should be made with real profiling/UX data from Phase 1, not
-   guessed now. Recommendation: prototype both quickly in early Phase 2
-   rather than debating in the abstract.
+1. ~~Phase 2's D1/D4 embedding decision~~ **resolved (2026-08-02) by
+   [ADR-013](./adr/adr-013-presence-window-and-process-model.md)**:
+   separate process, frameless transparent always-on-top droplet,
+   click-through by default, shell-authoritative settings via IPC.
+   Sub-decisions still open per ADR-013's "Not decided here" section:
+   the specific IPC transport/encoding, the launch/discovery model,
+   whether the droplet has a "docked to shell" secondary mode, and
+   reduced-motion-as-OS-preference-vs-shell-toggle (both are cheap to
+   support and probably both land).
 2. Whether `presence-prototype/`'s code is meant to be thrown away or
-   gradually promoted into the real crate (e.g. renamed/moved rather than
-   rewritten) once Phase 2 starts. Recommendation: promote, don't rewrite
-   — structure the crate now as if it might become the real thing (clean
-   module boundaries, no throwaway hacks) even though its purpose today is tuning.
-3. Whether `presence-prototype/` should eventually move under `crates/` as
-   a real workspace member (with GPU/display bits still feature-gated per
-   `HEADLESS.md`'s rule) once it's no longer just a tuning tool.
-   Recommendation: revisit at the start of Phase 2, not now.
+   gradually promoted into the real crate (e.g. renamed/moved rather
+   than rewritten) once Phase 2 starts. Recommendation: **promote,
+   don't rewrite** — structure the crate now as if it might become the
+   real thing (clean module boundaries, no throwaway hacks) even
+   though its purpose today is tuning. Phase 2 §4.1 (split into
+   `presence-core` + `presence-runtime`) is the concrete first step.
+3. Whether `presence-prototype/` should eventually move under
+   `crates/` as a real workspace member (with GPU/display bits still
+   feature-gated per `HEADLESS.md`'s rule) once it's no longer just a
+   tuning tool. Recommendation: revisit as part of Phase 2 §4.1's
+   split — either the two new crates go under `crates/` from the
+   start, or they stay outside the workspace and get promoted
+   together in Phase 3 once real signals arrive.
 
 ---
 

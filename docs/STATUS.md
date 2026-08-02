@@ -1,15 +1,17 @@
 # Status — Last Validated Snapshot
 
-**As of:** 2026-08-01 (product setup UX: splash → settings gate → core)
+**As of:** 2026-08-02 (presence prototype: improvement-guidance pass;
+material modes, hierarchy dampening, quality tiers, ADR-013 window/process
+decisions locked)
 
 ## Build/test state
 
 ```
 cargo test --workspace → headless-safe (audio-core mic feature off)
 desktop-edge: splash/settings/core UI; mic on by default; settings gate
-presence-prototype (excluded from workspace): builds, 68 unit tests pass,
-  runs and renders (winit + wgpu). See its own cargo test/run — not part
-  of `cargo test --workspace`.
+presence-prototype (excluded from workspace): builds, 79 unit tests pass,
+  runs and renders (winit + wgpu) at ~170–200 FPS at idle on 2 cores.
+  See its own cargo test/run — not part of `cargo test --workspace`.
 ```
 
 **Local toolchain note (this dev machine only):** this machine has a
@@ -40,11 +42,46 @@ explicitly before invoking `npm`/`cargo`.
   transitions are weight lerps (ADR-012).
   Render path is HDR (`Rgba16Float`) → bloom → ACES tonemap + vignette, with
   per-particle core/body/halo layering and density-driven highlight
-  desaturation. ~150-178 FPS at idle and ~109-171 in every activity mode, at
+  desaturation. ~150-200 FPS at idle and ~109-171 in every activity mode, at
   2560×1600 with 80,000 points (plus 40,000 more while Loading shows) in a
   release build on 2 cores, so no GPU compute path is needed yet.
+- **Presence — improvement-guidance pass (2026-08-02):**
+  - Idle-calm: fold evolution and breath cadence halved; slow (~35s)
+    crease-brightness rest modulator so folds appear to rest without the
+    silhouette moving.
+  - Three material-only modes on the shell: `listening` (N),
+    `attention` (A), `error` (E). Error is subtractive — a denial
+    visibly wilts an in-progress activity rather than adding another
+    colour on top. `material_modes_never_reach_the_shell_drive` locks
+    the invariant that these three never contribute to `ShellDrive`.
+  - Multi-entity hierarchy: `SceneDirector.activity_scale` eases
+    1.0 → 0.55 while Loading composites, so a running mode still shows
+    through the plate but does not fight it for the eye.
+  - Shared `TRANSITION_WINDOW_SECONDS` (300–900 ms) with a runtime
+    debug assertion and a paired test that the entity-fade duration
+    sits inside it.
+  - Reduced-motion (R): shell animation clock to 0.12×, mode
+    contributions to 0.4×. Springs still integrate at real dt.
+  - Quality tiers (Q cycles): `Balanced` (80k/40k, stride 4) and
+    `Low` (30k/15k, stride 8), with runtime `deform_stride` on
+    `SurfaceBehavior`; particles regenerate on switch. App
+    auto-downshifts once after 3s under 45 FPS; no auto-upshift.
+  - `SceneRegistry` descriptors carry `entity_kind`, `priority`,
+    `default_active`; a sync test fails if the registry and the
+    director drift out of step.
+  - **ADR-013** — window and process model **locked** (decision only;
+    Phase 2 will implement): separate presence process, frameless
+    transparent always-on-top droplet, click-through by default,
+    shell-authoritative settings IPC'd in.
 
 ## Next up
 
-Medium-priority backlog (OIDC when control plane exists, conversation UI,
-etc.) — see NEXT_STEPS.md.
+- **Presence Phase 2** — implement ADR-013's window and process model
+  (Windows first for the fussy per-pixel-alpha + click-through path),
+  wire the IPC channel to `desktop-edge`, and persist palette / quality
+  tier / reduced-motion in `EdgeSettings`. See `NEXT_STEPS.md` §7–8 for
+  the concrete task list and `PRESENCE_INTEGRATION_PLAN.md` §4 Phase 2
+  for the phasing.
+- Medium-priority backlog (OIDC when control plane exists, live mic →
+  VAD → STT beyond capture metrics, real screen/hotkey OS backends,
+  etc.) — see NEXT_STEPS.md.
