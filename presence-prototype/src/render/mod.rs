@@ -1,0 +1,464 @@
+pub mod camera;
+pub mod post;
+
+use std::sync::Arc;
+
+use bytemuck::{Pod, Zeroable};
+use wgpu::util::DeviceExt;
+use winit::window::Window;
+
+use crate::palette::{PaletteId, PresencePalette};
+use crate::sim::Particle;
+use camera::{Camera, PointMaterial};
+use post::PostChain;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct QuadVertex {
+    corner: [f32; 2],
+}
+
+const QUAD_VERTICES: [QuadVertex; 4] = [
+    QuadVertex {
+        corner: [-1.0, -1.0],
+    },
+    QuadVertex {
+        corner: [1.0, -1.0],
+    },
+    QuadVertex {
+        corner: [-1.0, 1.0],
+    },
+    QuadVertex { corner: [1.0, 1.0] },
+];
+
+/// Per-point instance data. 48 bytes, up from 32 when the surface normal and
+/// crease were added — the extra 16 bytes buy the silhouette and fold
+/// filaments, which are the two things that separate a scanned surface from a
+/// spray of dots.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct InstanceRaw {
+    position: [f32; 3],
+    size: f32,
+    brightness: f32,
+    color_bias: f32,
+    layer: f32,
+    crease: f32,
+    /// Zero for volume-based entities, which the shader reads as "no
+    /// silhouette term" so both entity families share one pipeline.
+    normal: [f32; 3],
+    _pad: f32,
+}
+
+/// Owns the GPU device/queue/surface plus the point-cloud render pipeline.
+/// `egui`'s renderer (see `crate::ui`) shares `device`/`queue`/`surface`
+/// with this struct rather than creating its own.
+pub struct Renderer {
+    pub surface: wgpu::Surface<'static>,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub surface_config: wgpu::SurfaceConfiguration,
+    pub camera: Camera,
+    pub material: PointMaterial,
+    pub post: PostChain,
+    /// The active colour scheme. A runtime value rather than a constant
+    /// because it is a user setting — see `crate::palette`.
+    pub palette: PresencePalette,
+
+    pipeline: wgpu::RenderPipeline,
+    quad_vertex_buffer: wgpu::Buffer,
+    camera_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    instance_buffer: wgpu::Buffer,
+    instance_capacity: usize,
+}
+
+impl Renderer {
+    pub async fn new(window: Arc<Window>) -> Self {
+        let size = window.inner_size();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        let surface = instance
+            .create_surface(window.clone())
+            .expect("create wgpu surface");
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("no suitable GPU adapter found (see README for troubleshooting)");
+
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("presence-prototype device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                        .using_resolution(adapter.limits()),
+                    memory_hints: wgpu::MemoryHints::default(),
+                },
+                None,
+            )
+            .await
+            .expect("failed to create wgpu device");
+
+        let surface_caps = surface.get_capabilities(&adapter);
+        let format = surface_caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(surface_caps.formats[0]);
+
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::AutoVsync,
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &surface_config);
+
+        let camera = Camera::new(surface_config.width as f32 / surface_config.height as f32);
+        let material = PointMaterial::default();
+        // `PRESENCE_PALETTE` stands in for the settings field this reads from
+        // once the entity is hosted in `desktop-edge`; the prototype's debug
+        // panel switches it live.
+        let palette = std::env::var("PRESENCE_PALETTE")
+            .map(|name| PaletteId::from_str_or_default(&name))
+            .unwrap_or(PaletteId::Teal)
+            .palette();
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera uniform"),
+            contents: bytemuck::cast_slice(&[camera.uniform(
+                surface_config.height as f32,
+                &material,
+                &palette,
+            )]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("camera bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera bind group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("point shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("point pipeline layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let vertex_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<QuadVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x2,
+            }],
+        };
+
+        let instance_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 12,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 20,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 28,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+            ],
+        };
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("point pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[vertex_layout, instance_layout],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                // Renders into the HDR scene target, not the swapchain — the
+                // tonemap composite in `post` is what writes the surface.
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: post::HDR_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let quad_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("quad vertex buffer"),
+            contents: bytemuck::cast_slice(&QUAD_VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let initial_capacity = 8_192usize;
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("instance buffer"),
+            size: (initial_capacity * std::mem::size_of::<InstanceRaw>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let post = PostChain::new(
+            &device,
+            surface_config.format,
+            surface_config.width,
+            surface_config.height,
+        );
+
+        Self {
+            surface,
+            device,
+            queue,
+            surface_config,
+            camera,
+            material,
+            post,
+            palette,
+            pipeline,
+            quad_vertex_buffer,
+            camera_buffer,
+            bind_group,
+            instance_buffer,
+            instance_capacity: initial_capacity,
+        }
+    }
+
+    pub fn animate_camera(&mut self, dt: f32) {
+        self.camera.animate(dt);
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.surface_config.width = width;
+        self.surface_config.height = height;
+        self.surface.configure(&self.device, &self.surface_config);
+        self.camera.set_aspect(width as f32 / height as f32);
+        self.post.resize(&self.device, width, height);
+    }
+
+    fn ensure_instance_capacity(&mut self, needed: usize) {
+        if needed <= self.instance_capacity {
+            return;
+        }
+        let new_capacity = needed.next_power_of_two();
+        self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("instance buffer (grown)"),
+            size: (new_capacity * std::mem::size_of::<InstanceRaw>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_capacity = new_capacity;
+    }
+
+    /// Uploads the camera uniform and all currently-visible particles
+    /// (concatenated across every active entity), then draws the point
+    /// pass into a fresh frame and hands the encoder/view back so the
+    /// caller (see `crate::app`) can layer the `egui` debug overlay into
+    /// the *same* encoder before presenting — see `Frame::finish`.
+    ///
+    /// `entity_particles` is `(particles, presence_opacity)` per entity so
+    /// per-particle brightness can be scaled by the transition fade
+    /// without mutating simulation state.
+    pub fn begin_frame(
+        &mut self,
+        entity_particles: &[(&[Particle], f32)],
+    ) -> Result<Frame, wgpu::SurfaceError> {
+        let instances: Vec<InstanceRaw> = entity_particles
+            .iter()
+            .flat_map(|(particles, opacity)| {
+                particles.iter().map(move |p| InstanceRaw {
+                    position: p.position.to_array(),
+                    size: p.size,
+                    brightness: p.brightness * opacity,
+                    color_bias: p.color_bias,
+                    layer: p.layer.as_f32(),
+                    crease: p.crease,
+                    normal: p.normal.to_array(),
+                    _pad: 0.0,
+                })
+            })
+            .collect();
+
+        self.ensure_instance_capacity(instances.len().max(1));
+        if !instances.is_empty() {
+            self.queue
+                .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
+        }
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera.uniform(
+                self.surface_config.height as f32,
+                &self.material,
+                &self.palette,
+            )]),
+        );
+
+        let output = self.surface.get_current_texture()?;
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("point render encoder"),
+            });
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("point pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    // Cleared to black rather than the brand ink: the field
+                    // colour is added *after* tonemapping in the composite, so
+                    // that the near-black ink lands at exactly its intended
+                    // value instead of being crushed by the ACES toe.
+                    view: self.post.scene_view(),
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            if !instances.is_empty() {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_vertex_buffer(0, self.quad_vertex_buffer.slice(..));
+                pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                pass.draw(0..4, 0..instances.len() as u32);
+            }
+        }
+
+        // Bloom + tonemap + vignette, ending in the swapchain. The `egui`
+        // overlay is drawn onto `view` afterwards by the caller, deliberately
+        // *outside* the tonemap so debug UI stays at its authored colours.
+        self.post
+            .render(&mut encoder, &self.queue, &view, &self.palette);
+
+        Ok(Frame {
+            output,
+            view,
+            encoder,
+        })
+    }
+}
+
+/// An in-flight frame: the point pass has already been recorded. The
+/// caller may record additional passes (the `egui` overlay) into
+/// `encoder`/`view` with `LoadOp::Load` before calling `finish`.
+pub struct Frame {
+    output: wgpu::SurfaceTexture,
+    pub view: wgpu::TextureView,
+    pub encoder: wgpu::CommandEncoder,
+}
+
+impl Frame {
+    pub fn finish(self, queue: &wgpu::Queue) {
+        queue.submit(std::iter::once(self.encoder.finish()));
+        self.output.present();
+    }
+}

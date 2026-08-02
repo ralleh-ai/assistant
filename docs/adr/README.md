@@ -24,3 +24,6 @@ This folder holds ADRs in two categories:
 | [ADR-007](./adr-007-dual-auditsink-traits.md) | Two Distinct `AuditSink` Traits to Preserve One-Way Crate Dependencies | Accepted, **implemented** |
 | [ADR-008](./adr-008-http-completion-backend.md) | OpenAI-Compatible HTTP Wire Format as the First Real Completion Backend | Accepted, **implemented** |
 | [ADR-009](./adr-009-anthropic-messages-backend.md) | Anthropic Messages API as Second Completion Backend | Accepted, **implemented** |
+| [ADR-010](./adr-010-point-cloud-presence-entity.md) | Point Cloud Presence Entity — Rust-First Renderer (`winit` + `wgpu`), Not Three.js | Accepted (planning; Phase 1 prototype in progress) |
+| [ADR-011](./adr-011-surface-point-generation-and-palette-setting.md) | Presence Points Lie On Surfaces, Not Through Volumes — and the Palette Is a User Setting | Accepted, **implemented** (Phase 1 prototype) |
+| [ADR-012](./adr-012-additive-mode-composition.md) | Modes Compose Additively On One Shell, Rather Than Selecting Exclusive Shapes | Accepted, **implemented** (Phase 1 prototype) |

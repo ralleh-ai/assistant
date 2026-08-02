@@ -18,7 +18,10 @@ and next steps.
 8. [`HEADLESS.md`](./HEADLESS.md) — what is safe without mic/display; desktop opt-in features and env flags.
 9. [`CRATE_NAMING.md`](./CRATE_NAMING.md) — DEVELOPMENT.md §16 names vs actual crates; rename policy.
 10. [`THREAT_MODEL.md`](./THREAT_MODEL.md) — Phase 0 threat-model draft (+ Tauri/NestJS forward threats).
-11. [`adr/`](./adr/) — architecture decision records, both from the original planning doc and any made during implementation.
+11. [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md) — design source of truth for the always-on point-cloud visual entity (states, signals, palette, tunables).
+12. [`PRESENCE_SCENES.md`](./PRESENCE_SCENES.md) — the Scene/Entity/Generator/Behavior/Shape/Mode/Director architecture that realizes those states as concrete, renderable visuals (Idle, Loading, the activity modes, and how to add more).
+13. [`PRESENCE_INTEGRATION_PLAN.md`](./PRESENCE_INTEGRATION_PLAN.md) — how/when the presence entity plugs into the actual `desktop-edge` codebase (phasing, dependencies, decisions). Phase 1 prototype in progress; rest not yet implemented.
+14. [`adr/`](./adr/) — architecture decision records, both from the original planning doc and any made during implementation.
 
 ## Why this exists
 

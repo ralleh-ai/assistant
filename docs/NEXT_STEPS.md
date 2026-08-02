@@ -18,14 +18,44 @@
    **on by default** in `desktop-edge` (`mic` feature / `build.features`).
    Workspace audio-core stays mic-off for headless CI.
 
+## Medium priority — Point cloud presence entity (design locked, Phase 1 in progress)
+
+See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
+[`PRESENCE_SCENES.md`](./PRESENCE_SCENES.md),
+[`PRESENCE_INTEGRATION_PLAN.md`](./PRESENCE_INTEGRATION_PLAN.md),
+[ADR-010](./adr/adr-010-point-cloud-presence-entity.md),
+[ADR-011](./adr/adr-011-surface-point-generation-and-palette-setting.md),
+and [ADR-012](./adr/adr-012-additive-mode-composition.md) for the full plan.
+
+7. ~~Phase 1 — standalone Rust prototype~~ **in progress** —
+   `presence-prototype/` (`winit` + `wgpu` + `noise`, not Three.js — see
+   ADR-010 revision); Idle (Presence Shell) + Loading (Resonance Plate)
+   scenes per `PRESENCE_SCENES.md`; tune until the two are clearly
+   distinguishable and Idle reads as calm. Points lie on parametric
+   surfaces and the palette is a user setting (ADR-011). `thinking`,
+   `speaking`, and `tool_use` moved into this phase as weighted terms on
+   the same shell (ADR-012); `listening`, `error`, and `attention` need no
+   geometry and sit on the same mode layer later.
+8. Phase 2 — resolve embedding decision (Tauri-managed window vs. separate
+   process; see `PRESENCE_INTEGRATION_PLAN.md` D1/D4), frameless/always-on-top
+   window behavior, real state channel (no more IPC/JSON boundary than
+   necessary now that the renderer is Rust-native), and persist
+   `EdgeSettings.presence_palette`.
+9. Phase 3 — real signals: blocked on #13 below (VAD state machine) plus
+   a new prerequisite this plan surfaced — `desktop-edge` does not yet
+   embed `ralleh-ai-router`/`ralleh-tool-gateway` at all, needed for
+   `thinking`/`tool_use` signal.
+10. Phase 4 — perf budget pass before raising default point count; user
+    settings (density/intensity/reduced-motion/color variant); edge-case hardening.
+
 ## Medium priority
 
-7. **OIDC / device attestation** — when NestJS control plane exists (T1/T18).
-8. Optional `allow_private_targets` for http-fetch internal APIs.
-9. Approval cryptographically bound to approver identity (T4).
-10. Audit integrity / queryability beyond JSONL (T5).
-11. Real screen capture / hotkey OS backends (still trait-only stubs).
-12. Live mic → VAD → STT path in the shell (beyond capture metrics).
+11. **OIDC / device attestation** — when NestJS control plane exists (T1/T18).
+12. Optional `allow_private_targets` for http-fetch internal APIs.
+13. Live mic → VAD → STT path in the shell (beyond capture metrics).
+14. Approval cryptographically bound to approver identity (T4).
+15. Audit integrity / queryability beyond JSONL (T5).
+16. Real screen capture / hotkey OS backends (still trait-only stubs).
 
 ## Lower priority
 
