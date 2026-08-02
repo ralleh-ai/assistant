@@ -235,8 +235,24 @@ Natural follow-ups on top of this surface:
   separate design question about tenant / actor scoping that
   shouldn't gate the backend swap. Seven unit tests pin the
   selector's behavior on missing / partial / valid config.
-- Streaming replies — grows a `partial` state on `Conversation`
-  and a `route_stream` variant on the router.
+- ~~Streaming replies — grows a `partial` state on `Conversation`
+  and a `route_stream` variant on the router.~~ **landed
+  (2026-08-02)** — new `CompletionStreamEvent` enum in
+  `ralleh-ai-router`; `AiRouter::route_stream` returns a
+  `tokio::sync::mpsc::UnboundedReceiver` that emits `Chunk`
+  events followed by exactly one terminal event (`Done` /
+  `Failed` / `Denied` / `ApprovalRequired` /
+  `NoBackendConfigured`). New Tauri command
+  `assistant_think_stream` bridges to a typed
+  `tauri::ipc::Channel<CompletionStreamEvent>` on the JS side.
+  `Conversation.tsx` swapped to `assistantThinkStream`: three-dot
+  pending indicator flips to a growing bubble with a subtle
+  caret as soon as the first chunk arrives. Chunks are currently
+  paced server-side by splitting the completed response at
+  whitespace boundaries (~10 ms per chunk) — real per-backend
+  SSE parsing (OpenAI event-stream, Anthropic messages-stream)
+  is a follow-up that changes only the backend impl, not the
+  public router / Tauri / React shapes above.
 - Persistence — first design decision is whether history lives
   in `EdgeSettings` (device-local) or the not-yet-built control
   plane (portable across devices).

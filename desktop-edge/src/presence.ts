@@ -8,7 +8,7 @@
 // Phase 2 §3 of docs/PRESENCE_INTEGRATION_PLAN.md. The corresponding
 // receiver is `SceneDirector::apply_command` in `presence-core`.
 
-import { invoke, InvokeArgs } from "@tauri-apps/api/core";
+import { Channel, invoke, InvokeArgs } from "@tauri-apps/api/core";
 
 /**
  * A visual mode the presence can be told is active. Additive on the
@@ -177,6 +177,37 @@ export const PRESENCE_MODES: { id: PresenceMode; label: string }[] = [
  */
 export function assistantThink(prompt: string): Promise<string> {
   return invoke<string>("assistant_think", { prompt });
+}
+
+/**
+ * One event on a streaming completion. Mirror of
+ * `ralleh_ai_router::CompletionStreamEvent`. Terminal events
+ * (`done` / `failed` / `denied` / `approval_required` /
+ * `no_backend_configured`) are guaranteed to fire exactly once
+ * per stream; the invocation promise resolves once the terminal
+ * event has been dispatched to `onEvent`.
+ */
+export type CompletionStreamEvent =
+  | { event: "chunk"; backend: string; text: string }
+  | { event: "done"; backend: string }
+  | { event: "failed"; backend: string; error: string }
+  | { event: "denied" }
+  | { event: "approval_required" }
+  | { event: "no_backend_configured" };
+
+/**
+ * Streaming counterpart to `assistantThink`. Same policy, same
+ * mode engagements — chunks arrive on `onEvent` in order, then a
+ * single terminal event. See `assistant_think_stream` on the
+ * Rust side. Uses Tauri's typed `Channel<T>` under the hood.
+ */
+export async function assistantThinkStream(
+  prompt: string,
+  onEvent: (event: CompletionStreamEvent) => void,
+): Promise<void> {
+  const channel = new Channel<CompletionStreamEvent>();
+  channel.onmessage = onEvent;
+  await invoke("assistant_think_stream", { prompt, onEvent: channel });
 }
 
 /**

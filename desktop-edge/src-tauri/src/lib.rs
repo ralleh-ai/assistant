@@ -24,7 +24,8 @@ use presence::{EventListener, Presence};
 use presence_ipc::{Command as PresenceCommand, Event as PresenceEvent, PaletteId, PresenceMode, QualityTier};
 use settings::PresencePosition;
 use presence_mic::MicPump;
-use ralleh_ai_router::{CompletionOutcome, CompletionResponse};
+use ralleh_ai_router::{CompletionOutcome, CompletionResponse, CompletionStreamEvent};
+use tauri::ipc::Channel;
 use ralleh_tool_gateway::ToolCallOutcome;
 use ralleh_audio_core::{
     run_mock_voice_pipeline, MockTts, MockVoicePipelineResult, TextToSpeech,
@@ -445,6 +446,64 @@ async fn assistant_think(
     }
 }
 
+/// Streaming counterpart to [`assistant_think`]. Same policy, same
+/// mode engagements (Thinking + WorkGuard) — differs only in that
+/// the response is delivered incrementally through the caller-
+/// supplied Tauri `Channel<CompletionStreamEvent>` instead of
+/// returned as one string.
+///
+/// The channel receives every `Chunk` in order, followed by
+/// exactly one terminal event (`Done` / `Failed` / `Denied` /
+/// `ApprovalRequired` / `NoBackendConfigured`). The command
+/// returns `Ok(())` once the terminal event has been dispatched
+/// — callers should await both the return and the terminal event
+/// on the channel (they will happen together).
+#[tauri::command]
+async fn assistant_think_stream(
+    prompt: String,
+    on_event: Channel<CompletionStreamEvent>,
+    app: AppHandle,
+    state: State<'_, AssistantState>,
+    presence: State<'_, Presence>,
+) -> Result<(), String> {
+    let settings = load_settings(&app)?;
+    let request = completion_request(
+        &settings.tenant_id,
+        &settings.device_id,
+        &settings.actor_id,
+        &prompt,
+    );
+    let _work = state.begin_work();
+    let _hold = presence.hold_mode(PresenceMode::Thinking);
+    let mut rx = state.router.route_stream(&request);
+    let mut errored = false;
+    while let Some(event) = rx.recv().await {
+        // Track whether we saw a non-success terminal so the
+        // presence's error pulse fires exactly once at the end,
+        // in the same shape `assistant_think` (non-streaming)
+        // uses. Emitting the event is a best-effort — a dropped
+        // frontend receiver means the operator navigated away and
+        // there's nothing to signal.
+        match &event {
+            CompletionStreamEvent::Failed { .. }
+            | CompletionStreamEvent::Denied
+            | CompletionStreamEvent::ApprovalRequired
+            | CompletionStreamEvent::NoBackendConfigured => {
+                errored = true;
+            }
+            _ => {}
+        }
+        if on_event.send(event).is_err() {
+            log::debug!("assistant_think_stream: receiver dropped mid-stream");
+            break;
+        }
+    }
+    if errored {
+        presence.pulse_error();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn assistant_tool_ping(
     app: AppHandle,
@@ -750,6 +809,7 @@ pub fn run() {
             presence_mic_start,
             presence_mic_stop,
             assistant_think,
+            assistant_think_stream,
             assistant_tool_ping,
             assistant_notify_inbound,
         ])

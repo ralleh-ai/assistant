@@ -33,3 +33,39 @@ pub enum CompletionOutcome {
     ApprovalRequired,
     NoBackendConfigured,
 }
+
+/// One event on a streaming completion channel. `Chunk` events
+/// arrive in order and their `text` fields concatenate to the full
+/// response; exactly one terminal event (`Done`, `Failed`, `Denied`,
+/// `ApprovalRequired`, `NoBackendConfigured`) is guaranteed to
+/// follow the last `Chunk` — even on cancellation the router
+/// closes the channel with a terminal event so the consumer never
+/// sees a hang.
+///
+/// # Backwards compatibility with `CompletionOutcome`
+///
+/// The terminal variants are shaped so a consumer collecting the
+/// full text and the terminal event can reconstruct the exact
+/// `CompletionOutcome` a non-streaming `route(&request)` call
+/// would have produced. `route` and `route_stream` are semantically
+/// identical for correctness — they only differ in when the caller
+/// gets to see the text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum CompletionStreamEvent {
+    /// One incremental piece of response text. Order matters:
+    /// concatenating the `text` fields of every `Chunk` in the
+    /// order they arrive reproduces the whole response.
+    Chunk { backend: String, text: String },
+    /// Terminal success. Emitted after the last `Chunk`.
+    Done { backend: String },
+    /// Terminal handler failure — the backend was invoked and
+    /// something went wrong (network, upstream 5xx, parse error).
+    Failed { backend: String, error: String },
+    /// Terminal policy denial. No `Chunk` events precede this.
+    Denied,
+    /// Terminal approval-required. No `Chunk` events precede this.
+    ApprovalRequired,
+    /// Terminal misconfiguration. Router had no usable backend.
+    NoBackendConfigured,
+}

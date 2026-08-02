@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { assistantThink } from "./presence";
+import { assistantThinkStream } from "./presence";
 
 /**
  * Minimal conversation surface on top of `assistant_think`.
@@ -40,7 +40,14 @@ type Message = {
 export function Conversation() {
     const [messages, setMessages] = useState<Message[]>([]);
     const [draft, setDraft] = useState("");
+    // `pending` is true from send until the terminal event. `partial`
+    // is the streaming assistant text — non-null while chunks are
+    // arriving, folded into a real message on the terminal event.
+    // Splitting them lets the UI show the three-dot indicator until
+    // the first chunk arrives, then swap to a real growing bubble
+    // — matches every well-behaved streaming chat UI.
     const [pending, setPending] = useState(false);
+    const [partial, setPartial] = useState<string | null>(null);
     const nextId = useRef(1);
     const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -57,7 +64,7 @@ export function Conversation() {
         if (nearBottom) {
             el.scrollTop = el.scrollHeight;
         }
-    }, [messages, pending]);
+    }, [messages, pending, partial]);
 
     async function send() {
         const prompt = draft.trim();
@@ -70,19 +77,61 @@ export function Conversation() {
         setMessages((prev) => [...prev, userMsg]);
         setDraft("");
         setPending(true);
+        setPartial(null);
+
+        // Accumulate chunks locally rather than in React state so
+        // the terminal handler has a synchronous, atomic view of
+        // the full text — setState in the handler is asynchronous
+        // and would race with the terminal event.
+        let buffer = "";
+        const commitAsMessage = (role: Role, text: string) => {
+            setMessages((prev) => [
+                ...prev,
+                { id: nextId.current++, role, text },
+            ]);
+        };
+
         try {
-            const reply = await assistantThink(prompt);
-            setMessages((prev) => [
-                ...prev,
-                { id: nextId.current++, role: "assistant", text: reply },
-            ]);
+            await assistantThinkStream(prompt, (event) => {
+                switch (event.event) {
+                    case "chunk":
+                        buffer += event.text;
+                        setPartial(buffer);
+                        break;
+                    case "done":
+                        commitAsMessage("assistant", buffer);
+                        break;
+                    case "failed":
+                        commitAsMessage(
+                            "error",
+                            `completion failed via ${event.backend}: ${event.error}`,
+                        );
+                        break;
+                    case "denied":
+                        commitAsMessage(
+                            "error",
+                            "policy denied the completion request",
+                        );
+                        break;
+                    case "approval_required":
+                        commitAsMessage(
+                            "error",
+                            "completion requires human approval",
+                        );
+                        break;
+                    case "no_backend_configured":
+                        commitAsMessage(
+                            "error",
+                            "no completion backend is configured on this shell",
+                        );
+                        break;
+                }
+            });
         } catch (err) {
-            setMessages((prev) => [
-                ...prev,
-                { id: nextId.current++, role: "error", text: String(err) },
-            ]);
+            commitAsMessage("error", String(err));
         } finally {
             setPending(false);
+            setPartial(null);
         }
     }
 
@@ -118,7 +167,15 @@ export function Conversation() {
                         {m.text}
                     </div>
                 ))}
-                {pending && (
+                {partial !== null && partial.length > 0 && (
+                    <div
+                        className="conversation-bubble is-assistant is-streaming"
+                        aria-label="Assistant is speaking"
+                    >
+                        {partial}
+                    </div>
+                )}
+                {pending && (partial === null || partial.length === 0) && (
                     <div
                         className="conversation-bubble is-pending"
                         aria-label="Assistant is thinking"

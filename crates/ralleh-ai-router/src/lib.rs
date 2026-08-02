@@ -25,5 +25,7 @@ mod router;
 
 pub use anthropic::AnthropicMessagesBackend;
 pub use backend::{CompletionBackend, EchoBackend, HttpCompletionBackend};
-pub use request::{CompletionOutcome, CompletionRequest, CompletionResponse};
+pub use request::{
+    CompletionOutcome, CompletionRequest, CompletionResponse, CompletionStreamEvent,
+};
 pub use router::{AiRouter, RoutingError};

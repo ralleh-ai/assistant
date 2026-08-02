@@ -464,6 +464,25 @@ body {
   font-size: 0.78rem;
 }
 
+.conversation-bubble.is-streaming::after {
+  content: "▍";
+  margin-left: 2px;
+  color: rgba(215, 228, 223, 0.7);
+  animation: conversation-caret 0.9s steps(1) infinite;
+}
+
+@keyframes conversation-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-bubble.is-streaming::after {
+    animation: none;
+  }
+}
+
 .conversation-bubble.is-pending {
   align-self: flex-start;
   display: inline-flex;
