@@ -23,56 +23,28 @@ From PowerShell:
 cmd /c scripts\tauri-dev.cmd
 ```
 
-Manual equivalent:
+## Product UI
 
-```powershell
-# Developer PowerShell for VS, or:
-#   & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64
-cd desktop-edge
-npm.cmd install
-npm.cmd run tauri dev
-```
+1. **Splash** — short branded startup.
+2. **Settings** — required on first run or when critical fields are missing
+   (tenant, device, actor, mcp URL, mic clearance, voice style).
+3. **Core shell** — calm placeholder once settings are complete; gear opens
+   Settings again.
 
-If `npm install` warns about pending install scripts for `esbuild`, either ignore it when `package.json` already has `"allowScripts": { "esbuild@…": true }`, or run:
-
-```powershell
-npm.cmd approve-scripts --all esbuild
-```
-
-Do **not** use bare `npm approve-scripts esbuild` — that only matches direct deps and returns `ENOMATCH`.
-
-**PowerShell note:** if you see `npm.ps1 cannot be loaded because running scripts is disabled`, use `npm.cmd` (as above) or `Set-ExecutionPolicy -Scope Process Bypass`.
-
-If you get `LNK1104: cannot open file 'msvcrt.lib'` or missing `excpt.h`, you
-started a normal shell without the VS C++ environment — use
-`./scripts/tauri-dev.ps1` or “Developer PowerShell for VS”.
-
-UI: **Ping Rust core**, **Voice smoke (mock)**, **Clipboard smoke (mock)**,
-**Mic smoke (live)**, and **Open station log →**.
-
-Live mic is **on by default** for this desktop shell (`mic` Cargo feature /
-`tauri.conf.json` `build.features`). Stamp Voice clearance in the station log
-first. Capture is ~1 second of default-input metrics (no STT yet).
-
-```bat
-scripts\tauri-dev.cmd
-```
-
-Explicit mic rebuild (same as default now):
-
-```bat
-scripts\tauri-dev-mic.cmd
-```
+Live mic is **on by default** for this desktop shell. In Settings → Voice,
+stamp clearance, then optionally **Listen once**. Developer smoke IPC
+(`core_ping`, `voice_smoke`, `clipboard_smoke`, `mic_smoke`) remains for
+CLI/tests — not on the core home screen.
 
 ## Layout
 
 ```text
 desktop-edge/
-  src/                 React UI (home + Setup “station log”)
+  src/                 React UI (splash · settings · core)
   src-tauri/           Rust edge binary (separate Cargo project)
 ```
 
 ## Next
 
-OIDC / control plane, screen/hotkey backends, mic→STT — see `/docs/NEXT_STEPS.md`
+OIDC / control plane, conversation UI, mic→STT — see `/docs/NEXT_STEPS.md`
 and `/docs/HEADLESS.md`.

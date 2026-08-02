@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+const VOICE_STYLES: &[&str] = &["calm", "direct", "warm"];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EdgeSettings {
@@ -17,6 +19,9 @@ pub struct EdgeSettings {
     pub mcp_base_url: String,
     /// Operator acknowledged Windows/macOS mic permission guidance.
     pub mic_acknowledged: bool,
+    /// Preferred speaking style for future TTS / persona (`calm` | `direct` | `warm`).
+    #[serde(default)]
+    pub voice_style: String,
 }
 
 impl Default for EdgeSettings {
@@ -27,7 +32,21 @@ impl Default for EdgeSettings {
             actor_id: "operator".into(),
             mcp_base_url: "http://127.0.0.1:8787".into(),
             mic_acknowledged: false,
+            voice_style: String::new(),
         }
+    }
+}
+
+impl EdgeSettings {
+    /// Critical fields required before the core shell may open.
+    pub fn is_complete(&self) -> bool {
+        !self.tenant_id.trim().is_empty()
+            && !self.device_id.trim().is_empty()
+            && !self.actor_id.trim().is_empty()
+            && (self.mcp_base_url.starts_with("http://")
+                || self.mcp_base_url.starts_with("https://"))
+            && self.mic_acknowledged
+            && VOICE_STYLES.contains(&self.voice_style.as_str())
     }
 }
 
@@ -56,6 +75,7 @@ pub fn save_settings(app: &AppHandle, settings: &EdgeSettings) -> Result<EdgeSet
         actor_id: settings.actor_id.trim().to_string(),
         mcp_base_url: settings.mcp_base_url.trim().to_string(),
         mic_acknowledged: settings.mic_acknowledged,
+        voice_style: settings.voice_style.trim().to_string(),
     };
     if cleaned.tenant_id.is_empty() || cleaned.device_id.is_empty() || cleaned.actor_id.is_empty()
     {
@@ -66,6 +86,9 @@ pub fn save_settings(app: &AppHandle, settings: &EdgeSettings) -> Result<EdgeSet
     {
         return Err("mcp base URL must start with http:// or https://".into());
     }
+    if !cleaned.voice_style.is_empty() && !VOICE_STYLES.contains(&cleaned.voice_style.as_str()) {
+        return Err("voice style must be one of: calm, direct, warm".into());
+    }
     let path = settings_file(app)?;
     let raw = serde_json::to_string_pretty(&cleaned).map_err(|e| e.to_string())?;
     fs::write(&path, raw).map_err(|e| format!("write settings: {e}"))?;
@@ -74,4 +97,27 @@ pub fn save_settings(app: &AppHandle, settings: &EdgeSettings) -> Result<EdgeSet
 
 pub fn settings_path_display(app: &AppHandle) -> Result<String, String> {
     Ok(settings_file(app)?.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_by_default() {
+        assert!(!EdgeSettings::default().is_complete());
+    }
+
+    #[test]
+    fn complete_when_all_critical_set() {
+        let s = EdgeSettings {
+            tenant_id: "acme".into(),
+            device_id: "desk-1".into(),
+            actor_id: "rico".into(),
+            mcp_base_url: "http://127.0.0.1:8787".into(),
+            mic_acknowledged: true,
+            voice_style: "calm".into(),
+        };
+        assert!(s.is_complete());
+    }
 }

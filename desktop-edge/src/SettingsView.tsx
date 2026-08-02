@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-
-export type EdgeSettings = {
-  tenantId: string;
-  deviceId: string;
-  actorId: string;
-  mcpBaseUrl: string;
-  micAcknowledged: boolean;
-};
+import {
+  DEFAULT_SETTINGS,
+  EdgeSettings,
+  EdgeSettingsResponse,
+  VOICE_STYLES,
+  isSettingsComplete,
+  settingsFromResponse,
+} from "./settings";
 
 type Plate = {
-  id: "station" | "identity" | "conduit" | "voice";
+  id: "station" | "identity" | "conduit" | "voice" | "style";
   numeral: string;
   title: string;
   lede: string;
@@ -24,7 +24,7 @@ const PLATES: Plate[] = [
     title: "Station",
     lede: "Every capability on this edge is scoped to a tenant.",
     detail:
-      "Pick a short, stable name for the organization or workspace this machine serves. Policy, audit trails, and later mcp-server calls will all key off it — changing it later means re-aligning those records.",
+      "Choose a short, stable name for the organization or workspace this machine serves. Policy and audit trails key off it — changing it later means re-aligning those records.",
   },
   {
     id: "identity",
@@ -32,7 +32,7 @@ const PLATES: Plate[] = [
     title: "Identity",
     lede: "Label the machine and the person who runs it.",
     detail:
-      "Device and actor IDs travel with every privileged action. Keep them unique within the tenant (for example a hostname and a login), not marketing names. They show up in approvals and logs so operators can tell who did what.",
+      "Device and actor IDs travel with every privileged action. Keep them unique within the tenant (for example a hostname and a login). They show up in approvals and logs so operators can tell who did what.",
   },
   {
     id: "conduit",
@@ -40,63 +40,95 @@ const PLATES: Plate[] = [
     title: "Conduit",
     lede: "Point this shell at the local mcp-server.",
     detail:
-      "The desktop edge talks to tools and policy through mcp-server on your machine. Loopback (127.0.0.1) is the safe default until you intentionally expose a LAN endpoint. Use http or https only — no filesystem paths.",
+      "The desktop edge talks to tools and policy through mcp-server on your machine. Loopback (127.0.0.1) is the safe default. Use http or https only.",
   },
   {
     id: "voice",
     numeral: "IV",
     title: "Voice",
-    lede: "Microphone capture is an OS grant, not a Ralleh default.",
+    lede: "Microphone access is an OS grant, not a Ralleh default.",
     detail:
-      "Acknowledge that you understand how to allow the mic in system settings. Capture stays behind an explicit Rust feature; this shell will not open the microphone until you opt in later — this step only records that the guidance was read.",
+      "Allow the microphone for this app in system settings, then acknowledge below. You can verify capture with a short listen once clearance is stamped.",
+  },
+  {
+    id: "style",
+    numeral: "V",
+    title: "Style",
+    lede: "How should Ralleh sound when it speaks?",
+    detail:
+      "Pick a speaking style for this edge. It is stored with your settings and will shape future voice replies — nothing is synthesized on this screen.",
   },
 ];
 
-type Props = {
-  onDone: () => void;
+type MicCheck = {
+  frames: number;
+  samples: number;
+  sampleRateHz: number;
+  peakRms: number;
+  maxAbs: number;
 };
 
-export function Setup({ onDone }: Props) {
+type Props = {
+  /** When true, user cannot leave until settings are complete. */
+  required: boolean;
+  initial?: EdgeSettings | null;
+  onComplete: (settings: EdgeSettings) => void;
+  onCancel?: () => void;
+};
+
+export function SettingsView({ required, initial, onComplete, onCancel }: Props) {
   const [plateIdx, setPlateIdx] = useState(0);
-  const [draft, setDraft] = useState<EdgeSettings | null>(null);
+  const [draft, setDraft] = useState<EdgeSettings | null>(initial ?? null);
   const [path, setPath] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [micBusy, setMicBusy] = useState(false);
+  const [micCheck, setMicCheck] = useState<MicCheck | null>(null);
 
   const plate = PLATES[plateIdx];
+  const complete = draft ? isSettingsComplete(draft) : false;
+
+  useEffect(() => {
+    if (initial) {
+      setDraft(initial);
+    }
+  }, [initial]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const [settings, settingsPath] = await Promise.all([
-          invoke<EdgeSettings>("load_edge_settings"),
+          initial
+            ? Promise.resolve(initial)
+            : invoke<EdgeSettingsResponse>("load_edge_settings").then(
+                settingsFromResponse,
+              ),
           invoke<string>("edge_settings_path"),
         ]);
         if (!cancelled) {
-          setDraft(settings);
+          setDraft({
+            ...DEFAULT_SETTINGS,
+            ...settings,
+            voiceStyle: settings.voiceStyle ?? "",
+          });
           setPath(settingsPath);
         }
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : String(e));
-          setDraft({
-            tenantId: "local",
-            deviceId: "desktop-1",
-            actorId: "operator",
-            mcpBaseUrl: "http://127.0.0.1:8787",
-            micAcknowledged: false,
-          });
+          setDraft(DEFAULT_SETTINGS);
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initial]);
 
   function patch(partial: Partial<EdgeSettings>) {
     setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
+    setMicCheck(null);
   }
 
   async function saveAnd(next: () => void) {
@@ -104,10 +136,10 @@ export function Setup({ onDone }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const saved = await invoke<EdgeSettings>("save_edge_settings", {
+      const saved = await invoke<EdgeSettingsResponse>("save_edge_settings", {
         settings: draft,
       });
-      setDraft(saved);
+      setDraft(settingsFromResponse(saved));
       next();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -116,18 +148,64 @@ export function Setup({ onDone }: Props) {
     }
   }
 
+  async function listenOnce() {
+    if (!draft?.micAcknowledged) {
+      setError("Stamp microphone clearance before listening.");
+      return;
+    }
+    setMicBusy(true);
+    setError(null);
+    setMicCheck(null);
+    try {
+      // Persist clearance first so the Rust gate sees it.
+      await invoke<EdgeSettingsResponse>("save_edge_settings", {
+        settings: draft,
+      });
+      const result = await invoke<MicCheck>("mic_smoke");
+      setMicCheck(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMicBusy(false);
+    }
+  }
+
+  function finish() {
+    if (!draft || !isSettingsComplete(draft)) {
+      setError("Finish every required step before entering the shell.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    (async () => {
+      try {
+        const saved = await invoke<EdgeSettingsResponse>("save_edge_settings", {
+          settings: draft,
+        });
+        const next = settingsFromResponse(saved);
+        setDraft(next);
+        onComplete(next);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }
+
   if (!draft) {
     return (
       <section className="setup">
-        <p className="setup-loading">Opening station log…</p>
+        <p className="setup-loading">Loading settings…</p>
       </section>
     );
   }
 
   return (
-    <section className="setup" aria-label="Edge setup">
-      <aside className="setup-rail" aria-hidden="true">
+    <section className="setup" aria-label="Settings">
+      <aside className="setup-rail">
         <p className="setup-rail-brand">Ralleh</p>
+        <p className="setup-rail-label">Settings</p>
         <ol className="setup-index">
           {PLATES.map((p, i) => (
             <li key={p.id}>
@@ -232,9 +310,8 @@ export function Setup({ onDone }: Props) {
             <div className="voice-clearance">
               <p>
                 On Windows, allow microphone access for this app under{" "}
-                <em>Settings → Privacy → Microphone</em>. Capture stays behind
-                an explicit Rust feature; this shell will not open the mic
-                until you opt in later.
+                <em>Settings → Privacy → Microphone</em>. Ralleh will not open
+                the mic until you are ready.
               </p>
               <button
                 type="button"
@@ -252,28 +329,70 @@ export function Setup({ onDone }: Props) {
                   ? "Clearance noted"
                   : "Stamp clearance"}
               </button>
+              <button
+                type="button"
+                className="cta secondary listen-once"
+                disabled={!draft.micAcknowledged || micBusy || busy}
+                onClick={listenOnce}
+              >
+                {micBusy ? "Listening…" : "Listen once"}
+              </button>
+              {micCheck && (
+                <p className="mic-check-result" role="status">
+                  Heard {micCheck.frames} frames @ {micCheck.sampleRateHz} Hz ·
+                  peak {micCheck.peakRms.toFixed(4)}
+                </p>
+              )}
+            </div>
+          )}
+
+          {plate.id === "style" && (
+            <div className="style-list" role="radiogroup" aria-label="Voice style">
+              {VOICE_STYLES.map((style) => (
+                <button
+                  key={style.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={draft.voiceStyle === style.id}
+                  className={
+                    draft.voiceStyle === style.id
+                      ? "style-option is-selected"
+                      : "style-option"
+                  }
+                  onClick={() => patch({ voiceStyle: style.id })}
+                >
+                  <span className="style-option-label">{style.label}</span>
+                  <span className="style-option-desc">{style.description}</span>
+                </button>
+              ))}
             </div>
           )}
         </div>
 
         <footer className="setup-footer">
-          <button
-            type="button"
-            className="text-nav"
-            disabled={plateIdx === 0}
-            onClick={() => setPlateIdx((i) => Math.max(0, i - 1))}
-          >
-            ← Prior
-          </button>
+          <div className="setup-footer-start">
+            {!required && onCancel && (
+              <button type="button" className="text-nav" onClick={onCancel}>
+                ← Back
+              </button>
+            )}
+            {plateIdx > 0 && (
+              <button
+                type="button"
+                className="text-nav"
+                onClick={() => setPlateIdx((i) => Math.max(0, i - 1))}
+              >
+                ← Prior
+              </button>
+            )}
+          </div>
           <div className="setup-footer-actions">
             {plateIdx < PLATES.length - 1 ? (
               <button
                 type="button"
                 className="cta"
                 disabled={busy}
-                onClick={() =>
-                  saveAnd(() => setPlateIdx((i) => i + 1))
-                }
+                onClick={() => saveAnd(() => setPlateIdx((i) => i + 1))}
               >
                 {busy ? "Saving…" : "Continue"}
               </button>
@@ -281,10 +400,10 @@ export function Setup({ onDone }: Props) {
               <button
                 type="button"
                 className="cta"
-                disabled={busy}
-                onClick={() => saveAnd(onDone)}
+                disabled={busy || !complete}
+                onClick={finish}
               >
-                {busy ? "Saving…" : "Enter shell"}
+                {busy ? "Saving…" : required ? "Enter shell" : "Save & return"}
               </button>
             )}
           </div>

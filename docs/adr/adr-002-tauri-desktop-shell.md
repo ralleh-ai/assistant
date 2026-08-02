@@ -20,9 +20,9 @@ code with server-side Rust services.
 
 ## Implementation status
 
-**Scaffold + voice / clipboard / mic smoke + station log:** [`../../desktop-edge/`](../../desktop-edge/)
-Tauri v2 + React/TS; IPC `core_ping` (reports build features), `voice_smoke`,
-`clipboard_smoke`, `mic_smoke` (desktop-edge enables `mic` by default; needs
-Voice clearance), and edge settings. Screen/hotkey OS backends not wired yet
-(traits only).
+**Scaffold + product shell:** [`../../desktop-edge/`](../../desktop-edge/)
+Tauri v2 + React/TS — splash, Settings gate (critical fields + voice style),
+calm core placeholder with settings gear. IPC includes `core_ping`,
+`voice_smoke`, `clipboard_smoke`, `mic_smoke`, and edge settings load/save
+(developer / Settings “Listen once”). Screen/hotkey OS backends not wired yet.
 Forward threats T11–T16; headless rules in [`../HEADLESS.md`](../HEADLESS.md).

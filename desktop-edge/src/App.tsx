@@ -1,235 +1,103 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Setup } from "./Setup";
+import { Core } from "./Core";
+import { SettingsView } from "./SettingsView";
+import {
+  DEFAULT_SETTINGS,
+  EdgeSettings,
+  EdgeSettingsResponse,
+  isSettingsComplete,
+  settingsFromResponse,
+} from "./settings";
 import "./App.css";
 
-type EdgeFeatures = {
-  mic: boolean;
-  clipboardOs: boolean;
-};
+type View = "splash" | "settings" | "core";
 
-type CoreStatus = {
-  product: string;
-  edge: string;
-  version: string;
-  message: string;
-  features: EdgeFeatures;
-};
-
-type VoiceSmoke = {
-  transcript: string;
-  ttsSamples: number;
-  sampleRateHz: number;
-};
-
-type ClipboardSmoke = {
-  backend: string;
-  written: string;
-  readBack: string;
-  tenantId: string;
-  deviceId: string;
-  actorId: string;
-  policyOutcome: string;
-  policyRuleId: string | null;
-  policyReason: string;
-};
-
-type MicSmoke = {
-  sampleRateHz: number;
-  durationMs: number;
-  frames: number;
-  samples: number;
-  peakRms: number;
-  maxAbs: number;
-  micFeature: boolean;
-  tenantId: string;
-  deviceId: string;
-  actorId: string;
-  policyOutcome: string;
-  policyRuleId: string | null;
-};
-
-type View = "home" | "setup";
-
-function Home({ onOpenSetup }: { onOpenSetup: () => void }) {
-  const [status, setStatus] = useState<CoreStatus | null>(null);
-  const [voice, setVoice] = useState<VoiceSmoke | null>(null);
-  const [clipboard, setClipboard] = useState<ClipboardSmoke | null>(null);
-  const [mic, setMic] = useState<MicSmoke | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<
-    "ping" | "voice" | "clipboard" | "mic" | null
-  >(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const s = await invoke<CoreStatus>("core_ping");
-        if (!cancelled) setStatus(s);
-      } catch {
-        /* home still usable; explicit Ping retries */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const micBuilt = status?.features.mic === true;
-
-  async function pingCore() {
-    setBusy("ping");
-    setError(null);
-    try {
-      setStatus(await invoke<CoreStatus>("core_ping"));
-    } catch (e) {
-      setStatus(null);
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function runVoiceSmoke() {
-    setBusy("voice");
-    setError(null);
-    try {
-      setVoice(await invoke<VoiceSmoke>("voice_smoke"));
-    } catch (e) {
-      setVoice(null);
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function runClipboardSmoke() {
-    setBusy("clipboard");
-    setError(null);
-    try {
-      setClipboard(await invoke<ClipboardSmoke>("clipboard_smoke"));
-    } catch (e) {
-      setClipboard(null);
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function runMicSmoke() {
-    setBusy("mic");
-    setError(null);
-    try {
-      setMic(await invoke<MicSmoke>("mic_smoke"));
-    } catch (e) {
-      setMic(null);
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
+function Splash() {
   return (
-    <section className="hero">
-      <p className="brand">Ralleh</p>
-      <h1 className="headline">Your private operator at the edge.</h1>
-      <p className="lede">
-        Desktop shell Phase 1 — prove the Rust core, run a mock voice pass,
-        then file your station log.
-      </p>
-      <div className="actions">
-        <button
-          type="button"
-          className="cta"
-          onClick={pingCore}
-          disabled={busy !== null}
-        >
-          {busy === "ping" ? "Contacting core…" : "Ping Rust core"}
-        </button>
-        <button
-          type="button"
-          className="cta secondary"
-          onClick={runVoiceSmoke}
-          disabled={busy !== null}
-        >
-          {busy === "voice" ? "Running pipeline…" : "Voice smoke (mock)"}
-        </button>
-        <button
-          type="button"
-          className="cta secondary"
-          onClick={runClipboardSmoke}
-          disabled={busy !== null}
-        >
-          {busy === "clipboard"
-            ? "Checking clipboard…"
-            : "Clipboard smoke (mock)"}
-        </button>
-        <button
-          type="button"
-          className="cta secondary"
-          onClick={runMicSmoke}
-          disabled={busy !== null}
-          title={
-            micBuilt
-              ? "Capture ~1s from the default mic (needs station-log Voice clearance)"
-              : "Rebuild via scripts\\tauri-dev.cmd (mic is on by default)"
-          }
-        >
-          {busy === "mic"
-            ? "Listening…"
-            : micBuilt
-              ? "Mic smoke (live)"
-              : "Mic smoke (rebuild needed)"}
-        </button>
-      </div>
-      <button type="button" className="text-nav home-setup" onClick={onOpenSetup}>
-        Open station log →
-      </button>
-      {status && (
-        <p className="status" role="status">
-          {status.product} {status.edge} v{status.version} — {status.message}
-          {status.features.mic ? " · mic on" : " · mic off"}
-        </p>
-      )}
-      {voice && (
-        <p className="status" role="status">
-          Transcript “{voice.transcript}” · TTS {voice.ttsSamples} samples @{" "}
-          {voice.sampleRateHz} Hz
-        </p>
-      )}
-      {clipboard && (
-        <p className="status" role="status">
-          Clipboard {clipboard.backend} · {clipboard.policyOutcome} via{" "}
-          {clipboard.policyRuleId ?? "—"} · round-trip “{clipboard.readBack}”
-        </p>
-      )}
-      {mic && (
-        <p className="status" role="status">
-          Mic {mic.frames} frames / {mic.samples} samples @ {mic.sampleRateHz}{" "}
-          Hz · peak RMS {mic.peakRms.toFixed(4)} · max |x|{" "}
-          {mic.maxAbs.toFixed(4)}
-        </p>
-      )}
-      {error && (
-        <p className="status error" role="alert">
-          {error}
-        </p>
-      )}
+    <section className="splash" aria-busy="true" aria-label="Starting">
+      <p className="brand splash-brand">Ralleh</p>
+      <p className="splash-status">Opening edge…</p>
     </section>
   );
 }
 
 function App() {
-  const [view, setView] = useState<View>("home");
+  const [view, setView] = useState<View>("splash");
+  const [settings, setSettings] = useState<EdgeSettings | null>(null);
+  const [settingsRequired, setSettingsRequired] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const started = Date.now();
+
+    (async () => {
+      let loaded = DEFAULT_SETTINGS;
+      let complete = false;
+      try {
+        const raw = await invoke<EdgeSettingsResponse>("load_edge_settings");
+        loaded = { ...DEFAULT_SETTINGS, ...settingsFromResponse(raw) };
+        complete = raw.setupComplete;
+      } catch {
+        loaded = DEFAULT_SETTINGS;
+        complete = isSettingsComplete(loaded);
+      }
+
+      const minSplashMs = 700;
+      const wait = Math.max(0, minSplashMs - (Date.now() - started));
+      await new Promise((r) => setTimeout(r, wait));
+
+      if (cancelled) return;
+
+      setSettings(loaded);
+      if (complete) {
+        setSettingsRequired(false);
+        setView("core");
+      } else {
+        setSettingsRequired(true);
+        setView("settings");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function openSettings() {
+    setSettingsRequired(false);
+    setView("settings");
+  }
+
+  function onSettingsComplete(next: EdgeSettings) {
+    setSettings(next);
+    setSettingsRequired(false);
+    setView("core");
+  }
+
+  function onSettingsCancel() {
+    if (settings && isSettingsComplete(settings)) {
+      setView("core");
+    }
+  }
+
+  const shellClass =
+    view === "settings" ? "shell shell-setup" : "shell";
 
   return (
-    <main className={view === "setup" ? "shell shell-setup" : "shell"}>
+    <main className={shellClass}>
       <div className="atmosphere" aria-hidden="true" />
-      {view === "home" ? (
-        <Home onOpenSetup={() => setView("setup")} />
-      ) : (
-        <Setup onDone={() => setView("home")} />
+      {view === "splash" && <Splash />}
+      {view === "settings" && (
+        <SettingsView
+          required={settingsRequired}
+          initial={settings}
+          onComplete={onSettingsComplete}
+          onCancel={settingsRequired ? undefined : onSettingsCancel}
+        />
+      )}
+      {view === "core" && settings && (
+        <Core settings={settings} onOpenSettings={openSettings} />
       )}
     </main>
   );

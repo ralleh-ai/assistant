@@ -20,6 +20,24 @@ const EDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EdgeSettingsResponse {
+    #[serde(flatten)]
+    pub settings: EdgeSettings,
+    /// Derived gate: critical fields present (not a stored flag).
+    pub setup_complete: bool,
+}
+
+impl EdgeSettingsResponse {
+    fn from_settings(settings: EdgeSettings) -> Self {
+        let setup_complete = settings.is_complete();
+        Self {
+            settings,
+            setup_complete,
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EdgeFeatures {
     pub mic: bool,
     pub clipboard_os: bool,
@@ -68,13 +86,18 @@ fn mic_smoke(app: AppHandle) -> Result<MicSmokeResult, String> {
 }
 
 #[tauri::command]
-fn load_edge_settings(app: AppHandle) -> Result<EdgeSettings, String> {
-    load_settings(&app)
+fn load_edge_settings(app: AppHandle) -> Result<EdgeSettingsResponse, String> {
+    Ok(EdgeSettingsResponse::from_settings(load_settings(&app)?))
 }
 
 #[tauri::command]
-fn save_edge_settings(app: AppHandle, settings: EdgeSettings) -> Result<EdgeSettings, String> {
-    save_settings(&app, &settings)
+fn save_edge_settings(
+    app: AppHandle,
+    settings: EdgeSettings,
+) -> Result<EdgeSettingsResponse, String> {
+    Ok(EdgeSettingsResponse::from_settings(save_settings(
+        &app, &settings,
+    )?))
 }
 
 #[tauri::command]

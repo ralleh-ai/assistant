@@ -2,16 +2,16 @@
 
 ## Done recently
 
-- Live mic smoke from desktop-edge (`--features mic`); OS capability traits +
-  clipboard smoke; station log settings; voice_smoke.
+- Product setup UX (splash → settings gate → core shell + voice style);
+  live mic / OS caps / station settings foundations underneath.
 
 ## High priority — Tauri desktop shell (Phase 1 continued)
 
 1. ~~Scaffold `desktop-edge/`~~ **done**
 2. ~~Wire health / echo IPC (`core_ping`)~~ **done**
 3. ~~Embed voice core (mock pipeline via `voice_smoke`)~~ **done**
-4. ~~Settings / onboarding UI~~ **done** (station log plates; tenant/device/actor,
-   mcp base URL, mic clearance; Rust-only write to app config dir).
+4. ~~Settings / onboarding UI~~ **done** — product Settings gate + voice style;
+   core placeholder with settings gear.
 5. ~~OS capabilities (clipboard first)~~ **done** — traits + mocks; screen/hotkey
    stubs; `clipboard_smoke` via policy + mock (optional `--features clipboard-os`).
 6. ~~Optional live mic from the shell~~ **done** — `mic_smoke` (policy + clearance);
