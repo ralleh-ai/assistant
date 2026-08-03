@@ -113,6 +113,17 @@ pub enum AuditKind {
     /// `PresenceStalled` event; `detail.recovery_ms` names the
     /// gap.
     PresenceRecovered,
+    /// A router-health probe failed (network, timeout, or a
+    /// backend error response) after a previous healthy /
+    /// unknown state. `detail.error` names the reason,
+    /// `detail.latency_ms` the elapsed time before the failure.
+    /// Subsequent same-state probes do *not* re-emit — this is
+    /// an edge, not a heartbeat.
+    RouterUnhealthy,
+    /// A previously-unhealthy router probe succeeded. Paired
+    /// with a preceding `RouterUnhealthy`; `detail.latency_ms`
+    /// names the recovery response time.
+    RouterHealthy,
 }
 
 impl AuditKind {
@@ -123,10 +134,12 @@ impl AuditKind {
             | Self::SecretWrite
             | Self::SecretClear
             | Self::SecretMigrate
-            | Self::PresenceRecovered => AuditOutcome::Allow,
+            | Self::PresenceRecovered
+            | Self::RouterHealthy => AuditOutcome::Allow,
             Self::EgressDeny
             | Self::SecretMigrateFailed
-            | Self::PresenceStalled => AuditOutcome::Deny,
+            | Self::PresenceStalled
+            | Self::RouterUnhealthy => AuditOutcome::Deny,
         }
     }
 }

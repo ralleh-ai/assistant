@@ -306,6 +306,29 @@ export type RedactedCompletionConfig = {
   storage: SecretStorage;
 };
 
+export type BackendHealthState =
+  | "unknown"
+  | "healthy"
+  | "unhealthy"
+  | "skipped";
+
+export type BackendSkipReason = "echo-backend" | "disabled";
+
+/** Snapshot of the router-health probe. Renders the "green /
+ * yellow / red" reachability badge next to the configured
+ * backend name. */
+export type BackendHealthSnapshot = {
+  state: BackendHealthState;
+  backendName: string;
+  /** Milliseconds since the last probe completed. `null` before
+   * the first probe. */
+  lastProbeMsAgo: number | null;
+  lastLatencyMs: number | null;
+  lastError: string | null;
+  skipReason: BackendSkipReason | null;
+  consecutiveFailures: number;
+};
+
 export type BackendStatus = {
   /** Name the router will attribute the next request to. Stable
    * strings: `local-echo`, `openai-compatible`, `anthropic`. */
@@ -314,6 +337,9 @@ export type BackendStatus = {
    * has never opened the config UI; the shell is on env-var + Echo
    * defaults. */
   configured: RedactedCompletionConfig | null;
+  /** Live reachability snapshot. `state === "unknown"` before the
+   * first probe completes. */
+  health: BackendHealthSnapshot;
 };
 
 export type BackendTestResult = {
@@ -330,6 +356,15 @@ export type BackendTestResult = {
  */
 export function assistantBackendStatus(): Promise<BackendStatus> {
   return invoke<BackendStatus>("assistant_backend_status");
+}
+
+/** Force an immediate router-health probe. Same probe the
+ * background thread runs on a fixed cadence, but on-demand for
+ * the "check now" button on the settings panel. Returns the
+ * updated snapshot; the caller does not need to re-fetch
+ * `assistant_backend_status` after. */
+export function assistantProbeBackend(): Promise<BackendHealthSnapshot> {
+  return invoke<BackendHealthSnapshot>("assistant_probe_backend");
 }
 
 /**

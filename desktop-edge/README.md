@@ -75,6 +75,20 @@ CLI/tests — not on the core home screen.
   migrated into the keychain on first startup (best-effort;
   leaves the cleartext copy in place only if the keychain is
   unavailable).
+- **Router health probe** — a background thread pings the
+  active completion backend every 60 s (overridable with
+  `RALLEH_HEALTH_PROBE_INTERVAL_MS`, floor 5 s; disabled with
+  `RALLEH_HEALTH_PROBE_DISABLED`) so `assistant_backend_status`
+  reflects *current* reachability, not "we thought it worked at
+  startup". Health lands on `BackendStatus.health` as
+  `state = unknown | healthy | unhealthy | skipped` plus latency,
+  last error, and a consecutive-failure count. State-machine
+  edges (healthy ↔ unhealthy) emit `router-healthy` /
+  `router-unhealthy` audit events with `detail.latency_ms` and
+  `detail.error`. The `assistant_probe_backend` command triggers
+  an on-demand probe (same code path, `detail.trigger=manual`).
+  Echo backend is always `skipped` — its response is synthetic,
+  and lighting the UI green for it would be misleading.
 - **Presence stderr capture** — the runtime's stderr (its own
   `log::info!` output, wgpu validation errors, panic traces) is
   piped to a rotated text log `presence.log` under the Tauri app

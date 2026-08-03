@@ -5,6 +5,7 @@
 //! go through policy + traits (T13), never raw clipboard/mic APIs from JS.
 
 mod assistant;
+mod assistant_health;
 mod audit;
 mod mic;
 mod os_caps;
@@ -643,6 +644,11 @@ fn assistant_notify_inbound(
 pub struct BackendStatus {
     pub active_backend: String,
     pub configured: Option<RedactedCompletionConfig>,
+    /// Latest health-probe snapshot, or `Unknown` before the
+    /// first probe completes. Frontend uses this to render a
+    /// reachability badge alongside the configured backend
+    /// name.
+    pub health: assistant_health::HealthSnapshot,
 }
 
 /// Build an [`AuditEvent`] pre-populated with the shell's current
@@ -671,16 +677,88 @@ fn looks_like_egress_denial(err: &str) -> bool {
 fn assistant_backend_status(
     app: AppHandle,
     state: State<'_, AssistantState>,
+    health: State<'_, assistant_health::Health>,
 ) -> Result<BackendStatus, String> {
     let settings = load_settings(&app)?;
     let store = open_default_secret_store();
+    let health_snapshot = {
+        let guard = health.lock().map_err(|e| e.to_string())?;
+        guard.materialize(std::time::Instant::now())
+    };
     Ok(BackendStatus {
         active_backend: state.current_backend_name(),
         configured: settings
             .completion
             .as_ref()
             .map(|c| RedactedCompletionConfig::from_config_and_store(c, store.as_ref())),
+        health: health_snapshot,
     })
+}
+
+
+/// Force an immediate health probe against the router's active
+/// backend. Useful for the settings UI's "check now" button so
+/// operators don't wait a full interval to see the impact of a
+/// backend change. Ignores the disabled kill switch — the point
+/// is that a human just asked.
+#[tauri::command]
+async fn assistant_probe_backend(
+    app: AppHandle,
+) -> Result<assistant_health::HealthSnapshot, String> {
+    // The blocking `probe_once` needs an `AssistantState`
+    // reference; grab a fresh one and release the state guard
+    // before we do any awaits so a slow probe doesn't pin the
+    // managed-state map.
+    let state: State<'_, AssistantState> = app.state();
+    let (backend_name, outcome) = assistant_health::probe_once(state.inner());
+    drop(state);
+    let health: State<'_, assistant_health::Health> = app.state();
+    let now = std::time::Instant::now();
+    let edge = {
+        let mut guard = health.lock().map_err(|e| e.to_string())?;
+        assistant_health::fold_outcome(&mut guard, backend_name.clone(), outcome.clone(), now)
+    };
+    // Mirror the automatic probe's audit behaviour on manual
+    // probes so an operator kicking off a check leaves the same
+    // paper trail a scheduled check would.
+    if let Some(audit) = app.try_state::<AuditLog>() {
+        match &edge {
+            assistant_health::HealthEdge::BecameHealthy => {
+                let latency = match &outcome {
+                    assistant_health::ProbeOutcome::Ok { latency_ms } => Some(*latency_ms),
+                    _ => None,
+                };
+                let _ = audit.write(
+                    &audit_event_with_identity(&app, AuditKind::RouterHealthy)
+                        .with_subject(format!("router:{backend_name}"))
+                        .with_detail(serde_json::json!({
+                            "latency_ms": latency,
+                            "trigger": "manual",
+                        })),
+                );
+            }
+            assistant_health::HealthEdge::BecameUnhealthy => {
+                let (latency, error) = match &outcome {
+                    assistant_health::ProbeOutcome::Failed { latency_ms, error } => {
+                        (Some(*latency_ms), Some(error.clone()))
+                    }
+                    _ => (None, None),
+                };
+                let _ = audit.write(
+                    &audit_event_with_identity(&app, AuditKind::RouterUnhealthy)
+                        .with_subject(format!("router:{backend_name}"))
+                        .with_detail(serde_json::json!({
+                            "latency_ms": latency,
+                            "error": error,
+                            "trigger": "manual",
+                        })),
+                );
+            }
+            assistant_health::HealthEdge::None => {}
+        }
+    }
+    let health_guard = health.lock().map_err(|e| e.to_string())?;
+    Ok(health_guard.materialize(std::time::Instant::now()))
 }
 
 /// Result the `assistant_test_backend` command returns. `ok` is
@@ -948,12 +1026,22 @@ fn assistant_save_backend(
                 })),
         );
     }
+    // Save path: return the current health snapshot without
+    // forcing a probe. If the operator hit "test" first, the
+    // snapshot already reflects that; if they didn't, the
+    // background probe will refresh it within one interval.
+    let health_snapshot = {
+        let health: State<'_, assistant_health::Health> = app.state();
+        let guard = health.lock().map_err(|e| e.to_string())?;
+        guard.materialize(std::time::Instant::now())
+    };
     Ok(BackendStatus {
         active_backend,
         configured: settings
             .completion
             .as_ref()
             .map(|c| RedactedCompletionConfig::from_config_and_store(c, store.as_ref())),
+        health: health_snapshot,
     })
 }
 
@@ -1240,6 +1328,20 @@ pub fn run() {
                 }
             };
             app.manage(audit_log);
+            // Router health probe. Starts in the Unknown state
+            // until the first probe returns; edge transitions
+            // (Healthy <-> Unhealthy) emit audit events. The
+            // background thread reads AssistantState fresh on
+            // every tick so a mid-session backend swap is picked
+            // up automatically. Skipped entirely (state stays
+            // Unknown -> Skipped) when disabled by env var.
+            let health: assistant_health::Health = std::sync::Arc::new(std::sync::Mutex::new(
+                assistant_health::HealthInner::new(
+                    app.state::<AssistantState>().current_backend_name(),
+                ),
+            ));
+            app.manage(health.clone());
+            assistant_health::spawn(handle.clone(), health);
             // Capture the runtime's stderr into a rotated file so
             // a stall event has a correlation trail. Open before
             // spawn so the sink is available for the first line
@@ -1377,6 +1479,7 @@ pub fn run() {
             assistant_test_backend,
             assistant_save_backend,
             assistant_audit_tail,
+            assistant_probe_backend,
             presence_log_tail,
         ])
         .run(tauri::generate_context!())
