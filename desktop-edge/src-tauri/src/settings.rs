@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use presence_ipc::{PaletteId, QualityTier};
+use ralleh_policy_core::EgressPolicy;
 
 use crate::secret_store::{SecretStorage, SecretStore};
 
@@ -339,6 +340,17 @@ impl CompletionConfigUpdate {
         self,
         existing_secret: Option<String>,
     ) -> Result<CompletionConfig, String> {
+        self.into_config_with_secret_and_policy(existing_secret, &EgressPolicy::from_env())
+    }
+
+    /// Same as [`into_config_with_secret`] but with an explicit
+    /// egress policy so tests can exercise both allow and deny
+    /// paths deterministically.
+    pub fn into_config_with_secret_and_policy(
+        self,
+        existing_secret: Option<String>,
+        egress: &EgressPolicy,
+    ) -> Result<CompletionConfig, String> {
         let base_url = self.base_url.trim().to_string();
         let model = self.model.trim().to_string();
         if !matches!(self.kind, CompletionKind::Echo) {
@@ -360,6 +372,18 @@ impl CompletionConfigUpdate {
                     self.kind.label()
                 ));
             }
+            // Egress allowlist check. Runs BEFORE we let the key
+            // near the destination, so a malicious base_url never
+            // gets a chance to actually receive traffic. The
+            // request-build path re-checks (defense in depth) but
+            // this is the point where we can still surface an
+            // inline error in the settings UI.
+            egress.check_url(&base_url).map_err(|d| {
+                format!(
+                    "{} backend rejected by egress policy: {d}",
+                    self.kind.label()
+                )
+            })?;
         }
         let api_key = self.api_key.apply(existing_secret);
         // Anthropic without a key is a config error the request
@@ -824,6 +848,49 @@ mod tests {
         };
         let err = update.into_config(None).unwrap_err();
         assert!(err.to_lowercase().contains("http"), "{err}");
+    }
+
+    #[test]
+    fn completion_update_rejects_url_outside_egress_allowlist() {
+        // A URL that survives the http:// scheme check but names a
+        // host the operator hasn't blessed must be refused at
+        // save-time so the settings UI can render a specific error.
+        // Uses the explicit-policy overload to keep the test hermetic
+        // (no dependency on the process env var).
+        let policy = ralleh_policy_core::EgressPolicy::from_hosts(["api.openai.com"]);
+        let update = CompletionConfigUpdate {
+            kind: CompletionKind::Openai,
+            base_url: "https://attacker.example/v1".into(),
+            model: "gpt-4o".into(),
+            api_key: ApiKeyUpdate::Set {
+                value: "sk-fake".into(),
+            },
+        };
+        let err = update
+            .into_config_with_secret_and_policy(None, &policy)
+            .unwrap_err();
+        assert!(
+            err.to_lowercase().contains("egress"),
+            "expected egress denial in {err}"
+        );
+        assert!(err.contains("attacker.example"), "{err}");
+    }
+
+    #[test]
+    fn completion_update_accepts_url_inside_egress_allowlist() {
+        let policy = ralleh_policy_core::EgressPolicy::from_hosts(["api.anthropic.com"]);
+        let update = CompletionConfigUpdate {
+            kind: CompletionKind::Anthropic,
+            base_url: "https://api.anthropic.com".into(),
+            model: "claude-3-5-sonnet-latest".into(),
+            api_key: ApiKeyUpdate::Set {
+                value: "sk-ant".into(),
+            },
+        };
+        let cfg = update
+            .into_config_with_secret_and_policy(None, &policy)
+            .expect("allowlisted URL must save");
+        assert_eq!(cfg.base_url, "https://api.anthropic.com");
     }
 
     #[test]

@@ -75,6 +75,19 @@ CLI/tests — not on the core home screen.
   migrated into the keychain on first startup (best-effort;
   leaves the cleartext copy in place only if the keychain is
   unavailable).
+- `RALLEH_COMPLETION_ALLOWED_HOSTS` — comma-separated allowlist
+  of hostnames the shell is willing to send completion traffic
+  to. Enforced at three layers (settings save, "Test connection"
+  probe, and request-time backend construction) so a hostile
+  `base_url` cannot exfiltrate the OS-keychain-stored API key.
+  Defaults to `api.openai.com,api.anthropic.com,localhost,
+  127.0.0.1,0.0.0.0,::1`. Set to a narrower list to lock down an
+  enterprise deployment (e.g.
+  `RALLEH_COMPLETION_ALLOWED_HOSTS=llm.acme.internal`) or to an
+  empty string to disable all outbound completions entirely
+  (airgap testing). `http://` is refused for any non-loopback
+  host regardless of the allowlist — credentials in the
+  `Authorization` header must never travel in cleartext.
 - `RALLEH_SKIP_LIVE_AUDIO` — set to any value to force the mic
   and speaker sinks to soft-skip (return `None` from
   `try_open_default`). Useful for headless dev on hosts with

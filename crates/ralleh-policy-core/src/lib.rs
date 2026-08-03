@@ -14,11 +14,15 @@
 //!   an afterthought bolted on by callers.
 
 mod decision;
+mod egress;
 mod engine;
 mod request;
 mod rule;
 
 pub use decision::{PolicyDecision, PolicyOutcome};
+pub use egress::{
+    EgressDenialReason, EgressDenied, EgressPolicy, ALLOWED_HOSTS_ENV, DEFAULT_ALLOWED_HOSTS,
+};
 pub use engine::PolicyEngine;
 pub use request::PolicyRequest;
 pub use rule::{PolicyRule, RuleEffect};

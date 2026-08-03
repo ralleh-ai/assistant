@@ -32,7 +32,7 @@ use ralleh_ai_router::{
     AiRouter, AnthropicMessagesBackend, CompletionBackend, CompletionRequest, EchoBackend,
     HttpCompletionBackend,
 };
-use ralleh_policy_core::{PolicyEngine, PolicyRule, RuleEffect};
+use ralleh_policy_core::{EgressPolicy, PolicyEngine, PolicyRule, RuleEffect};
 use ralleh_tool_gateway::{
     EchoHandler, ToolDefinition, ToolGateway, ToolRegistry,
 };
@@ -238,8 +238,30 @@ impl AssistantState {
 /// to surface a specific reason to the UI ("anthropic backend
 /// requires an API key"), and the "reconfigure" wrapper turns Err
 /// into Echo with a log line so the shell keeps working.
+///
+/// ## Egress policy
+///
+/// Every non-Echo kind carries a `base_url` that reaches the
+/// network. Before constructing the backend we consult
+/// [`EgressPolicy`] and refuse anything not on the allowlist —
+/// the OS keychain protects the key, and this refuses to send it
+/// anywhere the operator hasn't blessed. This is the choke-point
+/// enforcement site; the settings-save and test-connection paths
+/// call the same policy earlier so denials surface inline in the
+/// UI, but any bypass (edited settings file, corrupted state) is
+/// caught here before a real request goes out.
 pub fn build_backend_from_config(
     config: &CompletionConfig,
+) -> Result<Arc<dyn CompletionBackend>, String> {
+    build_backend_from_config_with_policy(config, &EgressPolicy::from_env())
+}
+
+/// Same as [`build_backend_from_config`] but with an explicit
+/// policy handle so tests can exercise both allow and deny paths
+/// without touching the process environment.
+pub fn build_backend_from_config_with_policy(
+    config: &CompletionConfig,
+    egress: &EgressPolicy,
 ) -> Result<Arc<dyn CompletionBackend>, String> {
     match config.kind {
         CompletionKind::Echo => Ok(Arc::new(EchoBackend)),
@@ -255,6 +277,9 @@ pub fn build_backend_from_config(
                 .as_ref()
                 .filter(|s| !s.is_empty())
                 .ok_or("anthropic backend requires an API key")?;
+            egress
+                .check_url(&config.base_url)
+                .map_err(|d| format!("anthropic backend rejected by egress policy: {d}"))?;
             Ok(Arc::new(AnthropicMessagesBackend::new(
                 "anthropic",
                 &config.base_url,
@@ -270,6 +295,9 @@ pub fn build_backend_from_config(
                 return Err("openai-compatible backend requires a model".into());
             }
             let api_key = config.api_key.clone().filter(|s| !s.is_empty());
+            egress
+                .check_url(&config.base_url)
+                .map_err(|d| format!("openai-compatible backend rejected by egress policy: {d}"))?;
             Ok(Arc::new(HttpCompletionBackend::new(
                 "openai-compatible",
                 &config.base_url,
@@ -348,6 +376,9 @@ fn build_anthropic() -> Result<Box<dyn CompletionBackend>, String> {
     let base_url = required_env(COMPLETION_BASE_URL_ENV)?;
     let model = required_env(COMPLETION_MODEL_ENV)?;
     let api_key = required_env(COMPLETION_API_KEY_ENV)?;
+    EgressPolicy::from_env()
+        .check_url(&base_url)
+        .map_err(|d| format!("anthropic backend rejected by egress policy: {d}"))?;
     log::info!(
         "assistant: completion backend = Anthropic ({model} @ {base_url})"
     );
@@ -368,6 +399,9 @@ fn build_openai_compatible() -> Result<Box<dyn CompletionBackend>, String> {
     let api_key = std::env::var(COMPLETION_API_KEY_ENV)
         .ok()
         .filter(|s| !s.is_empty());
+    EgressPolicy::from_env()
+        .check_url(&base_url)
+        .map_err(|d| format!("openai-compatible backend rejected by egress policy: {d}"))?;
     log::info!(
         "assistant: completion backend = OpenAI-compatible ({model} @ {base_url}, api_key={})",
         if api_key.is_some() { "present" } else { "none" }
@@ -564,6 +598,44 @@ mod tests {
         std::env::set_var(COMPLETION_MODEL_ENV, "gpt-4o");
         assert_eq!(select_backend_from_env().name(), ECHO_NAME);
         clear_completion_env();
+    }
+
+    #[test]
+    fn build_backend_refuses_url_denied_by_egress_policy() {
+        // Defense-in-depth check: even if a bad URL slipped past
+        // the settings-save policy (edited JSON, tampered file),
+        // the request-build path must refuse to construct a
+        // backend that would send credentials to it.
+        let policy = EgressPolicy::from_hosts(["api.anthropic.com"]);
+        let cfg = CompletionConfig {
+            kind: CompletionKind::Openai,
+            base_url: "https://attacker.example/v1".into(),
+            model: "gpt-4o".into(),
+            api_key: Some("sk-fake".into()),
+        };
+        let err = match build_backend_from_config_with_policy(&cfg, &policy) {
+            Ok(_) => panic!("policy should have refused attacker.example"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_lowercase().contains("egress"),
+            "expected egress denial in {err}"
+        );
+        assert!(err.contains("attacker.example"), "{err}");
+    }
+
+    #[test]
+    fn build_backend_allows_url_in_egress_policy() {
+        let policy = EgressPolicy::from_hosts(["api.openai.com"]);
+        let cfg = CompletionConfig {
+            kind: CompletionKind::Openai,
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o".into(),
+            api_key: None,
+        };
+        let backend = build_backend_from_config_with_policy(&cfg, &policy)
+            .unwrap_or_else(|reason| panic!("allowlisted URL must build: {reason}"));
+        assert_eq!(backend.name(), "openai-compatible");
     }
 
     #[test]
