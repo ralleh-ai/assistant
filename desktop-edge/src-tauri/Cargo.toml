@@ -35,9 +35,12 @@ presence-ipc = { path = "../../crates/presence-ipc" }
 log = "0.4"
 
 [features]
-default = ["mic"]
+default = ["mic", "playback"]
 # Real OS clipboard (arboard). Opt-in; mock is the default clipboard backend.
 clipboard-os = ["ralleh-os-capabilities/clipboard-os"]
 # Live microphone via cpal (WASAPI). On by default for this desktop shell;
 # workspace `ralleh-audio-core` stays mic-off so headless CI is unchanged.
 mic = ["ralleh-audio-core/mic"]
+# Live speaker playback via cpal (WASAPI). On by default for this desktop
+# shell so synthesized TTS is audible; same rationale as `mic`.
+playback = ["ralleh-audio-core/playback"]

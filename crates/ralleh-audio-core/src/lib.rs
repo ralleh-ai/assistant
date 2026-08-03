@@ -21,6 +21,9 @@ mod wav;
 #[cfg(feature = "mic")]
 mod cpal_source;
 
+#[cfg(feature = "playback")]
+mod cpal_sink;
+
 pub use frame::FrameAssembler;
 pub use pipeline::{
     run_live_mic_smoke, run_mock_voice_pipeline, LiveMicSmokeResult, MockVoicePipelineResult,
@@ -39,4 +42,10 @@ pub use wav::{read_pcm16, write_pcm16_mono, PcmMono, WavError};
 #[cfg(feature = "mic")]
 pub use cpal_source::{
     live_mic_requested, should_skip_live_audio, CpalMicError, CpalMicSource,
+};
+
+#[cfg(feature = "playback")]
+pub use cpal_sink::{
+    live_playback_requested, resample_linear, should_skip_live_playback, CpalPlaybackError,
+    CpalPlaybackSink,
 };

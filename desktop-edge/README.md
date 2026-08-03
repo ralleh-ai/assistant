@@ -62,6 +62,15 @@ CLI/tests — not on the core home screen.
   `anthropic`. A misconfigured non-echo kind (e.g. anthropic
   without a key) falls back to Echo with a warning; the shell
   always starts.
+- `RALLEH_SKIP_LIVE_AUDIO` — set to any value to force the mic
+  and speaker sinks to soft-skip (return `None` from
+  `try_open_default`). Useful for headless dev on hosts with
+  broken audio stacks or when running the shell over remote
+  desktop where playing audio locally isn't desired.
+- `RALLEH_LIVE_PLAYBACK` — set to `1` to force live speaker
+  playback under CI (mirrors `RALLEH_LIVE_MIC` on the input
+  side). Default CI runs soft-skip playback so headless jobs
+  never open an output device.
 
 ## Layout
 

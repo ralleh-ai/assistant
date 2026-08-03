@@ -10,6 +10,11 @@ default = []
 # headless CI/dev never needs libasound / device access.
 #   cargo test -p ralleh-audio-core --features mic
 mic = ["dep:cpal"]
+# Live speaker playback via cpal (same host backends as `mic`, same
+# opt-in reasoning). Enables `CpalPlaybackSink` — the shell's TTS
+# path uses this to actually make the synthesized audio audible.
+#   cargo test -p ralleh-audio-core --features playback
+playback = ["dep:cpal"]
 # Native whisper.cpp via whisper-rs (ADR-003). Off by default.
 whisper = ["dep:whisper-rs"]
 

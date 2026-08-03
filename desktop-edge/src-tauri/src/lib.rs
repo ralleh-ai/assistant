@@ -30,6 +30,8 @@ use ralleh_tool_gateway::ToolCallOutcome;
 use ralleh_audio_core::{
     run_mock_voice_pipeline, MockTts, MockVoicePipelineResult, TextToSpeech,
 };
+#[cfg(feature = "playback")]
+use ralleh_audio_core::CpalPlaybackSink;
 use settings::{load_settings, save_settings, settings_path_display, EdgeSettings};
 
 const EDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -96,31 +98,64 @@ fn pulse_on_err<T>(result: &Result<T, String>, presence: &Presence) {
     }
 }
 
+/// Run the mock voice pipeline and drive the speaking-mode visual +
+/// audible playback. Two arities exist: with `playback` enabled the
+/// synthesized PCM is enqueued to `CpalPlaybackSink` so the operator
+/// hears the response; without the feature, playback is silent (still
+/// a visible pulse). Split into two `#[tauri::command]` functions
+/// because Tauri's command macro doesn't handle `#[cfg]` on
+/// arguments -- the shared body lives in `run_voice_smoke`.
+#[cfg(feature = "playback")]
+#[tauri::command]
+fn voice_smoke(
+    presence: State<'_, Presence>,
+    playback: State<'_, PlaybackSinkState>,
+) -> Result<MockVoicePipelineResult, String> {
+    run_voice_smoke(&presence, Some(&playback))
+}
+
+#[cfg(not(feature = "playback"))]
 #[tauri::command]
 fn voice_smoke(presence: State<'_, Presence>) -> Result<MockVoicePipelineResult, String> {
+    run_voice_smoke(&presence)
+}
+
+fn run_voice_smoke(
+    presence: &Presence,
+    #[cfg(feature = "playback")] playback: Option<&PlaybackSinkState>,
+) -> Result<MockVoicePipelineResult, String> {
     let result = run_mock_voice_pipeline();
     match &result {
         Ok(r) => {
-            // Duration of the synthesized speech in wall-clock terms.
-            // Ceil is deliberate: sub-second utterances still get a
-            // full "the assistant is speaking" hold rather than a
-            // blink. Cast is safe — the mock pipeline produces
-            // fixed-size buffers on the order of tens of KB.
+            // Duration of the synthesized speech in wall-clock
+            // terms. Sub-second utterances still get a full
+            // "speaking" hold rather than a blink.
             let ms = ((r.tts_samples as u64) * 1_000)
                 .checked_div(r.sample_rate_hz.max(1) as u64)
                 .unwrap_or(0);
-            // §3.3 follow-up: pump a live `audio_level` for the
-            // duration of the pulse. Re-synthesizing the transcript
-            // is cheap on `MockTts` (a synchronous constant-tone
-            // generator) and keeps `run_mock_voice_pipeline`'s
-            // serialized result surface unchanged. When real TTS +
-            // cpal playback land, this branch moves to a ringbuffer
-            // tap on the output stream — same pump, same cadence.
-            if let (Some(tx), Ok(audio)) = (
-                presence.sender_clone(),
-                MockTts::new().synthesize(&r.transcript),
-            ) {
-                presence_speaking::spawn(audio.samples, audio.sample_rate_hz, tx);
+            // Re-synthesize the transcript so we own the PCM twice:
+            // once for the RMS pump that drives the visual envelope
+            // (§3.3), once for the cpal sink that actually makes the
+            // TTS audible. `MockTts` is a synchronous constant-tone
+            // generator so the double-synthesis is effectively free.
+            // When real streaming TTS lands, both consumers move to
+            // tapping a shared ringbuffer instead of holding copies.
+            if let Ok(audio) = MockTts::new().synthesize(&r.transcript) {
+                if let Some(tx) = presence.sender_clone() {
+                    presence_speaking::spawn(
+                        audio.samples.clone(),
+                        audio.sample_rate_hz,
+                        tx,
+                    );
+                }
+                #[cfg(feature = "playback")]
+                if let Some(state) = playback {
+                    if let Ok(guard) = state.lock() {
+                        if let Some(sink) = guard.as_ref() {
+                            sink.enqueue(&audio.samples, audio.sample_rate_hz);
+                        }
+                    }
+                }
             }
             presence.pulse_speaking(ms);
         }
@@ -331,6 +366,14 @@ fn presence_set_interactive(
 /// out shared references to managed state and we need to swap the
 /// `Option` in-place from the start/stop commands.
 type MicPumpState = Mutex<Option<MicPump>>;
+
+/// Tauri-managed handle to the shell's default speaker sink. `None`
+/// on hosts where `try_open_default` soft-skipped (CI, headless dev)
+/// or where the OS refused to open an output device -- callers must
+/// tolerate `None` and simply omit audible playback rather than
+/// erroring.
+#[cfg(feature = "playback")]
+type PlaybackSinkState = Mutex<Option<CpalPlaybackSink>>;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -766,9 +809,21 @@ pub fn run() {
     // idleness without holding `State<AssistantState>`.
     let assistant_in_flight = assistant_state.in_flight_handle();
 
-    tauri::Builder::default()
+    // Best-effort open of the default audio output. `try_open_default`
+    // soft-skips under CI or when `RALLEH_SKIP_LIVE_AUDIO` is set, and
+    // returns `None` on any hardware failure -- the shell should stay
+    // launchable on hosts without an output device, just without
+    // audible TTS. `voice_smoke` guards on this being `Some` before
+    // enqueueing.
+    #[cfg(feature = "playback")]
+    let playback_sink: PlaybackSinkState = Mutex::new(CpalPlaybackSink::try_open_default());
+
+    let builder = tauri::Builder::default()
         .manage(mic_pump)
-        .manage(assistant_state)
+        .manage(assistant_state);
+    #[cfg(feature = "playback")]
+    let builder = builder.manage(playback_sink);
+    builder
         // Presence is spawned inside `setup` so the reverse-channel
         // listener can capture an `AppHandle` — we need one to load
         // and save `EdgeSettings` from the reader thread. Everything

@@ -97,10 +97,10 @@ pub fn run_live_mic_smoke(seconds: f32) -> Result<LiveMicSmokeResult, String> {
     #[cfg(not(feature = "mic"))]
     {
         let _ = seconds;
-        return Err(
+        Err(
             "live mic not compiled into this binary — restart with scripts\\tauri-dev.cmd (mic is on by default for desktop-edge)"
                 .into(),
-        );
+        )
     }
 
     #[cfg(feature = "mic")]
