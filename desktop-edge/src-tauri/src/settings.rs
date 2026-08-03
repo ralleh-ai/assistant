@@ -49,6 +49,64 @@ pub struct EdgeSettings {
     /// (before this field existed) loadable as `false`.
     #[serde(default)]
     pub presence_reduced_motion: bool,
+    /// Completion backend configuration owned by the settings UI.
+    /// `None` means "follow the `RALLEH_COMPLETION_*` env vars"
+    /// (the pre-UI operator config path); `Some` overrides them
+    /// entirely. The `api_key` inside is stored in cleartext on
+    /// disk under the OS user's config dir — future work moves it
+    /// to the OS keychain (Windows Credential Manager, macOS
+    /// Keychain, Linux Secret Service), at which point this field
+    /// becomes a reference rather than the key itself.
+    #[serde(default)]
+    pub completion: Option<CompletionConfig>,
+}
+
+/// Serialized completion-backend configuration. Stable serde shape
+/// so a future keychain migration can add fields without breaking
+/// existing settings files. Kept intentionally close to what a real
+/// enterprise settings surface exposes: which provider, which
+/// model, and how to authenticate.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionConfig {
+    pub kind: CompletionKind,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub model: String,
+    /// Cleartext API key stored locally. `None` when the provider
+    /// doesn't require one (local Ollama / LM Studio / vLLM), or
+    /// when the operator hasn't entered one yet. This field is
+    /// never round-tripped to the frontend: `backend_status`
+    /// exposes only `has_api_key: bool`. See `save_settings` for
+    /// the "keep existing key" sentinel handling.
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+/// Which completion provider the router should talk to. `Echo` is
+/// the always-safe fallback; `Openai` covers OpenAI and every
+/// clone that speaks its `/chat/completions` shape; `Anthropic`
+/// speaks the messages API directly.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CompletionKind {
+    #[default]
+    Echo,
+    Openai,
+    Anthropic,
+}
+
+impl CompletionKind {
+    /// Stable label surfaced in the settings UI. Prefer this over
+    /// `Debug` because `Debug` output is a stability foot-gun.
+    pub fn label(self) -> &'static str {
+        match self {
+            CompletionKind::Echo => "echo",
+            CompletionKind::Openai => "openai",
+            CompletionKind::Anthropic => "anthropic",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +129,7 @@ impl Default for EdgeSettings {
             presence_palette: None,
             presence_quality_tier: None,
             presence_reduced_motion: false,
+            completion: None,
         }
     }
 }
@@ -118,6 +177,12 @@ pub fn save_settings(app: &AppHandle, settings: &EdgeSettings) -> Result<EdgeSet
         presence_palette: settings.presence_palette,
         presence_quality_tier: settings.presence_quality_tier,
         presence_reduced_motion: settings.presence_reduced_motion,
+        // Completion config is not touched by this save path — it
+        // has its own dedicated `write_completion_config` helper so
+        // the wizard flow can't overwrite it with `None` on every
+        // save, and the settings UI can update the key without
+        // resending it (see `ApiKeyUpdate::Keep`).
+        completion: settings.completion.clone(),
     };
     if cleaned.tenant_id.is_empty() || cleaned.device_id.is_empty() || cleaned.actor_id.is_empty()
     {
@@ -139,6 +204,156 @@ pub fn save_settings(app: &AppHandle, settings: &EdgeSettings) -> Result<EdgeSet
 
 pub fn settings_path_display(app: &AppHandle) -> Result<String, String> {
     Ok(settings_file(app)?.display().to_string())
+}
+
+/// Frontend-facing shape of a completion config: identical to
+/// `CompletionConfig` except the api_key is replaced by a boolean.
+/// This is the ONLY shape that ever leaves the Rust side toward the
+/// webview — we never want to hand a raw key back over the IPC
+/// bridge. `From<&CompletionConfig>` is the canonical construction
+/// path so future fields can't accidentally leak the key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RedactedCompletionConfig {
+    pub kind: CompletionKind,
+    pub base_url: String,
+    pub model: String,
+    pub has_api_key: bool,
+}
+
+impl From<&CompletionConfig> for RedactedCompletionConfig {
+    fn from(c: &CompletionConfig) -> Self {
+        Self {
+            kind: c.kind,
+            base_url: c.base_url.clone(),
+            model: c.model.clone(),
+            has_api_key: c.api_key.as_ref().is_some_and(|s| !s.is_empty()),
+        }
+    }
+}
+
+/// Instructions the settings UI sends when saving a completion
+/// config. Distinguishes "keep the existing key" (user is editing
+/// model / base URL without re-entering the key) from "clear the
+/// key" (user is switching to a provider that doesn't need one, or
+/// intentionally removing it) from "replace with this value".
+///
+/// This is what lets the API-key field be write-only in the UI:
+/// the frontend never learns the current key, but can still edit
+/// other fields without wiping the stored one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum ApiKeyUpdate {
+    /// Leave the persisted key untouched.
+    Keep,
+    /// Clear the persisted key.
+    Clear,
+    /// Replace the persisted key with this cleartext value.
+    Set { value: String },
+}
+
+impl ApiKeyUpdate {
+    /// Apply this update to an existing key, returning the value to
+    /// persist. `Keep` returns the input unchanged, `Clear` returns
+    /// `None`, `Set` returns `Some(value)`. Empty `Set` values are
+    /// coerced to `None` so an accidentally-blank input doesn't
+    /// persist as a truthy-but-empty string.
+    pub fn apply(self, existing: Option<String>) -> Option<String> {
+        match self {
+            ApiKeyUpdate::Keep => existing,
+            ApiKeyUpdate::Clear => None,
+            ApiKeyUpdate::Set { value } if value.is_empty() => None,
+            ApiKeyUpdate::Set { value } => Some(value),
+        }
+    }
+}
+
+/// The write-side shape the settings UI sends for a completion
+/// config update. Everything but the API key is present in full;
+/// the key comes in as an `ApiKeyUpdate` so "keep existing" doesn't
+/// require the frontend to have ever seen the key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionConfigUpdate {
+    pub kind: CompletionKind,
+    pub base_url: String,
+    pub model: String,
+    #[serde(default = "default_keep_key")]
+    pub api_key: ApiKeyUpdate,
+}
+
+fn default_keep_key() -> ApiKeyUpdate {
+    ApiKeyUpdate::Keep
+}
+
+impl CompletionConfigUpdate {
+    /// Fold this update into an existing `Option<CompletionConfig>`
+    /// and produce the new one to persist. Validates that non-echo
+    /// kinds carry a non-empty `base_url` and `model`, since those
+    /// are unrecoverable at request time -- better to reject at
+    /// save so the settings UI can surface the error inline.
+    pub fn into_config(self, existing: Option<&CompletionConfig>) -> Result<CompletionConfig, String> {
+        let base_url = self.base_url.trim().to_string();
+        let model = self.model.trim().to_string();
+        if !matches!(self.kind, CompletionKind::Echo) {
+            if base_url.is_empty() {
+                return Err(format!(
+                    "{} backend requires a base URL",
+                    self.kind.label()
+                ));
+            }
+            if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+                return Err(format!(
+                    "{} backend base URL must start with http:// or https://",
+                    self.kind.label()
+                ));
+            }
+            if model.is_empty() {
+                return Err(format!(
+                    "{} backend requires a model identifier",
+                    self.kind.label()
+                ));
+            }
+        }
+        let api_key = self.api_key.apply(existing.and_then(|c| c.api_key.clone()));
+        // Anthropic without a key is a config error the request
+        // path would silently drop to Echo -- catch it here so the
+        // UI can prompt for a key rather than the user staring at
+        // an "unexpected fallback" toast.
+        if matches!(self.kind, CompletionKind::Anthropic)
+            && api_key.as_ref().is_none_or(|s| s.is_empty())
+        {
+            return Err("anthropic backend requires an API key".into());
+        }
+        Ok(CompletionConfig {
+            kind: self.kind,
+            base_url,
+            model,
+            api_key,
+        })
+    }
+}
+
+/// Update or clear the persisted completion config in-place,
+/// preserving every other field of `EdgeSettings`. Called by the
+/// `assistant_save_backend` Tauri command; kept in this module so
+/// the file I/O + validation logic lives next to the schema.
+pub fn write_completion_config(
+    app: &AppHandle,
+    update: Option<CompletionConfigUpdate>,
+) -> Result<EdgeSettings, String> {
+    let mut current = load_settings(app)?;
+    match update {
+        None => current.completion = None,
+        Some(u) => {
+            let merged = u.into_config(current.completion.as_ref())?;
+            current.completion = Some(merged);
+        }
+    }
+    let path = settings_file(app)?;
+    let raw = serde_json::to_string_pretty(&current).map_err(|e| e.to_string())?;
+    fs::write(&path, raw).map_err(|e| format!("write settings: {e}"))?;
+    Ok(current)
 }
 
 #[cfg(test)]
@@ -184,6 +399,7 @@ mod tests {
             presence_palette: Some(PaletteId::Ember),
             presence_quality_tier: Some(QualityTier::Low),
             presence_reduced_motion: true,
+            completion: None,
         };
         let encoded = serde_json::to_string(&settings).unwrap();
         let decoded: EdgeSettings = serde_json::from_str(&encoded).unwrap();
@@ -212,7 +428,164 @@ mod tests {
             presence_palette: None,
             presence_quality_tier: None,
             presence_reduced_motion: false,
+            completion: None,
         };
         assert!(s.is_complete());
+    }
+
+    // ---- Completion config ----------------------------------------
+
+    #[test]
+    fn redacted_completion_config_never_exposes_the_key() {
+        let full = CompletionConfig {
+            kind: CompletionKind::Anthropic,
+            base_url: "https://api.anthropic.com".into(),
+            model: "claude-3-5-sonnet-latest".into(),
+            api_key: Some("sk-ant-secret-123".into()),
+        };
+        let redacted = RedactedCompletionConfig::from(&full);
+        let serialized = serde_json::to_string(&redacted).unwrap();
+        assert!(
+            !serialized.contains("sk-ant-secret-123"),
+            "redacted response leaked the api_key: {serialized}"
+        );
+        assert!(
+            serialized.contains("\"hasApiKey\":true"),
+            "expected hasApiKey signal, got {serialized}"
+        );
+    }
+
+    #[test]
+    fn redacted_completion_config_reports_missing_key_when_empty() {
+        let full = CompletionConfig {
+            kind: CompletionKind::Openai,
+            base_url: "http://localhost:11434/v1".into(),
+            model: "llama3.2:latest".into(),
+            api_key: Some(String::new()),
+        };
+        let redacted = RedactedCompletionConfig::from(&full);
+        assert!(!redacted.has_api_key);
+    }
+
+    #[test]
+    fn api_key_update_keep_preserves_existing() {
+        let existing = Some("old".to_string());
+        assert_eq!(
+            ApiKeyUpdate::Keep.apply(existing.clone()),
+            existing,
+            "Keep must be a pure identity on the existing value"
+        );
+    }
+
+    #[test]
+    fn api_key_update_clear_removes_the_key() {
+        assert_eq!(ApiKeyUpdate::Clear.apply(Some("old".into())), None);
+        assert_eq!(ApiKeyUpdate::Clear.apply(None), None);
+    }
+
+    #[test]
+    fn api_key_update_set_replaces_and_empty_coerces_to_none() {
+        assert_eq!(
+            ApiKeyUpdate::Set {
+                value: "new".into()
+            }
+            .apply(Some("old".into())),
+            Some("new".into()),
+        );
+        assert_eq!(
+            ApiKeyUpdate::Set { value: "".into() }.apply(Some("old".into())),
+            None,
+            "empty Set must not persist as truthy-but-blank"
+        );
+    }
+
+    #[test]
+    fn completion_update_rejects_anthropic_without_a_key() {
+        let update = CompletionConfigUpdate {
+            kind: CompletionKind::Anthropic,
+            base_url: "https://api.anthropic.com".into(),
+            model: "claude-3-5-sonnet-latest".into(),
+            api_key: ApiKeyUpdate::Clear,
+        };
+        let err = update.into_config(None).unwrap_err();
+        assert!(err.contains("anthropic"), "{err}");
+        assert!(err.to_lowercase().contains("api key"), "{err}");
+    }
+
+    #[test]
+    fn completion_update_rejects_non_echo_without_a_model() {
+        let update = CompletionConfigUpdate {
+            kind: CompletionKind::Openai,
+            base_url: "http://localhost:11434/v1".into(),
+            model: "  ".into(),
+            api_key: ApiKeyUpdate::Keep,
+        };
+        let err = update.into_config(None).unwrap_err();
+        assert!(err.contains("model"), "{err}");
+    }
+
+    #[test]
+    fn completion_update_rejects_non_http_base_url() {
+        let update = CompletionConfigUpdate {
+            kind: CompletionKind::Openai,
+            base_url: "file:///etc/passwd".into(),
+            model: "gpt-4o".into(),
+            api_key: ApiKeyUpdate::Keep,
+        };
+        let err = update.into_config(None).unwrap_err();
+        assert!(err.to_lowercase().contains("http"), "{err}");
+    }
+
+    #[test]
+    fn completion_update_allows_echo_with_empty_fields() {
+        // Echo has no network side, so demanding a base URL / model
+        // would be actively wrong. Confirm the validator special-
+        // cases it correctly.
+        let update = CompletionConfigUpdate {
+            kind: CompletionKind::Echo,
+            base_url: "".into(),
+            model: "".into(),
+            api_key: ApiKeyUpdate::Keep,
+        };
+        let cfg = update.into_config(None).unwrap();
+        assert_eq!(cfg.kind, CompletionKind::Echo);
+    }
+
+    #[test]
+    fn completion_update_keep_preserves_the_stored_key() {
+        let existing = CompletionConfig {
+            kind: CompletionKind::Anthropic,
+            base_url: "https://api.anthropic.com".into(),
+            model: "claude-3-5-sonnet-latest".into(),
+            api_key: Some("sk-ant-existing".into()),
+        };
+        // User edits the model without touching the key.
+        let update = CompletionConfigUpdate {
+            kind: CompletionKind::Anthropic,
+            base_url: "https://api.anthropic.com".into(),
+            model: "claude-3-5-haiku-latest".into(),
+            api_key: ApiKeyUpdate::Keep,
+        };
+        let merged = update.into_config(Some(&existing)).unwrap();
+        assert_eq!(merged.model, "claude-3-5-haiku-latest");
+        assert_eq!(merged.api_key, Some("sk-ant-existing".into()));
+    }
+
+    #[test]
+    fn older_settings_without_completion_field_still_load() {
+        // Any settings file written before this landing must load
+        // as `completion: None` -- otherwise an existing user hits
+        // a hard error on startup. This is the same contract every
+        // other `#[serde(default)]` field on EdgeSettings has.
+        let older = r#"{
+            "tenantId": "acme",
+            "deviceId": "desk-1",
+            "actorId": "rico",
+            "mcpBaseUrl": "http://127.0.0.1:8787",
+            "micAcknowledged": true,
+            "voiceStyle": "calm"
+        }"#;
+        let parsed: EdgeSettings = serde_json::from_str(older).expect("older settings load");
+        assert!(parsed.completion.is_none());
     }
 }

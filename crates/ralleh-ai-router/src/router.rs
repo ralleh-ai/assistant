@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ralleh_policy_core::{PolicyEngine, PolicyOutcome, PolicyRequest, PolicyRule, RuleEffect};
 use tokio::sync::mpsc;
@@ -16,7 +16,15 @@ use crate::request::{
 /// visibility into that decision and is only ever invoked after policy
 /// allows it.
 pub struct AiRouter {
-    backend: Arc<dyn CompletionBackend>,
+    /// Backend behind an `Arc<Mutex<Arc<..>>>` so the router supports
+    /// live swap without breaking in-flight requests. Every request
+    /// snapshots the current backend `Arc` under a brief lock, drops
+    /// the lock, and then does its work with that snapshot -- a
+    /// subsequent `swap_backend` therefore only affects requests
+    /// that start after it, not requests already routed through the
+    /// old backend. This is what lets the desktop shell's settings
+    /// UI reconfigure the completion provider without a restart.
+    backend: Arc<Mutex<Arc<dyn CompletionBackend>>>,
     policy: PolicyEngine,
 }
 
@@ -49,7 +57,7 @@ impl AiRouter {
             reason: "default development policy: completion routing is allowed".to_string(),
         };
         Self {
-            backend: Arc::from(backend),
+            backend: Arc::new(Mutex::new(Arc::from(backend))),
             policy: PolicyEngine::new(vec![allow_all]),
         }
     }
@@ -58,10 +66,86 @@ impl AiRouter {
     /// `ralleh-mcp-server`) can wire in tenant-scoped completion rules the
     /// same way they wire policy into the tool gateway.
     pub fn with_policy(backend: Box<dyn CompletionBackend>, policy: PolicyEngine) -> Self {
+        Self::with_policy_arc(Arc::from(backend), policy)
+    }
+
+    /// `Arc`-taking sibling of `with_policy`. Preferred when the
+    /// caller already holds the backend behind an `Arc` (e.g. the
+    /// shell reuses one Arc across `AssistantState::reconfigure`
+    /// and the throwaway "test connection" probe). Skips the
+    /// pointless `Box → Arc` round-trip.
+    pub fn with_policy_arc(backend: Arc<dyn CompletionBackend>, policy: PolicyEngine) -> Self {
         Self {
-            backend: Arc::from(backend),
+            backend: Arc::new(Mutex::new(backend)),
             policy,
         }
+    }
+
+    /// `Arc`-taking sibling of `new`. Same permissive default
+    /// policy, spared the `Box → Arc` round-trip.
+    pub fn with_backend_arc(backend: Arc<dyn CompletionBackend>) -> Self {
+        let allow_all = PolicyRule {
+            id: "default-allow-completion".to_string(),
+            tenant_id: None,
+            device_id: None,
+            actor_id: None,
+            capability_prefix: Some(COMPLETION_CAPABILITY.to_string()),
+            sensitivity: None,
+            effect: RuleEffect::Allow,
+            reason: "default development policy: completion routing is allowed".to_string(),
+        };
+        Self::with_policy_arc(backend, PolicyEngine::new(vec![allow_all]))
+    }
+
+    /// Replace the router's backend at runtime. In-flight requests
+    /// keep running against whichever backend they snapshotted at
+    /// `route`/`route_stream` entry -- only requests starting after
+    /// this call see the new one. Used by the shell's settings UI to
+    /// reconfigure the completion provider without a restart.
+    ///
+    /// A poisoned mutex (unreachable in practice -- the critical
+    /// sections are `Arc::clone` and one assignment, neither of which
+    /// can panic) is silently no-oped rather than propagated: the
+    /// caller has no meaningful recovery, and refusing to swap is
+    /// safer than proceeding with an unknown internal state.
+    pub fn swap_backend(&self, backend: Arc<dyn CompletionBackend>) {
+        if let Ok(mut slot) = self.backend.lock() {
+            *slot = backend;
+        }
+    }
+
+    /// Snapshot of the current backend's `name()` -- stable enough
+    /// to surface in UI ("Currently: anthropic") and telemetry
+    /// without exposing the underlying `Arc<dyn ..>` to callers.
+    /// Returns an empty string if the internal mutex is poisoned;
+    /// see `swap_backend` for why we treat that as "unknown" rather
+    /// than "propagate".
+    pub fn current_backend_name(&self) -> String {
+        match self.backend.lock() {
+            Ok(g) => g.name().to_string(),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// Snapshot the current backend `Arc`. Cheap `Arc::clone` under a
+    /// brief mutex lock. Used inside `route`/`route_stream` so the
+    /// rest of the request can proceed without holding the lock, and
+    /// exposed for callers that need to run a single request against
+    /// the current backend directly (e.g. the shell's "test
+    /// connection" command routes through a fresh throwaway router
+    /// so a failing test can't leave in-flight state on the
+    /// production router).
+    fn snapshot_backend(&self) -> Arc<dyn CompletionBackend> {
+        // `.expect_or` isn't a thing; `unwrap_or_else` on a poisoned
+        // mutex would need a fallback backend, which we don't have
+        // here. Poisoned = programmer error, and every write site is
+        // a two-line critical section, so `expect` documents the
+        // "cannot happen" clearly. If it ever does happen the panic
+        // is louder than a silent stall.
+        self.backend
+            .lock()
+            .expect("AiRouter backend mutex poisoned")
+            .clone()
     }
 
     /// Route a request to the configured backend and return a
@@ -92,10 +176,11 @@ impl AiRouter {
             PolicyOutcome::Allowed => {}
         }
 
-        match self.backend.complete(request).await {
+        let backend = self.snapshot_backend();
+        match backend.complete(request).await {
             Ok(response) => CompletionOutcome::Succeeded(response),
             Err(error) => CompletionOutcome::Failed {
-                backend: self.backend.name().to_string(),
+                backend: backend.name().to_string(),
                 error,
             },
         }
@@ -171,12 +256,12 @@ impl AiRouter {
             PolicyOutcome::Allowed => {}
         }
 
-        // Allowed. Spawn the backend stream + forwarder on a task
-        // so the caller gets the receiver back without waiting.
-        // `Arc` clone rather than borrowing self through the task,
-        // since the caller may drop the router reference before
-        // the task finishes.
-        let backend = self.backend.clone();
+        // Allowed. Snapshot the backend once, then spawn the stream
+        // + forwarder on a task so the caller gets the receiver back
+        // without waiting. Snapshotting here means an in-flight
+        // request keeps using the backend it started with even if
+        // the router is swapped mid-flight (see `swap_backend`).
+        let backend = self.snapshot_backend();
         let request = request.clone();
         tokio::spawn(async move {
             let backend_name = backend.name().to_string();
@@ -396,6 +481,39 @@ mod tests {
                 assert_eq!(backend, "always-fail");
                 assert_eq!(error, "upstream provider unreachable");
             }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn swap_backend_switches_which_backend_serves_new_requests() {
+        // Before swap: EchoBackend is in place, response echoes.
+        let router = AiRouter::new(Box::new(EchoBackend));
+        assert_eq!(router.current_backend_name(), "local-echo");
+        let outcome = router.route(&sample_request("hi")).await;
+        assert!(matches!(outcome, CompletionOutcome::Succeeded(ref r) if r.text == "echo: hi"));
+
+        // Swap in AlwaysFailBackend. New requests must see the failure.
+        router.swap_backend(std::sync::Arc::new(AlwaysFailBackend));
+        assert_eq!(router.current_backend_name(), "always-fail");
+        let outcome = router.route(&sample_request("hi")).await;
+        match outcome {
+            CompletionOutcome::Failed { backend, error } => {
+                assert_eq!(backend, "always-fail");
+                assert_eq!(error, "upstream provider unreachable");
+            }
+            other => panic!("expected Failed after swap, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn route_stream_after_swap_uses_the_new_backend() {
+        let router = AiRouter::new(Box::new(EchoBackend));
+        router.swap_backend(std::sync::Arc::new(AlwaysFailBackend));
+        let mut rx = router.route_stream(&sample_request("hi"));
+        let event = rx.recv().await.expect("terminal event");
+        match event {
+            CompletionStreamEvent::Failed { backend, .. } => assert_eq!(backend, "always-fail"),
             other => panic!("expected Failed, got {other:?}"),
         }
     }

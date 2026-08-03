@@ -19,7 +19,9 @@ use tauri::{AppHandle, Manager, State};
 
 use mic::{mic_feature_enabled, run_mic_smoke, MicSmokeResult};
 use os_caps::{run_clipboard_smoke, ClipboardSmokeResult};
-use assistant::{completion_request, AssistantState, ECHO_CAPABILITY};
+use assistant::{
+    build_backend_from_config, completion_request, AssistantState, ECHO_CAPABILITY,
+};
 use presence::{EventListener, Presence};
 use presence_ipc::{Command as PresenceCommand, Event as PresenceEvent, PaletteId, PresenceMode, QualityTier};
 use settings::PresencePosition;
@@ -32,7 +34,10 @@ use ralleh_audio_core::{
 };
 #[cfg(feature = "playback")]
 use ralleh_audio_core::CpalPlaybackSink;
-use settings::{load_settings, save_settings, settings_path_display, EdgeSettings};
+use settings::{
+    load_settings, save_settings, settings_path_display, write_completion_config,
+    CompletionConfigUpdate, EdgeSettings, RedactedCompletionConfig,
+};
 
 const EDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -599,6 +604,182 @@ fn assistant_notify_inbound(
     Ok(())
 }
 
+/// Read-side of the backend config surface. Returns the currently
+/// active backend name (what the router will send the next request
+/// through, whatever its origin -- settings, env, or Echo fallback)
+/// plus the persisted UI-owned config, redacted so the api_key
+/// never leaves the Rust side. `None` for `configured` means the
+/// operator has never opened the settings UI; the shell is running
+/// on env-var + Echo defaults.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendStatus {
+    pub active_backend: String,
+    pub configured: Option<RedactedCompletionConfig>,
+}
+
+#[tauri::command]
+fn assistant_backend_status(
+    app: AppHandle,
+    state: State<'_, AssistantState>,
+) -> Result<BackendStatus, String> {
+    let settings = load_settings(&app)?;
+    Ok(BackendStatus {
+        active_backend: state.current_backend_name(),
+        configured: settings.completion.as_ref().map(RedactedCompletionConfig::from),
+    })
+}
+
+/// Result the `assistant_test_backend` command returns. `ok` is
+/// the top-level pass/fail because the UI needs to switch between
+/// "green check" and "red alert" without pattern-matching on the
+/// message. `latency_ms` is present on success so the UI can show
+/// "Anthropic responded in 320 ms", which is a real signal when
+/// choosing between models.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendTestResult {
+    pub ok: bool,
+    pub backend: String,
+    pub latency_ms: Option<u64>,
+    pub sample_response: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Try the proposed config against a real completion. Uses a
+/// throwaway `AiRouter` so a failing test cannot corrupt the
+/// production router state, and passes a short benign prompt so
+/// providers that meter per-token don't charge for the smoke.
+#[tauri::command]
+async fn assistant_test_backend(
+    app: AppHandle,
+    config: CompletionConfigUpdate,
+) -> Result<BackendTestResult, String> {
+    // Fold the update against the current on-disk config so
+    // `api_key: Keep` resolves to the actually-persisted key --
+    // otherwise the "test" button would fail when the user is
+    // editing a model without re-entering the key.
+    let existing = load_settings(&app).ok().and_then(|s| s.completion);
+    let kind_label = config.kind.label().to_string();
+    let cfg = match config.into_config(existing.as_ref()) {
+        Ok(c) => c,
+        Err(reason) => {
+            // Surface validation errors as a "test failed" result
+            // rather than a Tauri command error so the UI can render
+            // them in the same status area as network failures.
+            return Ok(BackendTestResult {
+                ok: false,
+                backend: kind_label,
+                latency_ms: None,
+                sample_response: None,
+                error: Some(reason),
+            });
+        }
+    };
+
+    let backend = match build_backend_from_config(&cfg) {
+        Ok(b) => b,
+        Err(reason) => {
+            return Ok(BackendTestResult {
+                ok: false,
+                backend: cfg.kind.label().to_string(),
+                latency_ms: None,
+                sample_response: None,
+                error: Some(reason),
+            });
+        }
+    };
+
+    let router = ralleh_ai_router::AiRouter::with_backend_arc(backend);
+    let request = completion_request("local", "desktop-1", "operator", "ping");
+    let started = std::time::Instant::now();
+    let outcome = router.route(&request).await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+
+    match outcome {
+        CompletionOutcome::Succeeded(CompletionResponse { backend, text }) => {
+            Ok(BackendTestResult {
+                ok: true,
+                backend,
+                latency_ms: Some(elapsed_ms),
+                sample_response: Some(truncate_preview(&text, 200)),
+                error: None,
+            })
+        }
+        CompletionOutcome::Failed { backend, error } => Ok(BackendTestResult {
+            ok: false,
+            backend,
+            latency_ms: Some(elapsed_ms),
+            sample_response: None,
+            error: Some(error),
+        }),
+        CompletionOutcome::Denied => Ok(BackendTestResult {
+            ok: false,
+            backend: cfg.kind.label().to_string(),
+            latency_ms: None,
+            sample_response: None,
+            error: Some("policy denied".into()),
+        }),
+        CompletionOutcome::ApprovalRequired => Ok(BackendTestResult {
+            ok: false,
+            backend: cfg.kind.label().to_string(),
+            latency_ms: None,
+            sample_response: None,
+            error: Some("policy requires approval".into()),
+        }),
+        CompletionOutcome::NoBackendConfigured => Ok(BackendTestResult {
+            ok: false,
+            backend: cfg.kind.label().to_string(),
+            latency_ms: None,
+            sample_response: None,
+            error: Some("no backend configured".into()),
+        }),
+    }
+}
+
+fn truncate_preview(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max_chars).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Persist a completion config through the settings file and
+/// hot-swap the router to use it. `None` clears the persisted
+/// config, restoring env-var priority. Returns the new backend
+/// status so the UI can update in place without a follow-up
+/// `backend_status` call.
+#[tauri::command]
+fn assistant_save_backend(
+    app: AppHandle,
+    state: State<'_, AssistantState>,
+    config: Option<CompletionConfigUpdate>,
+) -> Result<BackendStatus, String> {
+    let settings = write_completion_config(&app, config)?;
+    let active_backend = match settings.completion.as_ref() {
+        Some(cfg) => state.reconfigure(cfg),
+        None => {
+            // Cleared: restart from env priority. We do NOT restart
+            // the whole AssistantState -- swapping the backend
+            // preserves the in-flight counter, gateway registry,
+            // and policy engine, all of which live outside the
+            // completion config.
+            let fallback_cfg = settings::CompletionConfig {
+                kind: settings::CompletionKind::Echo,
+                ..Default::default()
+            };
+            state.reconfigure(&fallback_cfg)
+        }
+    };
+    Ok(BackendStatus {
+        active_backend,
+        configured: settings.completion.as_ref().map(RedactedCompletionConfig::from),
+    })
+}
+
 #[tauri::command]
 fn presence_mic_stop(pump: State<'_, MicPumpState>) -> Result<PresenceMicStatus, String> {
     let mut guard = pump.lock().map_err(|e| e.to_string())?;
@@ -803,10 +984,14 @@ where
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mic_pump: MicPumpState = Mutex::new(None);
-    let assistant_state = AssistantState::with_defaults();
-    // Handle captured before `manage` transfers ownership — the
-    // scan-sweep thread (spawned inside `setup`) needs to observe
-    // idleness without holding `State<AssistantState>`.
+    // Assistant state is constructed with env-priority defaults here;
+    // the persisted UI config (if any) is applied inside `setup` once
+    // an `AppHandle` is available to load the settings file. This
+    // means a first-launch shell (no settings file yet) uses whatever
+    // `RALLEH_COMPLETION_*` env vars are set, matching the pre-UI
+    // behaviour, and a returning-user shell settles into the UI-owned
+    // config within a few dozen ms of startup.
+    let assistant_state = AssistantState::with_defaults(None);
     let assistant_in_flight = assistant_state.in_flight_handle();
 
     // Best-effort open of the default audio output. `try_open_default`
@@ -839,6 +1024,18 @@ pub fn run() {
             // attention as *sparse*, and firing it on a fresh dev
             // build would train the operator to ignore it.
             spawn_scan_sweep(&presence, assistant_in_flight.clone());
+            // Apply persisted completion config, if any. Env-var
+            // configuration remains the source of truth when
+            // `settings.completion` is `None`, so an operator can
+            // still drop-in override with `RALLEH_COMPLETION_*` on
+            // a first-launch shell.
+            if let Ok(settings) = load_settings(&handle) {
+                if let Some(cfg) = settings.completion.as_ref() {
+                    let state: tauri::State<'_, AssistantState> = app.state();
+                    let name = state.reconfigure(cfg);
+                    log::info!("assistant: startup reconfigure → {name}");
+                }
+            }
             app.manage(presence);
             Ok(())
         })
@@ -867,6 +1064,9 @@ pub fn run() {
             assistant_think_stream,
             assistant_tool_ping,
             assistant_notify_inbound,
+            assistant_backend_status,
+            assistant_test_backend,
+            assistant_save_backend,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

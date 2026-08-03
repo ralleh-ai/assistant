@@ -50,7 +50,11 @@ CLI/tests — not on the core home screen.
   (default), `anthropic`, or `openai` (OpenAI-compatible
   `/chat/completions` — OpenAI itself, Ollama, LM Studio, vLLM,
   etc.). Missing or unrecognized falls back to Echo with a log
-  line.
+  line. **Note**: the in-app **Backend** settings panel takes
+  precedence over these env vars — once the operator saves a
+  config through the UI, that config wins on every subsequent
+  startup and can only be reverted by pressing "Clear" (or
+  deleting the `edge-settings.json` file).
 - `RALLEH_COMPLETION_BASE_URL` — API root. For `openai`, include
   the `/v1` suffix if the provider requires it (the backend
   appends `/chat/completions`). For `anthropic`, root only

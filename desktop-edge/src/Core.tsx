@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { EdgeSettings } from "./settings";
 import { presenceStatus } from "./presence";
+import { BackendSettings } from "./BackendSettings";
 import { Conversation } from "./Conversation";
 import { PresenceDevPanel } from "./PresenceDevPanel";
 import { PresenceStatusLine } from "./PresenceStatusLine";
@@ -80,6 +81,7 @@ export function Core({ settings, onOpenSettings }: Props) {
         </p>
 
         {presenceEnabled && <PresenceStatusLine />}
+        <BackendSettings />
         <Conversation />
         {presenceEnabled && <PresenceDevPanel />}
       </div>

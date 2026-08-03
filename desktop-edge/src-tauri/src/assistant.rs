@@ -37,6 +37,8 @@ use ralleh_tool_gateway::{
     EchoHandler, ToolDefinition, ToolGateway, ToolRegistry,
 };
 
+use crate::settings::{CompletionConfig, CompletionKind};
+
 /// Scaffold capability the dev panel dispatches through the tool
 /// gateway. Real capabilities (fs.read.text, http.fetch, etc.) will
 /// land as separate registrations once their handlers are wired.
@@ -109,13 +111,15 @@ impl Drop for WorkGuard {
 }
 
 impl AssistantState {
-    /// Construct with dev defaults. Backend is selected by the
-    /// `RALLEH_COMPLETION_*` env vars (see the constants above);
-    /// tool gateway is always the scaffold `EchoHandler` under a
-    /// permissive policy for now. Called once from Tauri's
-    /// `.setup()` and installed as managed state.
-    pub fn with_defaults() -> Self {
-        let router = AiRouter::new(select_backend_from_env());
+    /// Construct with dev defaults. Backend selection follows the
+    /// UI-first precedence chain: any persisted `EdgeSettings.completion`
+    /// wins; otherwise the `RALLEH_COMPLETION_*` env vars (see the
+    /// constants above); otherwise `EchoBackend`. Tool gateway is
+    /// always the scaffold `EchoHandler` under a permissive policy
+    /// for now. Called once from Tauri's `.setup()` and installed
+    /// as managed state.
+    pub fn with_defaults(persisted: Option<&CompletionConfig>) -> Self {
+        let router = AiRouter::with_backend_arc(select_backend(persisted));
 
         let mut registry = ToolRegistry::new();
         registry.register(
@@ -191,6 +195,113 @@ impl AssistantState {
     pub fn in_flight_handle(&self) -> Arc<AtomicUsize> {
         self.in_flight.clone()
     }
+
+    /// Swap the router's backend to whatever `config` describes.
+    /// Delegates to the same builder path as startup so the settings
+    /// UI cannot construct a backend that the env-var path couldn't:
+    /// what you configure at runtime is what you'd have got as an
+    /// operator setting `RALLEH_COMPLETION_*`. Returns the name the
+    /// router will now report for observability parity with
+    /// `current_backend_name`.
+    ///
+    /// A misconfigured non-echo `config` (missing key on anthropic,
+    /// unparseable base URL) is caught in the settings write path
+    /// via `CompletionConfigUpdate::into_config`, so by the time we
+    /// get here the config is either valid or a fresh `Echo`. We
+    /// keep the same permissive fallback anyway -- defense in
+    /// depth, and it means an env-driven caller doesn't need the
+    /// UI's validation layer.
+    pub fn reconfigure(&self, config: &CompletionConfig) -> String {
+        let backend = build_backend_from_config(config).unwrap_or_else(|reason| {
+            log::warn!("assistant: reconfigure falling back to Echo — {reason}");
+            Arc::new(EchoBackend) as Arc<dyn CompletionBackend>
+        });
+        self.router.swap_backend(backend);
+        self.router.current_backend_name()
+    }
+
+    /// Snapshot of the currently active backend `name()`. Delegates
+    /// through the router so any future backend renames flow
+    /// through one place. Public because it's the value the
+    /// `assistant_backend_status` Tauri command surfaces to the UI.
+    pub fn current_backend_name(&self) -> String {
+        self.router.current_backend_name()
+    }
+}
+
+/// Try to construct a `CompletionBackend` from a settings-owned
+/// config. Shared by `reconfigure` at runtime, the settings-priority
+/// branch of `select_backend`, and the `assistant_test_backend`
+/// command that runs a throwaway probe against a proposed config.
+///
+/// Result rather than a silent fallback: the "test" command needs
+/// to surface a specific reason to the UI ("anthropic backend
+/// requires an API key"), and the "reconfigure" wrapper turns Err
+/// into Echo with a log line so the shell keeps working.
+pub fn build_backend_from_config(
+    config: &CompletionConfig,
+) -> Result<Arc<dyn CompletionBackend>, String> {
+    match config.kind {
+        CompletionKind::Echo => Ok(Arc::new(EchoBackend)),
+        CompletionKind::Anthropic => {
+            if config.base_url.is_empty() {
+                return Err("anthropic backend requires a base URL".into());
+            }
+            if config.model.is_empty() {
+                return Err("anthropic backend requires a model".into());
+            }
+            let api_key = config
+                .api_key
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .ok_or("anthropic backend requires an API key")?;
+            Ok(Arc::new(AnthropicMessagesBackend::new(
+                "anthropic",
+                &config.base_url,
+                &config.model,
+                api_key,
+            )))
+        }
+        CompletionKind::Openai => {
+            if config.base_url.is_empty() {
+                return Err("openai-compatible backend requires a base URL".into());
+            }
+            if config.model.is_empty() {
+                return Err("openai-compatible backend requires a model".into());
+            }
+            let api_key = config.api_key.clone().filter(|s| !s.is_empty());
+            Ok(Arc::new(HttpCompletionBackend::new(
+                "openai-compatible",
+                &config.base_url,
+                &config.model,
+                api_key,
+            )))
+        }
+    }
+}
+
+/// Precedence chain: persisted UI config wins, then env vars,
+/// then Echo. Runs once at startup and once on every reconfigure.
+fn select_backend(persisted: Option<&CompletionConfig>) -> Arc<dyn CompletionBackend> {
+    if let Some(cfg) = persisted {
+        match build_backend_from_config(cfg) {
+            Ok(arc) => {
+                log::info!(
+                    "assistant: completion backend from settings = {} ({} @ {})",
+                    cfg.kind.label(),
+                    if cfg.model.is_empty() { "-" } else { &cfg.model },
+                    if cfg.base_url.is_empty() { "-" } else { &cfg.base_url },
+                );
+                return arc;
+            }
+            Err(reason) => {
+                log::warn!(
+                    "assistant: persisted completion config invalid — {reason}; falling back to env / Echo"
+                );
+            }
+        }
+    }
+    Arc::from(select_backend_from_env())
 }
 
 /// Reads the four `RALLEH_COMPLETION_*` env vars and returns the
@@ -300,7 +411,7 @@ mod tests {
 
     #[test]
     fn with_defaults_registers_the_scaffold_echo_capability() {
-        let state = AssistantState::with_defaults();
+        let state = AssistantState::with_defaults(None);
         // Dispatch a benign call and prove it lands on `EchoHandler`
         // (not a policy denial, not "unknown capability"). The
         // handler summary is stable so pinning it here catches a
@@ -323,7 +434,7 @@ mod tests {
 
     #[test]
     fn begin_work_increments_and_drop_decrements_the_counter() {
-        let state = AssistantState::with_defaults();
+        let state = AssistantState::with_defaults(None);
         assert!(state.is_idle());
         assert_eq!(state.in_flight_count(), 0);
 
@@ -350,7 +461,7 @@ mod tests {
         // than the whole AssistantState. Confirm the two views agree
         // so a future refactor that swaps the counter type doesn't
         // silently split the observation surface.
-        let state = AssistantState::with_defaults();
+        let state = AssistantState::with_defaults(None);
         let handle = state.in_flight_handle();
         let _guard = state.begin_work();
         assert_eq!(handle.load(std::sync::atomic::Ordering::Acquire), 1);

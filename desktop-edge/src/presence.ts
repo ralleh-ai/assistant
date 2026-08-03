@@ -237,3 +237,111 @@ export const PALETTES: { id: PaletteId; label: string }[] = [
   { id: "ice", label: "Ice" },
   { id: "ember", label: "Ember" },
 ];
+
+// ---- Backend configuration surface --------------------------------
+//
+// Mirror of the Rust-side shapes in `settings.rs`. Keep the string
+// discriminants in sync with `CompletionKind`'s serde rename policy
+// (lowercase). Field names use camelCase to match `#[serde(rename_all
+// = "camelCase")]` on the Rust side.
+
+export type CompletionKind = "echo" | "openai" | "anthropic";
+
+/** Write-only sentinel over the API key. `keep` is the safe default
+ * so the frontend can never accidentally clear a stored key by
+ * omitting the field. */
+export type ApiKeyUpdate =
+  | { op: "keep" }
+  | { op: "clear" }
+  | { op: "set"; value: string };
+
+export type CompletionConfigUpdate = {
+  kind: CompletionKind;
+  baseUrl: string;
+  model: string;
+  apiKey: ApiKeyUpdate;
+};
+
+/** Redacted view of what's persisted -- `hasApiKey: true` means a
+ * key is stored, but the actual value never leaves the Rust side. */
+export type RedactedCompletionConfig = {
+  kind: CompletionKind;
+  baseUrl: string;
+  model: string;
+  hasApiKey: boolean;
+};
+
+export type BackendStatus = {
+  /** Name the router will attribute the next request to. Stable
+   * strings: `local-echo`, `openai-compatible`, `anthropic`. */
+  activeBackend: string;
+  /** Persisted UI-owned config, redacted. `null` means the operator
+   * has never opened the config UI; the shell is on env-var + Echo
+   * defaults. */
+  configured: RedactedCompletionConfig | null;
+};
+
+export type BackendTestResult = {
+  ok: boolean;
+  backend: string;
+  latencyMs: number | null;
+  sampleResponse: string | null;
+  error: string | null;
+};
+
+/**
+ * Snapshot the currently-active backend and the persisted UI config.
+ * Called on settings-panel mount and after every save.
+ */
+export function assistantBackendStatus(): Promise<BackendStatus> {
+  return invoke<BackendStatus>("assistant_backend_status");
+}
+
+/**
+ * Run a real "hello"-tier completion against the proposed config
+ * without touching the production router. Returns success, latency,
+ * and a short response preview so the UI can render a proper
+ * "connected: 320 ms" affordance.
+ */
+export function assistantTestBackend(
+  config: CompletionConfigUpdate,
+): Promise<BackendTestResult> {
+  return invoke<BackendTestResult>("assistant_test_backend", { config });
+}
+
+/**
+ * Persist the proposed config and hot-swap the router to use it.
+ * Pass `null` to clear the persisted config -- the router falls
+ * back to whatever `RALLEH_COMPLETION_*` env vars are set, and Echo
+ * beyond that.
+ */
+export function assistantSaveBackend(
+  config: CompletionConfigUpdate | null,
+): Promise<BackendStatus> {
+  return invoke<BackendStatus>("assistant_save_backend", { config });
+}
+
+/** UI helper: the list of supported providers with their labels
+ * and a short human-readable hint. Kept next to the wire type so a
+ * new provider is a two-file change (this + Rust). */
+export const COMPLETION_KINDS: {
+  id: CompletionKind;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    id: "echo",
+    label: "Echo (local test)",
+    hint: "No network. Response is `echo: <prompt>`. Safe default.",
+  },
+  {
+    id: "openai",
+    label: "OpenAI-compatible",
+    hint: "OpenAI, Ollama, LM Studio, vLLM — anything speaking /chat/completions.",
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    hint: "Claude via the messages API. Requires an API key.",
+  },
+];
