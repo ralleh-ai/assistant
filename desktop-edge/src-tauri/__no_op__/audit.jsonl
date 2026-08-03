@@ -1,2 +1,0 @@
-{"timestamp":"2026-08-03T03:50:08.176Z","kind":"egress-allow","outcome":"allow","tenant":"acme","device":"desk-1","actor":"rico","subject":"openai@api.openai.com","detail":null}
-{"timestamp":"2026-08-03T03:50:20.622Z","kind":"egress-allow","outcome":"allow","tenant":"acme","device":"desk-1","actor":"rico","subject":"openai@api.openai.com","detail":null}
