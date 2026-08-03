@@ -167,9 +167,14 @@ See [`PRESENCE_VISUAL_ENTITY.md`](./PRESENCE_VISUAL_ENTITY.md),
        pulse via a shared `pulse_mode` helper; no async runtime
        needed.
 
-10. **Phase 4 — hardening and options** (in progress):
-    - 60 FPS budget confirmation on representative hardware (Phase 1's
-      2-core measurement is a floor, not a target-machine test).
+10. **Phase 4 — hardening and options** (complete):
+    - ~~60 FPS budget confirmation on representative hardware.~~
+      **landed (2026-08-02)** — steady 200 FPS at 2560×1600 with
+      the 80k idle / 40k loading budget on target hardware,
+      well above the 60 FPS floor across every state exercised.
+      Recorded in `PRESENCE_VISUAL_ENTITY.md` §9 alongside the
+      2-core dev-machine measurement (which stays as the floor
+      reference).
     - ~~OS-level reduced-motion preference honored automatically
       alongside the runtime toggle.~~ **landed (2026-08-02)** —
       `App.tsx` subscribes to

@@ -618,6 +618,11 @@ dense volume reads as countable dots on a skin. The prototype measures
 release build on **2 cores**: ~150-178 FPS at idle, and ~109-171 across
 `thinking`, `speaking`, `tool_use`, and `thinking + tool_use` together — a
 comfortable margin over 60 FPS in every state, with no GPU compute path.
+Target-hardware confirmation (2026-08-02) held a steady 200 FPS at the
+same budget and resolution, closing Phase 4 §1 of
+`PRESENCE_INTEGRATION_PLAN.md` — the 2-core dev-machine numbers above
+are the floor, not the ceiling, and target hardware sits well above the
+60 FPS target for every state we exercised.
 The cost driver is the CPU-side noise evaluation, not the draw; see
 `presence-prototype/README.md` for what bought that headroom and for why
 `speaking` is the most expensive state despite being the smallest term.

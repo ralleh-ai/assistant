@@ -6,13 +6,15 @@
 `audio_level` scalar pump, §3.4 sparse `attention` pulses + opt-in
 scan sweep, §3.5 policy denials → `error`. Every presence mode has
 a real work source and every scalar has a real driver. **Phase 4
-in progress** — OS `prefers-reduced-motion` auto-detection, aria-
+complete** — OS `prefers-reduced-motion` auto-detection, aria-
 live text status line for accessibility, rapid-state-change stress
-test, and entity-kind extension docs all landed. Remaining Phase 4
-item is target-hardware 60 FPS budget confirmation. **First
-product surface landed** — minimal `Conversation` component on
-`Core` wired to `assistant_think`; router → presence loop now
-demoable end-to-end from a user prompt.)
+test, entity-kind extension docs, and target-hardware FPS
+confirmation (steady 200 FPS at 2560×1600, well above the 60 FPS
+floor) all landed. **First product surface + streaming
+completions landed** — `Conversation` component wired to
+`assistant_think_stream` with a growing partial bubble; router
+selects a real backend (Anthropic / OpenAI-compatible / Echo) via
+`RALLEH_COMPLETION_*` env vars.)
 
 ## Build/test state
 
