@@ -65,7 +65,16 @@ CLI/tests — not on the core home screen.
   servers often accept unauthenticated calls), required for
   `anthropic`. A misconfigured non-echo kind (e.g. anthropic
   without a key) falls back to Echo with a warning; the shell
-  always starts.
+  always starts. Keys set through the in-app Backend settings
+  panel are stored in the **OS keychain** (Windows Credential
+  Manager, macOS Keychain, or the Linux Secret Service) — never
+  in the cleartext `edge-settings.json`. On a host without a
+  working keychain the panel surfaces a **Cleartext on disk**
+  badge so the operator is never misled about where the secret
+  lives. An older settings file with a cleartext key is
+  migrated into the keychain on first startup (best-effort;
+  leaves the cleartext copy in place only if the keychain is
+  unavailable).
 - `RALLEH_SKIP_LIVE_AUDIO` — set to any value to force the mic
   and speaker sinks to soft-skip (return `None` from
   `try_open_default`). Useful for headless dev on hosts with

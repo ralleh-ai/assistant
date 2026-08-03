@@ -6,6 +6,7 @@ import {
   COMPLETION_KINDS,
   CompletionConfigUpdate,
   CompletionKind,
+  SecretStorage,
   assistantBackendStatus,
   assistantSaveBackend,
   assistantTestBackend,
@@ -286,6 +287,11 @@ export function BackendSettings() {
               <ApiKeyField
                 mode={form.apiKey}
                 required={form.kind === "anthropic"}
+                storage={
+                  status?.configured?.kind === form.kind
+                    ? status.configured.storage
+                    : "none"
+                }
                 onChange={(mode) => setForm((f) => ({ ...f, apiKey: mode }))}
               />
             </div>
@@ -437,10 +443,12 @@ function LabeledInput({
 function ApiKeyField({
   mode,
   required,
+  storage,
   onChange,
 }: {
   mode: ApiKeyInputMode;
   required: boolean;
+  storage: SecretStorage;
   onChange: (m: ApiKeyInputMode) => void;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -461,7 +469,7 @@ function ApiKeyField({
           <span className="backend-api-key-mask" aria-label="API key stored">
             ••••••••••••
           </span>
-          <span className="backend-api-key-status">Stored on this device</span>
+          <StorageBadge storage={storage} />
           <button
             type="button"
             className="backend-btn backend-btn-inline"
@@ -522,9 +530,44 @@ function ApiKeyField({
         <p className="backend-field-hint">This provider doesn't use an API key.</p>
       )}
       <p className="backend-field-hint">
-        Keys are stored locally on this device. Never sent back to the UI.
+        {storage === "keychain"
+          ? "Keys are stored in your OS keychain and never sent back to the UI."
+          : storage === "cleartext"
+          ? "No OS keychain is available on this host — keys are stored in a local settings file."
+          : "Keys never leave this device. When stored, they go into your OS keychain."}
       </p>
     </div>
+  );
+}
+
+/** Small badge under the masked key showing which store the secret
+ * actually lives in. Rendering an honest signal here is the whole
+ * point of the keychain migration -- it's how the operator learns
+ * that their macOS Keychain / Windows Credential Manager is doing
+ * its job, or that a headless host has fallen back to cleartext. */
+function StorageBadge({ storage }: { storage: SecretStorage }) {
+  if (storage === "keychain") {
+    return (
+      <span
+        className="backend-api-key-status backend-storage-badge backend-storage-badge-ok"
+        title="This API key is stored in the OS keychain (Windows Credential Manager, macOS Keychain, or Linux Secret Service)."
+      >
+        <span aria-hidden="true">🔒</span> Stored in OS keychain
+      </span>
+    );
+  }
+  if (storage === "cleartext") {
+    return (
+      <span
+        className="backend-api-key-status backend-storage-badge backend-storage-badge-warn"
+        title="No OS keychain is available on this host, so the key was written to edge-settings.json in cleartext. Configure a system keychain to store it securely."
+      >
+        <span aria-hidden="true">⚠</span> Cleartext on disk
+      </span>
+    );
+  }
+  return (
+    <span className="backend-api-key-status">Not stored yet</span>
   );
 }
 

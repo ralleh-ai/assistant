@@ -33,6 +33,16 @@ ralleh-tool-gateway = { path = "../../crates/ralleh-tool-gateway" }
 # root workspace's `crates/`.
 presence-ipc = { path = "../../crates/presence-ipc" }
 log = "0.4"
+# OS-native secret storage: Windows Credential Manager, macOS
+# Keychain, Linux Secret Service (GNOME Keyring / KWallet). We keep
+# API keys out of the cleartext `edge-settings.json` on any host
+# that has a working keychain, and fall back to `NullStore` (which
+# just refuses writes) elsewhere. `apple-native` + `windows-native`
+# + `sync-secret-service` cover the three desktop targets without
+# pulling the async runtimes some other backends require. Version
+# pinned to the 3.x line — 4.x is a breaking API rework, revisit
+# when the ecosystem catches up.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 [features]
 default = ["mic", "playback"]

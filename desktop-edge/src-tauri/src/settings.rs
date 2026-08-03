@@ -9,6 +9,8 @@ use tauri::{AppHandle, Manager};
 
 use presence_ipc::{PaletteId, QualityTier};
 
+use crate::secret_store::{SecretStorage, SecretStore};
+
 const VOICE_STYLES: &[&str] = &["calm", "direct", "warm"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,11 +54,13 @@ pub struct EdgeSettings {
     /// Completion backend configuration owned by the settings UI.
     /// `None` means "follow the `RALLEH_COMPLETION_*` env vars"
     /// (the pre-UI operator config path); `Some` overrides them
-    /// entirely. The `api_key` inside is stored in cleartext on
-    /// disk under the OS user's config dir — future work moves it
-    /// to the OS keychain (Windows Credential Manager, macOS
-    /// Keychain, Linux Secret Service), at which point this field
-    /// becomes a reference rather than the key itself.
+    /// entirely. As of the OS keychain migration the `api_key`
+    /// field is always `None` on disk after first successful
+    /// write; the actual secret lives in
+    /// [`crate::secret_store::SecretStore`]. The field is kept on
+    /// the wire so pre-migration settings files still load and
+    /// can be migrated in-place — see
+    /// [`migrate_completion_secret`].
     #[serde(default)]
     pub completion: Option<CompletionConfig>,
 }
@@ -88,7 +92,7 @@ pub struct CompletionConfig {
 /// the always-safe fallback; `Openai` covers OpenAI and every
 /// clone that speaks its `/chat/completions` shape; `Anthropic`
 /// speaks the messages API directly.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum CompletionKind {
     #[default]
@@ -207,11 +211,21 @@ pub fn settings_path_display(app: &AppHandle) -> Result<String, String> {
 }
 
 /// Frontend-facing shape of a completion config: identical to
-/// `CompletionConfig` except the api_key is replaced by a boolean.
-/// This is the ONLY shape that ever leaves the Rust side toward the
-/// webview — we never want to hand a raw key back over the IPC
-/// bridge. `From<&CompletionConfig>` is the canonical construction
-/// path so future fields can't accidentally leak the key.
+/// `CompletionConfig` except the api_key is replaced by a boolean
+/// and a storage-backend signal is added. This is the ONLY shape
+/// that ever leaves the Rust side toward the webview — we never
+/// want to hand a raw key back over the IPC bridge.
+///
+/// `storage` tells the UI whether the key lives in the OS keychain
+/// (`Keychain`), was written to `edge-settings.json` in cleartext
+/// because no keychain was available (`Cleartext`), or nothing is
+/// stored yet (`None`). The settings UI renders an honest badge
+/// off this signal — no more pretending everything's secure when
+/// it isn't.
+///
+/// Build it via [`RedactedCompletionConfig::from_config_and_store`]
+/// so `has_api_key` is always sourced from the authoritative
+/// store, not from a stale on-disk copy.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RedactedCompletionConfig {
@@ -219,15 +233,40 @@ pub struct RedactedCompletionConfig {
     pub base_url: String,
     pub model: String,
     pub has_api_key: bool,
+    pub storage: SecretStorage,
 }
 
-impl From<&CompletionConfig> for RedactedCompletionConfig {
-    fn from(c: &CompletionConfig) -> Self {
+impl RedactedCompletionConfig {
+    /// Build a redacted view of `cfg` where `has_api_key` is
+    /// sourced from `store` (the authoritative location for the
+    /// secret) and falls back to the cleartext `api_key` field
+    /// only for pre-migration configs. `storage` reflects where
+    /// the key actually lives:
+    /// - `Keychain` when the store returned a value.
+    /// - `Cleartext` when only the on-disk copy still has one
+    ///   (i.e. the migration hasn't run or the store rejected the
+    ///   write).
+    /// - `None` when neither location has a key.
+    pub fn from_config_and_store(cfg: &CompletionConfig, store: &dyn SecretStore) -> Self {
+        let in_store = store
+            .read(cfg.kind)
+            .ok()
+            .flatten()
+            .is_some_and(|s| !s.is_empty());
+        let in_cleartext = cfg.api_key.as_ref().is_some_and(|s| !s.is_empty());
+        let storage = if in_store {
+            SecretStorage::Keychain
+        } else if in_cleartext {
+            SecretStorage::Cleartext
+        } else {
+            SecretStorage::None
+        };
         Self {
-            kind: c.kind,
-            base_url: c.base_url.clone(),
-            model: c.model.clone(),
-            has_api_key: c.api_key.as_ref().is_some_and(|s| !s.is_empty()),
+            kind: cfg.kind,
+            base_url: cfg.base_url.clone(),
+            model: cfg.model.clone(),
+            has_api_key: in_store || in_cleartext,
+            storage,
         }
     }
 }
@@ -287,12 +326,19 @@ fn default_keep_key() -> ApiKeyUpdate {
 }
 
 impl CompletionConfigUpdate {
-    /// Fold this update into an existing `Option<CompletionConfig>`
-    /// and produce the new one to persist. Validates that non-echo
-    /// kinds carry a non-empty `base_url` and `model`, since those
-    /// are unrecoverable at request time -- better to reject at
-    /// save so the settings UI can surface the error inline.
-    pub fn into_config(self, existing: Option<&CompletionConfig>) -> Result<CompletionConfig, String> {
+    /// Validate the update's non-secret fields and fold in an
+    /// existing secret. Called from both the save path (where
+    /// `existing_secret` comes from the [`SecretStore`]) and the
+    /// live-test path (where the same lookup provides the current
+    /// key for `Keep` requests). The returned `CompletionConfig`
+    /// carries the resolved `api_key` inline — callers who intend
+    /// to persist to disk MUST strip it via
+    /// [`CompletionConfig::without_secret`] before writing, and
+    /// route the raw key through a `SecretStore::write`.
+    pub fn into_config_with_secret(
+        self,
+        existing_secret: Option<String>,
+    ) -> Result<CompletionConfig, String> {
         let base_url = self.base_url.trim().to_string();
         let model = self.model.trim().to_string();
         if !matches!(self.kind, CompletionKind::Echo) {
@@ -315,7 +361,7 @@ impl CompletionConfigUpdate {
                 ));
             }
         }
-        let api_key = self.api_key.apply(existing.and_then(|c| c.api_key.clone()));
+        let api_key = self.api_key.apply(existing_secret);
         // Anthropic without a key is a config error the request
         // path would silently drop to Echo -- catch it here so the
         // UI can prompt for a key rather than the user staring at
@@ -332,28 +378,153 @@ impl CompletionConfigUpdate {
             api_key,
         })
     }
+
+    /// Convenience for callers that already have an
+    /// `Option<CompletionConfig>` on hand (pre-store callers and
+    /// tests). Prefer `into_config_with_secret` in production code
+    /// so the secret source is explicit.
+    #[cfg(test)]
+    pub fn into_config(
+        self,
+        existing: Option<&CompletionConfig>,
+    ) -> Result<CompletionConfig, String> {
+        self.into_config_with_secret(existing.and_then(|c| c.api_key.clone()))
+    }
 }
 
-/// Update or clear the persisted completion config in-place,
-/// preserving every other field of `EdgeSettings`. Called by the
-/// `assistant_save_backend` Tauri command; kept in this module so
-/// the file I/O + validation logic lives next to the schema.
+impl CompletionConfig {
+    /// Return a copy with `api_key` cleared. Callers use this to
+    /// build the disk-safe representation while keeping the
+    /// resolved config for in-memory use (backend construction,
+    /// live tests, etc.).
+    pub fn without_secret(&self) -> Self {
+        Self {
+            kind: self.kind,
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            api_key: None,
+        }
+    }
+
+    /// Fill in `api_key` from `store` if it's currently `None`.
+    /// Returns a resolved config suitable for backend construction.
+    /// Pre-migration configs (with a cleartext `api_key`) pass
+    /// through unchanged — the migration path handles the transfer
+    /// to the store separately.
+    pub fn resolve_with_store(&self, store: &dyn SecretStore) -> Self {
+        if self.api_key.as_ref().is_some_and(|s| !s.is_empty()) {
+            return self.clone();
+        }
+        let mut resolved = self.clone();
+        resolved.api_key = store.read(self.kind).ok().flatten();
+        resolved
+    }
+}
+
+/// Persist a completion-config update. Routes the API key through
+/// `store` (the OS keychain when available) and writes only the
+/// non-secret fields to `edge-settings.json`. The returned
+/// `EdgeSettings` has `completion.api_key = None` — callers that
+/// need the key for immediate use should call
+/// `resolve_with_store` on the returned config.
+///
+/// Failure modes:
+/// - `store.write` fails (no keychain available, permission
+///   denied): returns the error unchanged so the UI can surface
+///   it. Disk is NOT touched in this case, so the existing
+///   configuration remains intact.
+/// - JSON write fails: keychain write may have already succeeded.
+///   The next successful save will overwrite the store; in the
+///   meantime the key is orphaned but not leaked.
 pub fn write_completion_config(
     app: &AppHandle,
+    store: &dyn SecretStore,
     update: Option<CompletionConfigUpdate>,
 ) -> Result<EdgeSettings, String> {
     let mut current = load_settings(app)?;
     match update {
-        None => current.completion = None,
+        None => {
+            // Clearing the whole config also clears any secret we
+            // stored for its current kind. Other kinds' keys stay
+            // put so an operator can experiment without losing
+            // configured providers.
+            if let Some(cfg) = &current.completion {
+                let _ = store.clear(cfg.kind);
+            }
+            current.completion = None;
+        }
         Some(u) => {
-            let merged = u.into_config(current.completion.as_ref())?;
-            current.completion = Some(merged);
+            let existing_secret = store.read(u.kind).ok().flatten();
+            let kind = u.kind;
+            let api_key_update = u.api_key.clone();
+            let resolved = u.into_config_with_secret(existing_secret)?;
+            // Persist the secret first: on failure we bail before
+            // touching disk, so the on-disk config still points at
+            // a valid stored key.
+            match api_key_update {
+                ApiKeyUpdate::Keep => { /* store already correct */ }
+                ApiKeyUpdate::Clear => {
+                    store.clear(kind)?;
+                }
+                ApiKeyUpdate::Set { value } if value.is_empty() => {
+                    store.clear(kind)?;
+                }
+                ApiKeyUpdate::Set { value } => {
+                    store.write(kind, &value)?;
+                }
+            }
+            current.completion = Some(resolved.without_secret());
         }
     }
     let path = settings_file(app)?;
     let raw = serde_json::to_string_pretty(&current).map_err(|e| e.to_string())?;
     fs::write(&path, raw).map_err(|e| format!("write settings: {e}"))?;
     Ok(current)
+}
+
+/// One-shot migration of a cleartext key from disk into `store`.
+/// Called during startup right after `load_settings`; a no-op when
+/// there's no cleartext key or the store rejects the write. On
+/// success the on-disk copy is cleared and `edge-settings.json` is
+/// rewritten — subsequent boots see only the keychain-stored key.
+///
+/// Returns `Ok(true)` if a migration happened, `Ok(false)` if
+/// nothing needed to move, and `Err(_)` if the disk rewrite failed
+/// after a successful keychain write (rare, but recoverable — the
+/// key is safely in the keychain, the next save will clean up).
+pub fn migrate_completion_secret(
+    app: &AppHandle,
+    store: &dyn SecretStore,
+    settings: &mut EdgeSettings,
+) -> Result<bool, String> {
+    let Some(cfg) = settings.completion.as_mut() else {
+        return Ok(false);
+    };
+    let Some(cleartext) = cfg.api_key.take_if(|s| !s.is_empty()) else {
+        // No cleartext key — either nothing to migrate, or it's
+        // an empty string we may as well drop. `take_if` already
+        // handled the empty case; put back any leftover None.
+        return Ok(false);
+    };
+    match store.write(cfg.kind, &cleartext) {
+        Ok(()) => {
+            // Successfully in the store; the taken `api_key` is
+            // already None on `cfg`. Persist the cleared form so
+            // no one else ever sees the cleartext again.
+            let path = settings_file(app)?;
+            let raw = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+            fs::write(&path, raw).map_err(|e| format!("write settings: {e}"))?;
+            Ok(true)
+        }
+        Err(e) => {
+            // Store rejected the write (no keychain available).
+            // Put the cleartext key back so the shell keeps
+            // functioning; the UI's storage badge will surface the
+            // insecure fallback to the operator.
+            cfg.api_key = Some(cleartext);
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -435,15 +606,19 @@ mod tests {
 
     // ---- Completion config ----------------------------------------
 
+    use crate::secret_store::{InMemorySecretStore, NullStore};
+
     #[test]
-    fn redacted_completion_config_never_exposes_the_key() {
+    fn redacted_completion_config_never_exposes_the_key_from_store() {
         let full = CompletionConfig {
             kind: CompletionKind::Anthropic,
             base_url: "https://api.anthropic.com".into(),
             model: "claude-3-5-sonnet-latest".into(),
-            api_key: Some("sk-ant-secret-123".into()),
+            api_key: None,
         };
-        let redacted = RedactedCompletionConfig::from(&full);
+        let store =
+            InMemorySecretStore::with_entry(CompletionKind::Anthropic, "sk-ant-secret-123");
+        let redacted = RedactedCompletionConfig::from_config_and_store(&full, &store);
         let serialized = serde_json::to_string(&redacted).unwrap();
         assert!(
             !serialized.contains("sk-ant-secret-123"),
@@ -452,6 +627,10 @@ mod tests {
         assert!(
             serialized.contains("\"hasApiKey\":true"),
             "expected hasApiKey signal, got {serialized}"
+        );
+        assert!(
+            serialized.contains("\"storage\":\"keychain\""),
+            "expected keychain storage badge, got {serialized}"
         );
     }
 
@@ -463,8 +642,94 @@ mod tests {
             model: "llama3.2:latest".into(),
             api_key: Some(String::new()),
         };
-        let redacted = RedactedCompletionConfig::from(&full);
+        let store = InMemorySecretStore::new();
+        let redacted = RedactedCompletionConfig::from_config_and_store(&full, &store);
         assert!(!redacted.has_api_key);
+        assert_eq!(redacted.storage, SecretStorage::None);
+    }
+
+    #[test]
+    fn redacted_completion_config_reports_cleartext_when_store_empty_but_disk_has_key() {
+        // Pre-migration state: key still lives in the JSON.
+        let full = CompletionConfig {
+            kind: CompletionKind::Openai,
+            base_url: "http://localhost:11434/v1".into(),
+            model: "llama3.2".into(),
+            api_key: Some("old-cleartext".into()),
+        };
+        let store = InMemorySecretStore::new();
+        let redacted = RedactedCompletionConfig::from_config_and_store(&full, &store);
+        assert!(redacted.has_api_key);
+        assert_eq!(redacted.storage, SecretStorage::Cleartext);
+    }
+
+    #[test]
+    fn resolve_with_store_prefers_stored_secret_when_disk_is_none() {
+        let cfg = CompletionConfig {
+            kind: CompletionKind::Openai,
+            base_url: "http://localhost:11434/v1".into(),
+            model: "llama3.2".into(),
+            api_key: None,
+        };
+        let store = InMemorySecretStore::with_entry(CompletionKind::Openai, "sk-live");
+        let resolved = cfg.resolve_with_store(&store);
+        assert_eq!(resolved.api_key.as_deref(), Some("sk-live"));
+    }
+
+    #[test]
+    fn resolve_with_store_preserves_cleartext_when_present() {
+        // Pre-migration: we shouldn't clobber a still-on-disk key
+        // with a (probably empty) store lookup.
+        let cfg = CompletionConfig {
+            kind: CompletionKind::Openai,
+            base_url: "http://localhost:11434/v1".into(),
+            model: "llama3.2".into(),
+            api_key: Some("still-on-disk".into()),
+        };
+        let store = InMemorySecretStore::new();
+        let resolved = cfg.resolve_with_store(&store);
+        assert_eq!(resolved.api_key.as_deref(), Some("still-on-disk"));
+    }
+
+    #[test]
+    fn without_secret_produces_a_disk_safe_copy() {
+        let cfg = CompletionConfig {
+            kind: CompletionKind::Anthropic,
+            base_url: "https://api.anthropic.com".into(),
+            model: "claude".into(),
+            api_key: Some("sk-ant".into()),
+        };
+        let sanitized = cfg.without_secret();
+        assert_eq!(sanitized.api_key, None);
+        let serialized = serde_json::to_string(&sanitized).unwrap();
+        assert!(
+            !serialized.contains("sk-ant"),
+            "without_secret leaked the api_key on disk: {serialized}"
+        );
+    }
+
+    #[test]
+    fn null_store_write_path_rejects_secrets_cleanly() {
+        // Sanity check the surface: on a host without a keychain
+        // the store surfaces an error the UI can display. The
+        // *migration* path handles this differently (keeps
+        // cleartext); this covers the save-new-key path.
+        let store = NullStore;
+        let update = CompletionConfigUpdate {
+            kind: CompletionKind::Openai,
+            base_url: "http://localhost:11434/v1".into(),
+            model: "llama3.2".into(),
+            api_key: ApiKeyUpdate::Set {
+                value: "sk-new".into(),
+            },
+        };
+        // `into_config_with_secret` itself doesn't touch the
+        // store — it's a pure validation function. The store
+        // write happens in `write_completion_config` which needs
+        // a real AppHandle we don't have in unit tests. Exercise
+        // the store surface directly instead:
+        let err = store.write(update.kind, "sk-new").unwrap_err();
+        assert!(err.to_lowercase().contains("keychain"), "{err}");
     }
 
     #[test]

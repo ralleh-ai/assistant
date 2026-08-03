@@ -10,6 +10,7 @@ mod os_caps;
 mod presence;
 mod presence_mic;
 mod presence_speaking;
+mod secret_store;
 mod settings;
 
 use std::sync::Mutex;
@@ -34,9 +35,10 @@ use ralleh_audio_core::{
 };
 #[cfg(feature = "playback")]
 use ralleh_audio_core::CpalPlaybackSink;
+use secret_store::open_default as open_default_secret_store;
 use settings::{
-    load_settings, save_settings, settings_path_display, write_completion_config,
-    CompletionConfigUpdate, EdgeSettings, RedactedCompletionConfig,
+    load_settings, migrate_completion_secret, save_settings, settings_path_display,
+    write_completion_config, CompletionConfigUpdate, EdgeSettings, RedactedCompletionConfig,
 };
 
 const EDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -624,9 +626,13 @@ fn assistant_backend_status(
     state: State<'_, AssistantState>,
 ) -> Result<BackendStatus, String> {
     let settings = load_settings(&app)?;
+    let store = open_default_secret_store();
     Ok(BackendStatus {
         active_backend: state.current_backend_name(),
-        configured: settings.completion.as_ref().map(RedactedCompletionConfig::from),
+        configured: settings
+            .completion
+            .as_ref()
+            .map(|c| RedactedCompletionConfig::from_config_and_store(c, store.as_ref())),
     })
 }
 
@@ -655,13 +661,21 @@ async fn assistant_test_backend(
     app: AppHandle,
     config: CompletionConfigUpdate,
 ) -> Result<BackendTestResult, String> {
-    // Fold the update against the current on-disk config so
-    // `api_key: Keep` resolves to the actually-persisted key --
-    // otherwise the "test" button would fail when the user is
-    // editing a model without re-entering the key.
-    let existing = load_settings(&app).ok().and_then(|s| s.completion);
+    // Fold the update against whatever secret is currently stored
+    // so `api_key: Keep` resolves to the real key -- otherwise
+    // "test" would fail whenever the user edits a model without
+    // re-entering the key. The store is the authoritative source;
+    // any leftover cleartext key on disk is a strict pre-migration
+    // fallback.
+    let store = open_default_secret_store();
+    let disk = load_settings(&app).ok().and_then(|s| s.completion);
+    let existing_secret = store.read(config.kind).ok().flatten().or_else(|| {
+        disk.as_ref()
+            .and_then(|c| c.api_key.clone())
+            .filter(|s| !s.is_empty())
+    });
     let kind_label = config.kind.label().to_string();
-    let cfg = match config.into_config(existing.as_ref()) {
+    let cfg = match config.into_config_with_secret(existing_secret) {
         Ok(c) => c,
         Err(reason) => {
             // Surface validation errors as a "test failed" result
@@ -758,9 +772,16 @@ fn assistant_save_backend(
     state: State<'_, AssistantState>,
     config: Option<CompletionConfigUpdate>,
 ) -> Result<BackendStatus, String> {
-    let settings = write_completion_config(&app, config)?;
+    let store = open_default_secret_store();
+    let settings = write_completion_config(&app, store.as_ref(), config)?;
     let active_backend = match settings.completion.as_ref() {
-        Some(cfg) => state.reconfigure(cfg),
+        Some(cfg) => {
+            // Backend construction needs the raw key -- resolve it
+            // from the store (post-save, this is authoritative) and
+            // hand the resolved config to the router.
+            let resolved = cfg.resolve_with_store(store.as_ref());
+            state.reconfigure(&resolved)
+        }
         None => {
             // Cleared: restart from env priority. We do NOT restart
             // the whole AssistantState -- swapping the backend
@@ -776,7 +797,10 @@ fn assistant_save_backend(
     };
     Ok(BackendStatus {
         active_backend,
-        configured: settings.completion.as_ref().map(RedactedCompletionConfig::from),
+        configured: settings
+            .completion
+            .as_ref()
+            .map(|c| RedactedCompletionConfig::from_config_and_store(c, store.as_ref())),
     })
 }
 
@@ -1029,10 +1053,29 @@ pub fn run() {
             // `settings.completion` is `None`, so an operator can
             // still drop-in override with `RALLEH_COMPLETION_*` on
             // a first-launch shell.
-            if let Ok(settings) = load_settings(&handle) {
+            if let Ok(mut settings) = load_settings(&handle) {
+                let store = open_default_secret_store();
+                // One-shot migration: any cleartext api_key still on
+                // disk from an older shell version is transferred
+                // into the OS keychain (when available) and cleared
+                // from the JSON. Best-effort — on a host without a
+                // keychain the fallback path keeps working with the
+                // cleartext copy, and the UI surfaces the insecure
+                // storage via the `storage` field.
+                match migrate_completion_secret(&handle, store.as_ref(), &mut settings) {
+                    Ok(true) => log::info!(
+                        "assistant: migrated cleartext API key to OS keychain"
+                    ),
+                    Ok(false) => {}
+                    Err(e) => log::warn!(
+                        "assistant: keychain migration deferred ({e}); \
+                         continuing with cleartext key on disk"
+                    ),
+                }
                 if let Some(cfg) = settings.completion.as_ref() {
+                    let resolved = cfg.resolve_with_store(store.as_ref());
                     let state: tauri::State<'_, AssistantState> = app.state();
-                    let name = state.reconfigure(cfg);
+                    let name = state.reconfigure(&resolved);
                     log::info!("assistant: startup reconfigure → {name}");
                 }
             }

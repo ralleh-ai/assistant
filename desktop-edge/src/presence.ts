@@ -262,13 +262,23 @@ export type CompletionConfigUpdate = {
   apiKey: ApiKeyUpdate;
 };
 
+/** Where the API key actually lives. `keychain` = OS-native secure
+ * store (Windows Credential Manager, macOS Keychain, Linux Secret
+ * Service). `cleartext` = fallback to `edge-settings.json` because
+ * no keychain was available on this host — the UI should render a
+ * visible warning. `none` = nothing stored yet (distinct from an
+ * insecure fallback so we don't scare-warn a first-time operator). */
+export type SecretStorage = "keychain" | "cleartext" | "none";
+
 /** Redacted view of what's persisted -- `hasApiKey: true` means a
- * key is stored, but the actual value never leaves the Rust side. */
+ * key is stored, but the actual value never leaves the Rust side.
+ * `storage` tells the UI which backing store the key lives in. */
 export type RedactedCompletionConfig = {
   kind: CompletionKind;
   baseUrl: string;
   model: string;
   hasApiKey: boolean;
+  storage: SecretStorage;
 };
 
 export type BackendStatus = {

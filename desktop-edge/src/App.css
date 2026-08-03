@@ -1262,6 +1262,36 @@ body {
   opacity: 0.95;
 }
 
+/* Storage-provenance badge under the masked key. Renders next to
+ * the dots so the operator sees at a glance whether the OS
+ * keychain accepted the key or whether we fell back to cleartext.
+ * Colours track the existing status palette so the surface stays
+ * coherent with the rest of the settings UI. */
+.backend-storage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  font-weight: 500;
+  opacity: 1;
+  border: 1px solid transparent;
+}
+
+.backend-storage-badge-ok {
+  color: var(--teal, #4fd1c5);
+  background: color-mix(in srgb, var(--teal, #4fd1c5) 14%, transparent);
+  border-color: color-mix(in srgb, var(--teal, #4fd1c5) 40%, transparent);
+}
+
+.backend-storage-badge-warn {
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+}
+
 .backend-api-key-input .backend-field-input {
   flex: 1 1 260px;
   min-width: 0;
