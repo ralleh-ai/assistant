@@ -79,6 +79,23 @@ pub struct App {
     /// `MOVE_EMIT_INTERVAL` to rate-limit the drag stream to
     /// something a settings writer can keep up with.
     last_move_emit: Instant,
+    /// Runtime process start. Feeds `uptime_ms` on every emitted
+    /// [`Event::Heartbeat`] so the shell (and the audit log) can
+    /// correlate stalls with startup phase or long-lived process
+    /// health.
+    started_at: Instant,
+    /// Monotonically-increasing counter attached to each heartbeat.
+    /// A gap in the sequence tells the shell the runtime restarted
+    /// itself internally (a future panic-recovery path may do this);
+    /// today it's an ever-increasing tally.
+    heartbeat_sequence: u64,
+    /// Wall-clock of the last heartbeat we emitted. Combined with
+    /// [`presence_ipc::HEARTBEAT_INTERVAL_MS`] to fire the next one
+    /// on schedule from the redraw loop — no dedicated timer thread
+    /// needed, and the emit is skipped cleanly when the runtime is
+    /// paused (window minimized, backgrounded on macOS, etc.),
+    /// which the shell reads as "runtime intentionally quiet".
+    last_heartbeat_emit: Instant,
 }
 
 /// Smoothed FPS at or below this figure counts as under-budget.
@@ -164,7 +181,31 @@ impl App {
             ipc_events: crate::ipc_stdout::EventSink::spawn_if_enabled(),
             last_reported_position: None,
             last_move_emit: Instant::now(),
+            started_at: Instant::now(),
+            heartbeat_sequence: 0,
+            last_heartbeat_emit: Instant::now(),
         }
+    }
+
+    /// Emit a [`presence_ipc::Event::Heartbeat`] if the cadence
+    /// interval has elapsed since the last one. Called from the
+    /// redraw loop so the runtime's own "am I painting frames?"
+    /// state is what drives the beat — a wedged event loop stops
+    /// beating on its own, which is exactly the failure mode the
+    /// shell's stall detector was built for.
+    fn maybe_emit_heartbeat(&mut self) {
+        let now = Instant::now();
+        let elapsed_ms = now.duration_since(self.last_heartbeat_emit).as_millis() as u64;
+        if elapsed_ms < presence_ipc::HEARTBEAT_INTERVAL_MS {
+            return;
+        }
+        self.last_heartbeat_emit = now;
+        let uptime_ms = now.duration_since(self.started_at).as_millis() as u64;
+        self.ipc_events.send(presence_ipc::Event::Heartbeat {
+            sequence: self.heartbeat_sequence,
+            uptime_ms,
+        });
+        self.heartbeat_sequence = self.heartbeat_sequence.saturating_add(1);
     }
 
     /// Drains everything the stdin transport has queued since the last
@@ -241,6 +282,11 @@ impl App {
         self.apply_pending_palette();
         self.apply_pending_position();
         self.apply_pending_hittest();
+        // Heartbeat before the frame goes out. A wedged renderer stops
+        // reaching this line, and the shell's stall detector picks it
+        // up — the interval-gate inside makes this cheap in the
+        // happy case (a compare and return, no I/O).
+        self.maybe_emit_heartbeat();
 
         let Some(live) = &mut self.live else { return };
 

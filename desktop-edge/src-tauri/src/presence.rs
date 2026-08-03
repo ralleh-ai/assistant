@@ -39,6 +39,7 @@ use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use presence_ipc::{Command, Envelope, Event, EventEnvelope, PresenceMode};
 
@@ -55,6 +56,90 @@ use presence_ipc::{Command, Envelope, Event, EventEnvelope, PresenceMode};
 /// `HashSet::insert`/`remove` — a spinny `RwLock` would cost more
 /// than it saves.
 type ModeSet = Arc<Mutex<HashSet<PresenceMode>>>;
+
+/// Liveness snapshot for the presence runtime. Shared between the
+/// stdout reader (which stamps `last_event_at` on every incoming
+/// envelope, heartbeat or otherwise) and the monitor thread (which
+/// polls it against [`presence_ipc::STALL_THRESHOLD_MS`]). Also
+/// carries the most recently seen heartbeat sequence + uptime so a
+/// stall event has real telemetry attached rather than a bare
+/// timestamp.
+///
+/// Wrapped in `Arc<Mutex<_>>` because every writer / reader is on a
+/// distinct thread and the critical section is trivial (a handful of
+/// field writes). A dedicated struct rather than four independent
+/// atomics because the fields must stay consistent as a set —
+/// reporting a fresh timestamp with a stale sequence number would
+/// mislead the audit log.
+#[derive(Debug, Clone)]
+pub struct LivenessSnapshot {
+    /// Wall-clock of the last event we successfully parsed off the
+    /// child's stdout. `None` before any event arrives (including
+    /// the initial `Event::Ready`) — the monitor treats that state
+    /// as "still starting up" and does not flag it as a stall.
+    pub last_event_at: Option<Instant>,
+    /// Highest `sequence` field ever observed on an
+    /// [`Event::Heartbeat`]. `None` before the first heartbeat.
+    /// A regression (new sequence < old sequence) is logged and
+    /// noted in the audit trail — it implies the runtime restarted
+    /// inside the same process handle, which today should not
+    /// happen but is worth catching if a future recovery path
+    /// enables it.
+    pub last_heartbeat_sequence: Option<u64>,
+    /// Latest `uptime_ms` seen on a heartbeat. Persisted alongside
+    /// stall events for postmortem correlation.
+    pub last_heartbeat_uptime_ms: Option<u64>,
+    /// Wall-clock of the process spawn. Combined with
+    /// `SPAWN_GRACE` in the monitor to suppress "stall" false
+    /// positives during window creation / first-frame warmup.
+    pub spawned_at: Option<Instant>,
+}
+
+impl LivenessSnapshot {
+    pub const fn new() -> Self {
+        Self {
+            last_event_at: None,
+            last_heartbeat_sequence: None,
+            last_heartbeat_uptime_ms: None,
+            spawned_at: None,
+        }
+    }
+}
+
+impl Default for LivenessSnapshot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Handle held both by the reader thread (writes) and the monitor
+/// thread (reads). Publicly typed so [`crate::assistant`] and the
+/// audit-event helpers can consume snapshots without depending on
+/// the private Presence fields.
+pub type Liveness = Arc<Mutex<LivenessSnapshot>>;
+
+/// Grace window after spawn during which "no events yet" is not a
+/// stall. Covers cold-start on slow hardware (GPU driver init,
+/// shader compile, wgpu adapter probing) — 15 s is a comfortable
+/// upper bound; even the worst-case Linux Mesa cold path is well
+/// under that in our stress tests.
+pub const SPAWN_GRACE_MS: u64 = 15_000;
+
+/// Health state machine reported by the monitor. Kept small and
+/// stringly-typed at the audit layer, but here it is a plain enum
+/// so the monitor's edge-detection can pattern match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresenceHealth {
+    /// Runtime is disabled (no binary configured) — the monitor
+    /// exits immediately.
+    Disabled,
+    /// Inside `SPAWN_GRACE_MS`, still awaiting first event.
+    Starting,
+    /// Last event within `STALL_THRESHOLD_MS`.
+    Healthy,
+    /// No event for `STALL_THRESHOLD_MS` or more.
+    Stalled,
+}
 
 /// Callback the shell installs to react to reverse-channel [`Event`]s.
 /// Boxed rather than a specific type so `Presence` doesn't drag every
@@ -117,6 +202,12 @@ pub struct Presence {
     /// delayed release). Read by [`Presence::current_modes`] for
     /// the aria-live status line.
     engaged_modes: ModeSet,
+    /// Reverse-channel liveness. Reader thread stamps this on
+    /// every event; the stall monitor and the debug UI both read
+    /// snapshots from it. Cloned into `Arc` so the monitor thread
+    /// can outlive a `&Presence` reference without a lifetime
+    /// scar in the Tauri command surface.
+    liveness: Liveness,
 }
 
 impl Presence {
@@ -154,6 +245,7 @@ impl Presence {
             tx: None,
             child: Mutex::new(None),
             engaged_modes: Arc::new(Mutex::new(HashSet::new())),
+            liveness: Arc::new(Mutex::new(LivenessSnapshot::new())),
         }
     }
 
@@ -195,13 +287,20 @@ impl Presence {
             .ok_or_else(|| "presence-runtime spawn: no stdout handle".to_string())?;
 
         let (tx, rx) = mpsc::channel::<Envelope>();
+        let liveness: Liveness = Arc::new(Mutex::new(LivenessSnapshot {
+            last_event_at: None,
+            last_heartbeat_sequence: None,
+            last_heartbeat_uptime_ms: None,
+            spawned_at: Some(Instant::now()),
+        }));
         thread::Builder::new()
             .name("presence-writer".to_string())
             .spawn(move || writer_loop(stdin, rx))
             .map_err(|e| format!("writer thread: {e}"))?;
+        let reader_liveness = liveness.clone();
         thread::Builder::new()
             .name("presence-reader".to_string())
-            .spawn(move || reader_loop(stdout, listener))
+            .spawn(move || reader_loop(stdout, listener, reader_liveness))
             .map_err(|e| format!("reader thread: {e}"))?;
 
         log::info!("desktop-edge: presence renderer spawned from {bin:?}");
@@ -209,7 +308,27 @@ impl Presence {
             tx: Some(tx),
             child: Mutex::new(Some(child)),
             engaged_modes: Arc::new(Mutex::new(HashSet::new())),
+            liveness,
         })
+    }
+
+    /// Handle to the runtime's liveness snapshot. Cheap `Arc` clone,
+    /// safe to hand to a background monitor thread. Returns a live
+    /// (but empty) snapshot even for a disabled Presence so callers
+    /// don't need a branch — the monitor sees "no spawn timestamp"
+    /// and exits on its own.
+    pub fn liveness_handle(&self) -> Liveness {
+        self.liveness.clone()
+    }
+
+    /// One-shot snapshot for the debug UI / status commands.
+    /// Cheap: locks the mutex, clones a small `Copy`-ish struct,
+    /// releases.
+    pub fn liveness_snapshot(&self) -> LivenessSnapshot {
+        self.liveness
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     /// Fire-and-forget send. Never blocks the caller: enqueues the
@@ -453,7 +572,11 @@ impl Drop for Presence {
     }
 }
 
-fn reader_loop(stdout: std::process::ChildStdout, listener: EventListener) {
+fn reader_loop(
+    stdout: std::process::ChildStdout,
+    listener: EventListener,
+    liveness: Liveness,
+) {
     // Line-buffered read of NDJSON `EventEnvelope` payloads. Malformed
     // lines are logged and skipped (same policy the forward path
     // uses); an EOF on stdout is the normal terminate signal, either
@@ -490,7 +613,32 @@ fn reader_loop(stdout: std::process::ChildStdout, listener: EventListener) {
             );
             continue;
         }
-        listener(env.payload);
+        // Stamp liveness *before* dispatching — the listener may
+        // block briefly (writes to `EdgeSettings`), and we want the
+        // "when did we last hear from the runtime?" clock to include
+        // arrival, not completion of the shell's downstream work.
+        if let Ok(mut snap) = liveness.lock() {
+            snap.last_event_at = Some(Instant::now());
+            if let Event::Heartbeat { sequence, uptime_ms } = &env.payload {
+                if let Some(prev) = snap.last_heartbeat_sequence {
+                    if *sequence < prev {
+                        log::warn!(
+                            "desktop-edge: presence heartbeat sequence regressed \
+                             ({prev} -> {sequence}) — runtime may have restarted internally"
+                        );
+                    }
+                }
+                snap.last_heartbeat_sequence = Some(*sequence);
+                snap.last_heartbeat_uptime_ms = Some(*uptime_ms);
+            }
+        }
+        // Heartbeats are consumed by the liveness tracker only —
+        // no downstream listener cares about them, so keep the
+        // callback surface quiet rather than making every consumer
+        // add a "drop heartbeat" arm.
+        if !matches!(env.payload, Event::Heartbeat { .. }) {
+            listener(env.payload);
+        }
     }
 }
 
@@ -546,6 +694,7 @@ mod tests {
             tx: Some(tx),
             child: Mutex::new(None),
             engaged_modes: Arc::new(Mutex::new(HashSet::new())),
+            liveness: Arc::new(Mutex::new(LivenessSnapshot::new())),
         };
 
         {
@@ -579,6 +728,7 @@ mod tests {
             tx: Some(tx),
             child: Mutex::new(None),
             engaged_modes: Arc::new(Mutex::new(HashSet::new())),
+            liveness: Arc::new(Mutex::new(LivenessSnapshot::new())),
         };
         assert!(p.current_modes().is_empty());
         {
@@ -621,6 +771,7 @@ mod tests {
             tx: Some(tx),
             child: Mutex::new(None),
             engaged_modes: Arc::new(Mutex::new(HashSet::new())),
+            liveness: Arc::new(Mutex::new(LivenessSnapshot::new())),
         };
 
         for i in 0..5_000_u32 {

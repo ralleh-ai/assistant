@@ -75,9 +75,24 @@ CLI/tests — not on the core home screen.
   migrated into the keychain on first startup (best-effort;
   leaves the cleartext copy in place only if the keychain is
   unavailable).
+- **Presence liveness monitor** — the shell spawns a background
+  watcher that reads a heartbeat stream from the `presence-runtime`
+  child (every 2 s over its stdout NDJSON channel) and flags a
+  stall when no event of any kind arrives for
+  `STALL_THRESHOLD_MS` (6 s, i.e. three missed beats). Transitions
+  are recorded to the audit log as `presence-stalled` and
+  `presence-recovered` events with the last heartbeat sequence,
+  runtime uptime, and elapsed / recovery times attached. The
+  monitor is inert when presence is disabled (no
+  `RALLEH_PRESENCE_BIN`) and does not auto-restart the child —
+  restarts are an explicit operator decision surfaced through the
+  audit trail rather than a silent recovery. Snapshot the current
+  state via the `presence_status` Tauri command (`last_event_ms_ago`,
+  `last_heartbeat_sequence`, `last_heartbeat_uptime_ms`).
 - **Audit log** — every policy-relevant event (egress
   allow/deny, backend swap, secret write/clear, keychain
-  migration) is appended as JSON-Lines to `audit.jsonl` under the
+  migration, presence stall/recovery) is appended as JSON-Lines
+  to `audit.jsonl` under the
   Tauri app config dir (the same directory as
   `edge-settings.json`). Size-based rotation kicks in at 4 MiB;
   one rollover file (`audit.jsonl.1`) is retained. Read the tail

@@ -102,6 +102,17 @@ pub enum AuditKind {
     /// verification mismatch). The cleartext key was preserved
     /// on disk; this event names the reason.
     SecretMigrateFailed,
+    /// The presence-runtime child stopped emitting events for
+    /// longer than [`presence_ipc::STALL_THRESHOLD_MS`]. `detail`
+    /// carries `elapsed_ms`, the last heartbeat `sequence` /
+    /// `uptime_ms` we saw, and the runtime's PID (as reported by
+    /// the shell) so an operator can correlate with a crash dump.
+    PresenceStalled,
+    /// A previously-stalled runtime has resumed emitting events
+    /// (its own or a fresh spawn). Paired with a preceding
+    /// `PresenceStalled` event; `detail.recovery_ms` names the
+    /// gap.
+    PresenceRecovered,
 }
 
 impl AuditKind {
@@ -111,8 +122,11 @@ impl AuditKind {
             | Self::BackendSwap
             | Self::SecretWrite
             | Self::SecretClear
-            | Self::SecretMigrate => AuditOutcome::Allow,
-            Self::EgressDeny | Self::SecretMigrateFailed => AuditOutcome::Deny,
+            | Self::SecretMigrate
+            | Self::PresenceRecovered => AuditOutcome::Allow,
+            Self::EgressDeny
+            | Self::SecretMigrateFailed
+            | Self::PresenceStalled => AuditOutcome::Deny,
         }
     }
 }

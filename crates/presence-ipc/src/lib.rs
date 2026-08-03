@@ -213,7 +213,37 @@ pub enum Event {
     /// flood. Values are physical pixels — the same units the
     /// matching [`Command::SetPosition`] accepts.
     Moved { x: i32, y: i32 },
+    /// Periodic liveness signal. Emitted by `presence-runtime` on a
+    /// fixed cadence (`HEARTBEAT_INTERVAL_MS`, ~2 s) so the shell
+    /// can distinguish "renderer is fine, just nothing to report"
+    /// from "renderer wedged, GPU driver deadlocked, or process
+    /// zombie". `sequence` is a monotonically increasing counter
+    /// starting at 0 on process start — a gap in the sequence tells
+    /// the shell the runtime restarted without the shell tearing
+    /// down the process (e.g. an internal panic recovery path we
+    /// might add later). `uptime_ms` is the wall-clock time since
+    /// the runtime's start, useful for correlating with logs and
+    /// for the audit trail when we record a stall.
+    ///
+    /// Not emitted when `PRESENCE_STDOUT_IPC` is off — the dev
+    /// harness stays quiet.
+    Heartbeat { sequence: u64, uptime_ms: u64 },
 }
+
+/// Cadence at which `presence-runtime` emits [`Event::Heartbeat`]s
+/// when the stdout IPC channel is enabled. Exposed on the wire
+/// crate so both sides derive their timing constants from the same
+/// source of truth: the shell's stall threshold is a multiple of
+/// this, so drifting the cadence without updating the threshold
+/// would silently produce false-positive stalls.
+pub const HEARTBEAT_INTERVAL_MS: u64 = 2_000;
+
+/// Shell-side default for "how long since the last event before we
+/// call the runtime stalled". 3× the heartbeat interval gives the
+/// runtime two missed beats of headroom before the shell reacts,
+/// which is enough to swallow a GC pause / disk I/O hiccup / brief
+/// GPU stall without ever flagging a healthy renderer.
+pub const STALL_THRESHOLD_MS: u64 = 3 * HEARTBEAT_INTERVAL_MS;
 
 /// Every message on the wire is wrapped in one of these so a peer can
 /// reject a mismatched version cleanly.
@@ -393,6 +423,10 @@ mod tests {
         let events = [
             Event::Ready { x: 42, y: 108 },
             Event::Moved { x: -100, y: 900 },
+            Event::Heartbeat {
+                sequence: 42,
+                uptime_ms: 84_000,
+            },
         ];
         for event in events {
             let env = EventEnvelope::wrap(event.clone());
@@ -402,6 +436,30 @@ mod tests {
                 serde_json::from_str(&encoded).expect("deserialize");
             assert_eq!(decoded, env);
         }
+    }
+
+    #[test]
+    fn heartbeat_uses_the_stable_wire_tag() {
+        // External audit tooling filters on `kind == "heartbeat"`
+        // to build "runtime uptime" dashboards. Pin the exact tag
+        // so a serde rename can't silently break that.
+        let event = Event::Heartbeat {
+            sequence: 7,
+            uptime_ms: 14_000,
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        assert!(encoded.contains(r#""kind":"heartbeat""#), "{encoded}");
+        assert!(encoded.contains(r#""sequence":7"#), "{encoded}");
+        assert!(encoded.contains(r#""uptime_ms":14000"#), "{encoded}");
+    }
+
+    #[test]
+    fn stall_threshold_is_a_multiple_of_the_heartbeat_interval() {
+        // Sanity pin: the two constants must not drift out of the
+        // relationship the module docs describe, or the shell will
+        // false-positive stalls on healthy runtimes.
+        assert!(STALL_THRESHOLD_MS >= 2 * HEARTBEAT_INTERVAL_MS);
+        assert!(HEARTBEAT_INTERVAL_MS > 0);
     }
 
     #[test]

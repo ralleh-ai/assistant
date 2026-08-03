@@ -9,6 +9,7 @@ mod audit;
 mod mic;
 mod os_caps;
 mod presence;
+mod presence_health;
 mod presence_mic;
 mod presence_speaking;
 mod secret_store;
@@ -230,12 +231,32 @@ fn edge_settings_path(app: AppHandle) -> Result<String, String> {
 #[serde(rename_all = "camelCase")]
 pub struct PresenceStatus {
     pub enabled: bool,
+    /// Milliseconds since the shell last observed *any* reverse-channel
+    /// event from the runtime (heartbeat, `Ready`, or `Moved`). `None`
+    /// when presence is disabled or no event has arrived yet. A value
+    /// larger than `presence_ipc::STALL_THRESHOLD_MS` indicates the
+    /// runtime is not currently emitting — the audit log will already
+    /// contain a `PresenceStalled` event by that point.
+    pub last_event_ms_ago: Option<u64>,
+    /// Highest heartbeat sequence ever seen. `None` before the first
+    /// heartbeat. Useful for spotting a runtime restart-inside-process.
+    pub last_heartbeat_sequence: Option<u64>,
+    /// Runtime `uptime_ms` reported on the last heartbeat. `None`
+    /// before the first heartbeat.
+    pub last_heartbeat_uptime_ms: Option<u64>,
 }
 
 #[tauri::command]
 fn presence_status(presence: State<'_, Presence>) -> PresenceStatus {
+    let snap = presence.liveness_snapshot();
+    let last_event_ms_ago = snap
+        .last_event_at
+        .map(|t| std::time::Instant::now().duration_since(t).as_millis() as u64);
     PresenceStatus {
         enabled: presence.is_enabled(),
+        last_event_ms_ago,
+        last_heartbeat_sequence: snap.last_heartbeat_sequence,
+        last_heartbeat_uptime_ms: snap.last_heartbeat_uptime_ms,
     }
 }
 
@@ -628,7 +649,7 @@ pub struct BackendStatus {
 /// couple of ms but keeps the tenant/device/actor fields honest —
 /// if the operator changed identity mid-session the audit trail
 /// reflects that immediately instead of a cached value.
-fn audit_event_with_identity(app: &AppHandle, kind: AuditKind) -> AuditEvent {
+pub(crate) fn audit_event_with_identity(app: &AppHandle, kind: AuditKind) -> AuditEvent {
     let (tenant, device, actor) = match load_settings(app) {
         Ok(s) => (s.tenant_id, s.device_id, s.actor_id),
         Err(_) => (String::new(), String::new(), String::new()),
@@ -1207,6 +1228,13 @@ pub fn run() {
             app.manage(audit_log);
             let presence = Presence::spawn_from_env(presence_event_listener(handle.clone()));
             restore_presence_state(&handle, &presence);
+            // Liveness monitor. Reads the same `Liveness` handle the
+            // stdout reader stamps on each incoming event, and
+            // records `PresenceStalled` / `PresenceRecovered` audit
+            // events on edges. Exits automatically when presence is
+            // disabled (no spawn timestamp) — see
+            // `presence_health::spawn`.
+            presence_health::spawn(handle.clone(), presence.liveness_handle());
             // Scan sweep (§3.4). Opt-in via env var so a normal
             // launch stays silent — the visual grammar treats
             // attention as *sparse*, and firing it on a fresh dev

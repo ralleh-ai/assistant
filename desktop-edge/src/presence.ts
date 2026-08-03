@@ -35,6 +35,24 @@ export type PresenceStatus = {
    * fire, will not throw, will not do anything.
    */
   enabled: boolean;
+  /**
+   * Milliseconds since the shell last observed any reverse-channel
+   * event from the runtime. `null` before the first event or when
+   * presence is disabled. Values above the stall threshold indicate
+   * the runtime is not currently emitting — the audit log will
+   * contain a `presence-stalled` event by that point.
+   */
+  last_event_ms_ago: number | null;
+  /**
+   * Most recent heartbeat sequence observed by the shell, or `null`
+   * before the first heartbeat.
+   */
+  last_heartbeat_sequence: number | null;
+  /**
+   * Runtime `uptime_ms` reported on the last heartbeat, or `null`
+   * before the first heartbeat.
+   */
+  last_heartbeat_uptime_ms: number | null;
 };
 
 // Every ipc caller in this file wraps `invoke` in a `try` so a
@@ -53,7 +71,14 @@ async function safeInvoke<T = void>(cmd: string, args?: InvokeArgs): Promise<T |
 
 export async function presenceStatus(): Promise<PresenceStatus> {
   const status = await safeInvoke<PresenceStatus>("presence_status");
-  return status ?? { enabled: false };
+  return (
+    status ?? {
+      enabled: false,
+      last_event_ms_ago: null,
+      last_heartbeat_sequence: null,
+      last_heartbeat_uptime_ms: null,
+    }
+  );
 }
 
 export function presenceSetMode(mode: PresenceMode, engaged: boolean): Promise<void> {
