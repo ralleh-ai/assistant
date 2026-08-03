@@ -114,7 +114,7 @@ body {
 
 .brand {
   margin: 0 0 1.25rem;
-  font-family: "Fraunces", Georgia, serif;
+  font-family: "Fraunces Variable", Georgia, serif;
   font-optical-sizing: auto;
   font-weight: 650;
   font-size: clamp(2.75rem, 8vw, 4rem);
@@ -269,7 +269,7 @@ body {
 
 .core-headline {
   margin: 0 0 0.75rem;
-  font-family: "Fraunces", Georgia, serif;
+  font-family: "Fraunces Variable", Georgia, serif;
   font-weight: 500;
   font-size: clamp(1.45rem, 3.5vw, 1.85rem);
   line-height: 1.25;
@@ -661,7 +661,7 @@ body {
 
 .setup-rail-brand {
   margin: 0;
-  font-family: "Fraunces", Georgia, serif;
+  font-family: "Fraunces Variable", Georgia, serif;
   font-weight: 650;
   font-size: 1.35rem;
   letter-spacing: -0.02em;
@@ -725,7 +725,7 @@ body {
 }
 
 .setup-index-title {
-  font-family: "Fraunces", Georgia, serif;
+  font-family: "Fraunces Variable", Georgia, serif;
   font-size: 1.05rem;
   font-weight: 500;
 }
@@ -765,7 +765,7 @@ body {
 
 .setup-plate-title {
   margin: 0 0 0.75rem;
-  font-family: "Fraunces", Georgia, serif;
+  font-family: "Fraunces Variable", Georgia, serif;
   font-weight: 650;
   font-size: clamp(2.4rem, 5vw, 3.25rem);
   line-height: 1;
@@ -775,7 +775,7 @@ body {
 .setup-lede {
   margin: 0 0 0.85rem;
   max-width: 32rem;
-  font-family: "Fraunces", Georgia, serif;
+  font-family: "Fraunces Variable", Georgia, serif;
   font-weight: 500;
   font-size: 1.2rem;
   line-height: 1.35;
@@ -942,7 +942,7 @@ body {
 
 .style-option-label {
   display: block;
-  font-family: "Fraunces", Georgia, serif;
+  font-family: "Fraunces Variable", Georgia, serif;
   font-weight: 550;
   font-size: 1.15rem;
   margin-bottom: 0.25rem;
@@ -1676,4 +1676,74 @@ body {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* Top-level error boundary (F3). Full-viewport recovery panel shown
+   only when a render throw is caught, so it deliberately owns the
+   screen rather than sitting inside the normal shell chrome. */
+.shell-error-boundary {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background: var(--ink);
+  color: var(--foam);
+  z-index: 9999;
+}
+
+.shell-error-card {
+  max-width: 34rem;
+  width: 100%;
+  padding: 1.75rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(20, 98, 87, 0.08);
+}
+
+.shell-error-title {
+  font-family: "Fraunces Variable", Georgia, serif;
+  font-weight: 650;
+  font-size: 1.4rem;
+  margin: 0 0 0.5rem;
+}
+
+.shell-error-lede {
+  margin: 0 0 1rem;
+  color: var(--mist);
+  line-height: 1.5;
+}
+
+.shell-error-detail {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0.75rem;
+  margin: 0 0 1rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--line);
+  color: var(--amber);
+}
+
+.shell-error-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.shell-error-diag {
+  margin: 1rem 0 0;
+  font-size: 0.85rem;
+  color: var(--mist);
+}
+
+.shell-error-diag code {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  word-break: break-all;
+}
+
+.shell-error-diag-bad {
+  color: #e2887a;
 }

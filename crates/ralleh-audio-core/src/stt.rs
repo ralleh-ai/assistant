@@ -8,7 +8,17 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+/// Whisper expects 16 kHz mono PCM; anything else is a caller bug.
+const WHISPER_SAMPLE_RATE_HZ: u32 = 16_000;
+/// Reject utterances longer than this many samples (≈30 s at 16 kHz) before
+/// we ever write them to disk or hand them to the CLI. Pairs with the
+/// pipeline-side utterance cap so a runaway buffer can't reach the STT stage.
+const MAX_STT_SAMPLES: usize = WHISPER_SAMPLE_RATE_HZ as usize * 30;
+/// Wall-clock ceiling for a single `whisper-cli` invocation.
+const WHISPER_CLI_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Result of one transcription attempt.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -187,15 +197,20 @@ impl WhisperCliStt {
 
     /// Transcribe an existing WAV file (16-bit PCM preferred).
     pub fn transcribe_file(&self, wav_path: impl AsRef<Path>) -> Result<Transcript, SttError> {
-        let output = Command::new(&self.cli_path)
+        let child = Command::new(&self.cli_path)
             .arg("-m")
             .arg(&self.model_path)
             .arg("-f")
             .arg(wav_path.as_ref())
             .arg("-nt") // no timestamps in stdout
             .arg("-np") // no prints to stderr progress (still some logs)
-            .output()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|e| SttError::Engine(format!("spawn whisper-cli: {e}")))?;
+        let output = crate::proc::wait_with_timeout(child, WHISPER_CLI_TIMEOUT)
+            .map_err(|e| SttError::Engine(format!("whisper-cli: {e}")))?;
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(SttError::Engine(format!(
@@ -224,21 +239,36 @@ impl SpeechToText for WhisperCliStt {
         if samples.is_empty() {
             return Err(SttError::EmptyAudio);
         }
-        let dir = std::env::temp_dir();
-        let uniq = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let wav_path = dir.join(format!(
-            "ralleh-whisper-{}-{}.wav",
-            std::process::id(),
-            uniq
-        ));
+        // whisper.cpp only accepts 16 kHz mono; validate here rather than
+        // silently producing garbage (matches the native `WhisperStt` path).
+        if sample_rate_hz != WHISPER_SAMPLE_RATE_HZ {
+            return Err(SttError::UnsupportedSampleRate(
+                sample_rate_hz,
+                WHISPER_SAMPLE_RATE_HZ,
+            ));
+        }
+        // Bound the amount of audio we're willing to spill to disk / feed the
+        // CLI, defending against an oversized buffer reaching this stage.
+        if samples.len() > MAX_STT_SAMPLES {
+            return Err(SttError::Engine(format!(
+                "utterance too long: {} samples exceeds cap of {}",
+                samples.len(),
+                MAX_STT_SAMPLES
+            )));
+        }
+        // Private temp dir (0700 on Unix, unpredictable name) with RAII
+        // cleanup — the raw microphone WAV is never written to a
+        // world-guessable path and is removed even if we early-return or
+        // panic. Replaces the previous predictable `temp_dir()/…{pid}-{ns}`.
+        let tmp = tempfile::Builder::new()
+            .prefix("ralleh-whisper-")
+            .tempdir()
+            .map_err(|e| SttError::Engine(format!("create temp dir: {e}")))?;
+        let wav_path = tmp.path().join("audio.wav");
         crate::wav::write_pcm16_mono(&wav_path, samples, sample_rate_hz)
             .map_err(|e| SttError::Engine(e.to_string()))?;
-        let result = self.transcribe_file(&wav_path);
-        let _ = std::fs::remove_file(&wav_path);
-        result
+        self.transcribe_file(&wav_path)
+        // `tmp` drops here, recursively deleting the dir + WAV.
     }
 }
 

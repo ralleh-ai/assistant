@@ -2854,6 +2854,7 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "serde",
+ "tempfile",
  "thiserror 1.0.69",
 ]
 
@@ -2882,6 +2883,7 @@ name = "ralleh-tool-gateway"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "log",
  "ralleh-policy-core",
  "reqwest 0.12.28",
  "serde",

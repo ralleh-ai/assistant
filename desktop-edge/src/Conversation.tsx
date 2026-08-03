@@ -50,6 +50,22 @@ export function Conversation() {
     const [partial, setPartial] = useState<string | null>(null);
     const nextId = useRef(1);
     const scrollRef = useRef<HTMLDivElement | null>(null);
+    // M11: the streaming channel keeps firing its callback until the
+    // terminal event even if the operator navigates away from Core
+    // mid-stream (unmounting this component). Without a guard, those
+    // late callbacks call `setState` on an unmounted tree — a React
+    // warning today and a latent bug once real backends stream for
+    // many seconds. `mounted` is flipped false on unmount and checked
+    // before every state write below. (A future improvement is to pass
+    // an abort signal through to Rust so the stream is torn down
+    // server-side too, not just ignored here.)
+    const mounted = useRef(true);
+    useEffect(
+        () => () => {
+            mounted.current = false;
+        },
+        [],
+    );
 
     // Keep the newest message visible without hijacking scroll if
     // the user has scrolled up mid-conversation. `scrollIntoView`
@@ -85,6 +101,7 @@ export function Conversation() {
         // and would race with the terminal event.
         let buffer = "";
         const commitAsMessage = (role: Role, text: string) => {
+            if (!mounted.current) return;
             setMessages((prev) => [
                 ...prev,
                 { id: nextId.current++, role, text },
@@ -93,6 +110,7 @@ export function Conversation() {
 
         try {
             await assistantThinkStream(prompt, (event) => {
+                if (!mounted.current) return;
                 switch (event.event) {
                     case "chunk":
                         buffer += event.text;
@@ -130,8 +148,10 @@ export function Conversation() {
         } catch (err) {
             commitAsMessage("error", String(err));
         } finally {
-            setPending(false);
-            setPartial(null);
+            if (mounted.current) {
+                setPending(false);
+                setPartial(null);
+            }
         }
     }
 

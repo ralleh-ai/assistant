@@ -279,6 +279,13 @@ struct AuditLogInner {
     dir: PathBuf,
     active: PathBuf,
     rollover: PathBuf,
+    /// Cached `hash` of the last line in the active file, so each append
+    /// links the chain in O(1) instead of re-reading the entire log to find
+    /// the previous hash (which was O(N) per write, O(N²) over the log's
+    /// life). Seeded once from disk at `for_dir` so restarts keep the chain
+    /// intact; updated after every successful write and reset to `None` on
+    /// rotation.
+    last_hash: Option<String>,
 }
 
 impl AuditLog {
@@ -301,11 +308,16 @@ impl AuditLog {
     pub fn for_dir(dir: PathBuf) -> Self {
         let active = dir.join(LOG_FILENAME);
         let rollover = dir.join(ROLLOVER_FILENAME);
+        // Seed the last-hash cache from disk exactly once. This single O(N)
+        // read at startup replaces the per-write full-file scan the chain
+        // previously required.
+        let last_hash = last_hash_in(&active);
         Self {
             inner: Mutex::new(AuditLogInner {
                 dir,
                 active,
                 rollover,
+                last_hash,
             }),
             disabled: false,
         }
@@ -344,11 +356,11 @@ impl AuditLog {
         }
         // Determine `prev_hash` before we potentially rotate:
         // after rotation the file is empty and this must be
-        // `None` to start a fresh chain. Reading from the
-        // current-still-active file catches both cases (returns
-        // `None` when the file is missing).
+        // `None` to start a fresh chain. The cached `last_hash`
+        // mirrors the last line's `hash` (or `None` on a fresh /
+        // just-rotated file), so no full-file re-read is needed.
         let mut chained = event.clone();
-        chained.prev_hash = last_hash_in(&guard.active);
+        chained.prev_hash = guard.last_hash.clone();
         chained.hash = None;
         chained.hash = Some(compute_hash(&chained)?);
         let mut line = serde_json::to_string(&chained).map_err(|e| e.to_string())?;
@@ -363,7 +375,8 @@ impl AuditLog {
             if meta.len() + line.len() as u64 > ROTATE_AT_BYTES {
                 rotate(&mut guard)?;
                 // Post-rotation the chain restarts. Recompute
-                // hash under `prev_hash: None`.
+                // hash under `prev_hash: None` and reset the cache.
+                guard.last_hash = None;
                 chained.prev_hash = None;
                 chained.hash = None;
                 chained.hash = Some(compute_hash(&chained)?);
@@ -378,6 +391,13 @@ impl AuditLog {
             .map_err(|e| format!("audit: open {}: {e}", guard.active.display()))?;
         file.write_all(line.as_bytes())
             .map_err(|e| format!("audit: write: {e}"))?;
+        // Force the record to stable storage. An audit log that survives a
+        // process crash but not a power cut isn't the tamper-evident evidence
+        // trail this module claims to be; `sync_all` closes that gap.
+        file.sync_all().map_err(|e| format!("audit: sync: {e}"))?;
+        // Only advance the cache once the line is durably on disk, so a failed
+        // write leaves the chain state unchanged for the next attempt.
+        guard.last_hash = chained.hash.clone();
         Ok(())
     }
 

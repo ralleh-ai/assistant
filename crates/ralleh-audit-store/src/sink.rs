@@ -104,11 +104,14 @@ impl AuditSink for InMemoryAuditSink {
 // bound already present.
 
 /// Append-only, one-JSON-object-per-line file sink. This is the real
-/// (non-mocked) persistence path: every call to `record` opens the file in
-/// append mode, writes one JSON line, and flushes before returning —
-/// trading a bit of per-call syscall overhead for the property that a
-/// crash or kill -9 immediately after a successful `record()` call cannot
-/// lose that record. A `Mutex` serializes writes so concurrent callers
+/// (non-mocked) persistence path: every call to `record` writes one JSON
+/// line and `fsync`s before returning — trading a bit of per-call syscall
+/// overhead for the property that a crash, `kill -9`, **or power loss**
+/// immediately after a successful `record()` call cannot lose that record.
+/// `flush()` alone would only push libc buffers to the kernel page cache
+/// (surviving a process crash but not a hard reboot); `sync_all()` forces
+/// the bytes to stable storage, which is the durability an audit log is
+/// supposed to guarantee. A `Mutex` serializes writes so concurrent callers
 /// (e.g. multiple Axum request handlers) can't interleave partial lines.
 pub struct JsonlFileAuditSink {
     path: PathBuf,
@@ -153,6 +156,10 @@ impl AuditSink for JsonlFileAuditSink {
         let mut file = self.file.lock().expect("audit sink mutex poisoned");
         file.write_all(&line)
             .and_then(|_| file.flush())
+            // Force the record to stable storage before returning success, so
+            // the durability the doc-comment promises holds across power loss,
+            // not just a process crash.
+            .and_then(|_| file.sync_all())
             .map_err(|source| AuditSinkError::Write { source })
     }
 }
@@ -168,7 +175,7 @@ impl GatewayAuditSink for JsonlFileAuditSink {
         // that would turn an audit sink outage into a full service outage,
         // which is a worse failure mode.
         if let Err(err) = AuditSink::record(self, &record) {
-            eprintln!("ralleh-audit-store: failed to persist gateway event: {err}");
+            log::warn!("ralleh-audit-store: failed to persist gateway event: {err}");
         }
     }
 }

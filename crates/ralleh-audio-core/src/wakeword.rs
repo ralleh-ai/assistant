@@ -113,6 +113,25 @@ impl<M: WakeWordMatcher> WakeWordDetector<M> {
         }
     }
 
+    /// Push a frame into the in-progress utterance window, but never let that
+    /// window grow past a hard ceiling. An utterance longer than
+    /// `max_utterance_frames` can never be a wake-word match anyway, so once
+    /// we're a safety margin past that bound we stop retaining frames: a
+    /// speaker who never pauses (or a hostile frame stream) can't drive
+    /// `current_utterance` to unbounded memory. The over-long utterance still
+    /// fails the bounds check when silence finally arrives.
+    fn push_utterance_frame(&mut self, frame: AudioFrame) {
+        // 2× headroom over the accept bound keeps legitimate
+        // slightly-too-long utterances distinguishable from a runaway stream
+        // while still capping allocation at a small constant.
+        let cap = (self.config.max_utterance_frames as usize)
+            .saturating_mul(2)
+            .max(1);
+        if self.current_utterance.len() < cap {
+            self.current_utterance.push(frame);
+        }
+    }
+
     /// Feed one frame into the detector. Returns `Some(trigger)` exactly on
     /// the frame where a wake-word match is confirmed; `None` otherwise.
     pub fn process_frame(&mut self, frame: AudioFrame) -> Option<WakeWordTrigger> {
@@ -143,13 +162,13 @@ impl<M: WakeWordMatcher> WakeWordDetector<M> {
                     self.phase = DetectorPhase::Collecting;
                     self.current_utterance.clear();
                 }
-                self.current_utterance.push(frame);
+                self.push_utterance_frame(frame);
                 None
             }
             VadState::MaybeSilence if self.phase == DetectorPhase::Collecting => {
                 // Still mid-utterance (VAD is debouncing the end); keep
                 // collecting frames.
-                self.current_utterance.push(frame);
+                self.push_utterance_frame(frame);
                 None
             }
             VadState::Silence if self.phase == DetectorPhase::Collecting => {

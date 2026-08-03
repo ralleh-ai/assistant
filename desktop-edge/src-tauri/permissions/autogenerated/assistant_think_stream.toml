@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-assistant-think-stream"
+description = "Enables the assistant_think_stream command without any pre-configured scope."
+commands.allow = ["assistant_think_stream"]
+
+[[permission]]
+identifier = "deny-assistant-think-stream"
+description = "Denies the assistant_think_stream command without any pre-configured scope."
+commands.deny = ["assistant_think_stream"]

@@ -270,7 +270,7 @@ impl App {
         }
     }
 
-    fn redraw(&mut self) {
+    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         // Apply anything the shell has sent since the last frame before we
         // advance the simulation, so a `SetSignals` that arrives between
         // frames influences *this* frame rather than trailing by one.
@@ -354,14 +354,23 @@ impl App {
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 let size = live.window.inner_size();
                 live.renderer.resize(size.width, size.height);
+                // Re-arm the frame pump. Every early return from the redraw
+                // path MUST request another redraw, or the loop goes idle and
+                // the shell's heartbeat watcher reports a false `presence
+                // stalled` even though the renderer merely skipped one frame.
+                live.window.request_redraw();
                 return;
             }
             Err(wgpu::SurfaceError::OutOfMemory) => {
+                // OOM is genuinely unrecoverable — actually exit rather than
+                // logging "exiting" and then spinning forever.
                 log::error!("wgpu surface out of memory — exiting");
+                event_loop.exit();
                 return;
             }
             Err(e) => {
                 log::warn!("surface error: {e:?}");
+                live.window.request_redraw();
                 return;
             }
         };
@@ -486,11 +495,18 @@ impl ApplicationHandler for App {
                 .with_title("Ralleh — Point Cloud Presence (Phase 1 Prototype)")
                 .with_inner_size(winit::dpi::LogicalSize::new(960.0, 720.0))
         };
-        let window = Arc::new(
-            event_loop
-                .create_window(attrs)
-                .expect("failed to create window"),
-        );
+        let window = match event_loop.create_window(attrs) {
+            Ok(window) => Arc::new(window),
+            Err(err) => {
+                // A window we cannot create is fatal, but exit the loop
+                // cleanly rather than unwinding a panic across the winit
+                // callback boundary (which aborts with a far less useful
+                // message and no chance to flush logs).
+                log::error!("presence-runtime: failed to create window: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
 
         // Click-through: the droplet must not eat mouse events meant
         // for the app underneath it, or the user will find their own
@@ -585,7 +601,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.redraw();
+                self.redraw(event_loop);
             }
             WindowEvent::Moved(pos) => {
                 self.on_window_moved(pos.x, pos.y);

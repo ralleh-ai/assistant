@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-presence-mic-status"
+description = "Enables the presence_mic_status command without any pre-configured scope."
+commands.allow = ["presence_mic_status"]
+
+[[permission]]
+identifier = "deny-presence-mic-status"
+description = "Denies the presence_mic_status command without any pre-configured scope."
+commands.deny = ["presence_mic_status"]

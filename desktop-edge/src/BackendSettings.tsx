@@ -223,14 +223,28 @@ export function BackendSettings() {
   const [probing, setProbing] = useState(false);
   const [diag, setDiag] = useState<DiagnosticsState>({ phase: "idle" });
 
+  // M10/M11: guard the status fetch against overlap and out-of-order
+  // application. `statusReqId` monotonically tags each fetch so a slow
+  // response that resolves after a newer one is discarded;
+  // `refreshInFlight` skips a poll tick entirely while one is still
+  // running (the shell IPC can be slower than the 15 s cadence under
+  // load). Refs, not state, so updating them never triggers a render.
+  const statusReqId = useRef(0);
+  const refreshInFlight = useRef(false);
+
   const refreshStatus = useCallback(async () => {
+    if (refreshInFlight.current) return; // M11: don't stack polls
+    refreshInFlight.current = true;
+    const reqId = ++statusReqId.current;
     try {
       const s = await assistantBackendStatus();
+      if (reqId !== statusReqId.current) return; // M10: superseded, drop
       setStatus(s);
-      setForm(stateFromStatus(s));
       setLoadError(null);
     } catch (err) {
-      setLoadError(String(err));
+      if (reqId === statusReqId.current) setLoadError(String(err));
+    } finally {
+      refreshInFlight.current = false;
     }
   }, []);
 
@@ -250,13 +264,34 @@ export function BackendSettings() {
     return () => window.clearInterval(id);
   }, [refreshStatus]);
 
-  // Reset form to persisted state whenever the panel opens, so an
-  // aborted edit doesn't leak into the next visit.
+  // H7: seed the form from persisted status ONLY on the closed→open
+  // transition. The previous effect reset the form on every `status`
+  // change, so a 15 s poll (or a probe) landing mid-edit silently wiped
+  // whatever the operator was typing — a data-loss bug on a form where
+  // re-entering an API key is exactly the friction we try to avoid. The
+  // poll now updates `status` (for the health badge) without ever
+  // touching `form` while the panel is open.
+  const prevOpen = useRef(false);
   useEffect(() => {
-    if (open) setForm(stateFromStatus(status));
-    if (open) setTest({ phase: "idle" });
-    if (open) setSave({ phase: "idle" });
+    if (open && !prevOpen.current) {
+      setForm(stateFromStatus(status));
+      setTest({ phase: "idle" });
+      setSave({ phase: "idle" });
+    }
+    prevOpen.current = open;
   }, [open, status]);
+
+  // M10/M11: a single busy lock shared across Test / Save / Clear so
+  // they can't run concurrently (each previously disabled only its own
+  // button, so Test-then-Save in quick succession could overlap on the
+  // same throwaway-router path). Mirrored into a ref so the async
+  // callbacks can early-return on a double-trigger even before React
+  // re-renders the disabled buttons.
+  const busy = test.phase === "testing" || save.phase === "saving";
+  const busyRef = useRef(busy);
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
 
   const currentUpdate = useMemo<CompletionConfigUpdate>(
     () => ({
@@ -269,6 +304,7 @@ export function BackendSettings() {
   );
 
   const runTest = useCallback(async () => {
+    if (busyRef.current) return;
     setTest({ phase: "testing" });
     try {
       const result = await assistantTestBackend(currentUpdate);
@@ -288,6 +324,7 @@ export function BackendSettings() {
   }, [currentUpdate, form.kind]);
 
   const runSave = useCallback(async () => {
+    if (busyRef.current) return;
     setSave({ phase: "saving" });
     try {
       const next = await assistantSaveBackend(currentUpdate);
@@ -350,6 +387,7 @@ export function BackendSettings() {
   }, [diag]);
 
   const runClear = useCallback(async () => {
+    if (busyRef.current) return;
     setSave({ phase: "saving" });
     try {
       const next = await assistantSaveBackend(null);
@@ -443,7 +481,7 @@ export function BackendSettings() {
               type="button"
               className="backend-btn backend-btn-secondary"
               onClick={runTest}
-              disabled={!isFormValid(form) || test.phase === "testing"}
+              disabled={!isFormValid(form) || busy}
             >
               {test.phase === "testing" ? "Testing…" : "Test connection"}
             </button>
@@ -451,7 +489,7 @@ export function BackendSettings() {
               type="button"
               className="backend-btn backend-btn-primary"
               onClick={runSave}
-              disabled={!isFormValid(form) || save.phase === "saving"}
+              disabled={!isFormValid(form) || busy}
             >
               {save.phase === "saving" ? "Saving…" : "Save & apply"}
             </button>
@@ -460,7 +498,7 @@ export function BackendSettings() {
                 type="button"
                 className="backend-btn backend-btn-danger"
                 onClick={runClear}
-                disabled={save.phase === "saving"}
+                disabled={busy}
                 title="Remove the persisted config and fall back to env vars / Echo."
               >
                 Clear

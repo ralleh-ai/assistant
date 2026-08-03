@@ -11,6 +11,7 @@
 
 mod frame;
 mod pipeline;
+mod proc;
 mod source;
 mod stt;
 mod tts;

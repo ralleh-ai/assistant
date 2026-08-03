@@ -18,6 +18,17 @@ struct QuadVertex {
     corner: [f32; 2],
 }
 
+/// Starting (and floor) capacity of the GPU instance buffer, in instances.
+/// The buffer grows past this on demand and may shrink back toward it, but
+/// never below — a small permanent reservation avoids reallocating on the
+/// common small-scene case.
+const INITIAL_INSTANCE_CAPACITY: usize = 8_192;
+
+/// Frames of sustained low utilization before the instance buffer is shrunk.
+/// ~10 s at 60 FPS: long enough that a brief scene simplification doesn't
+/// thrash the allocator, short enough that peak memory isn't pinned forever.
+const INSTANCE_SHRINK_AFTER_FRAMES: u32 = 600;
+
 const QUAD_VERTICES: [QuadVertex; 4] = [
     QuadVertex {
         corner: [-1.0, -1.0],
@@ -71,6 +82,15 @@ pub struct Renderer {
     bind_group: wgpu::BindGroup,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
+    /// Reused CPU staging vector for per-frame instance data. Cleared and
+    /// refilled each frame instead of allocating a fresh `Vec` — the old
+    /// per-frame allocation showed up as GC-like hitches and steady allocator
+    /// pressure at high point counts.
+    instance_scratch: Vec<InstanceRaw>,
+    /// Consecutive frames the instance buffer has been under-utilized, driving
+    /// the hysteresis in [`Renderer::ensure_instance_capacity`] so the buffer
+    /// can shrink back toward [`INITIAL_INSTANCE_CAPACITY`] after a peak.
+    instance_low_frames: u32,
 }
 
 /// Construction-time options. Grouping them here rather than as
@@ -344,7 +364,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let initial_capacity = 8_192usize;
+        let initial_capacity = INITIAL_INSTANCE_CAPACITY;
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instance buffer"),
             size: (initial_capacity * std::mem::size_of::<InstanceRaw>()) as wgpu::BufferAddress,
@@ -375,6 +395,8 @@ impl Renderer {
             bind_group,
             instance_buffer,
             instance_capacity: initial_capacity,
+            instance_scratch: Vec::with_capacity(initial_capacity),
+            instance_low_frames: 0,
         }
     }
 
@@ -394,17 +416,44 @@ impl Renderer {
     }
 
     fn ensure_instance_capacity(&mut self, needed: usize) {
-        if needed <= self.instance_capacity {
+        if needed > self.instance_capacity {
+            let new_capacity = needed.next_power_of_two();
+            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("instance buffer (grown)"),
+                size: (new_capacity * std::mem::size_of::<InstanceRaw>()) as wgpu::BufferAddress,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.instance_capacity = new_capacity;
+            self.instance_low_frames = 0;
             return;
         }
-        let new_capacity = needed.next_power_of_two();
-        self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("instance buffer (grown)"),
-            size: (new_capacity * std::mem::size_of::<InstanceRaw>()) as wgpu::BufferAddress,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.instance_capacity = new_capacity;
+
+        // Shrink with hysteresis: only after sustained under-use (needed at or
+        // below a quarter of capacity for `INSTANCE_SHRINK_AFTER_FRAMES`
+        // frames), and never below `INITIAL_INSTANCE_CAPACITY`. This releases
+        // the memory a transient peak reserved without reallocating on every
+        // small scene change.
+        if self.instance_capacity > INITIAL_INSTANCE_CAPACITY
+            && needed <= self.instance_capacity / 4
+        {
+            self.instance_low_frames = self.instance_low_frames.saturating_add(1);
+            if self.instance_low_frames >= INSTANCE_SHRINK_AFTER_FRAMES {
+                let target = needed.next_power_of_two().max(INITIAL_INSTANCE_CAPACITY);
+                if target < self.instance_capacity {
+                    self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("instance buffer (shrunk)"),
+                        size: (target * std::mem::size_of::<InstanceRaw>()) as wgpu::BufferAddress,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    self.instance_capacity = target;
+                }
+                self.instance_low_frames = 0;
+            }
+        } else {
+            self.instance_low_frames = 0;
+        }
     }
 
     /// Uploads the camera uniform and all currently-visible particles
@@ -420,26 +469,35 @@ impl Renderer {
         &mut self,
         entity_particles: &[(&[Particle], f32)],
     ) -> Result<Frame, wgpu::SurfaceError> {
-        let instances: Vec<InstanceRaw> = entity_particles
-            .iter()
-            .flat_map(|(particles, opacity)| {
-                particles.iter().map(move |p| InstanceRaw {
-                    position: p.position.to_array(),
-                    size: p.size,
-                    brightness: p.brightness * opacity,
-                    color_bias: p.color_bias,
-                    layer: p.layer.as_f32(),
-                    crease: p.crease,
-                    normal: p.normal.to_array(),
-                    _pad: 0.0,
-                })
-            })
-            .collect();
+        // Refill the reused staging vector rather than allocating a new one
+        // each frame (see `instance_scratch`).
+        {
+            let scratch = &mut self.instance_scratch;
+            scratch.clear();
+            for (particles, opacity) in entity_particles {
+                for p in particles.iter() {
+                    scratch.push(InstanceRaw {
+                        position: p.position.to_array(),
+                        size: p.size,
+                        brightness: p.brightness * opacity,
+                        color_bias: p.color_bias,
+                        layer: p.layer.as_f32(),
+                        crease: p.crease,
+                        normal: p.normal.to_array(),
+                        _pad: 0.0,
+                    });
+                }
+            }
+        }
+        let instance_count = self.instance_scratch.len();
 
-        self.ensure_instance_capacity(instances.len().max(1));
-        if !instances.is_empty() {
-            self.queue
-                .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
+        self.ensure_instance_capacity(instance_count.max(1));
+        if instance_count > 0 {
+            self.queue.write_buffer(
+                &self.instance_buffer,
+                0,
+                bytemuck::cast_slice(&self.instance_scratch),
+            );
         }
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -482,12 +540,12 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            if !instances.is_empty() {
+            if instance_count > 0 {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.set_vertex_buffer(0, self.quad_vertex_buffer.slice(..));
                 pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-                pass.draw(0..4, 0..instances.len() as u32);
+                pass.draw(0..4, 0..instance_count as u32);
             }
         }
 

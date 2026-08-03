@@ -5,7 +5,7 @@
 //! does not follow redirects, and blocks private / link-local / special
 //! destinations after DNS resolution (SSRF / DNS-rebinding defense).
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use reqwest::blocking::Client;
@@ -20,6 +20,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 15;
 /// GET (only) a URL whose host is on a configured egress allowlist.
 pub struct HttpFetchHandler {
     client: Client,
+    timeout: Duration,
     allowed_hosts: Vec<String>,
     max_response_bytes: usize,
 }
@@ -184,8 +185,9 @@ impl HttpFetchHandler {
             return Err(HttpFetchError::EmptyAllowlist);
         }
 
+        let timeout = Duration::from_secs(timeout_secs);
         let client = Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
+            .timeout(timeout)
             // Never follow redirects: a 302 to an off-allowlist host would
             // otherwise bypass the egress check on the original URL.
             .redirect(redirect::Policy::none())
@@ -194,6 +196,7 @@ impl HttpFetchHandler {
 
         Ok(Self {
             client,
+            timeout,
             allowed_hosts,
             max_response_bytes,
         })
@@ -209,7 +212,19 @@ impl HttpFetchHandler {
     }
 
     /// After allowlist match: block unsafe literals and hostname→private DNS.
-    fn assert_safe_destination(&self, host: &str) -> Result<(), HttpFetchError> {
+    ///
+    /// Returns the set of validated, pinned socket addresses for a **hostname**
+    /// destination (empty for an IP literal, where no name resolution — and so
+    /// no rebinding window — is involved). The caller pins the actual
+    /// connection to exactly these addresses via
+    /// [`reqwest::blocking::ClientBuilder::resolve_to_addrs`], closing the
+    /// TOCTOU gap where `reqwest` would otherwise re-resolve DNS independently
+    /// of this validation (DNS-rebinding / SSRF).
+    fn assert_safe_destination(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<Vec<SocketAddr>, HttpFetchError> {
         if let Ok(ip) = host.parse::<IpAddr>() {
             let class = classify_ip(ip);
             if is_never_allowable(class) {
@@ -217,21 +232,29 @@ impl HttpFetchHandler {
             }
             // Loopback/private literals are only reachable because they were
             // explicitly allowlisted (caller already checked host_allowed).
-            return Ok(());
+            // The IP is fixed in the URL, so there is nothing to pin.
+            return Ok(Vec::new());
         }
 
-        // Hostname path: every resolved address must be public. This stops
-        // allowlisted names that rebind to loopback/RFC1918/metadata.
-        let mut addrs = (host, 0u16)
+        // Hostname path: resolve exactly once, require every resolved address
+        // to be public, and hand the validated set back so the connection is
+        // pinned to it. This stops allowlisted names that rebind to
+        // loopback/RFC1918/metadata between validation and connect.
+        let resolved: Vec<SocketAddr> = (host, port)
             .to_socket_addrs()
             .map_err(|e| HttpFetchError::DnsFailed {
                 host: host.to_string(),
                 reason: e.to_string(),
-            })?;
+            })?
+            .collect();
 
-        let mut saw_any = false;
-        for addr in &mut addrs {
-            saw_any = true;
+        if resolved.is_empty() {
+            return Err(HttpFetchError::DnsFailed {
+                host: host.to_string(),
+                reason: "no addresses returned".into(),
+            });
+        }
+        for addr in &resolved {
             let ip = addr.ip();
             if classify_ip(ip) != IpClass::Public {
                 return Err(HttpFetchError::NonPublicResolution {
@@ -240,16 +263,12 @@ impl HttpFetchHandler {
                 });
             }
         }
-        if !saw_any {
-            return Err(HttpFetchError::DnsFailed {
-                host: host.to_string(),
-                reason: "no addresses returned".into(),
-            });
-        }
-        Ok(())
+        Ok(resolved)
     }
 
-    fn validate_url(&self, raw: &str) -> Result<Url, HttpFetchError> {
+    /// Validate the URL and return it alongside the pinned addresses (empty
+    /// for an IP-literal host) the connection must be restricted to.
+    fn validate_url(&self, raw: &str) -> Result<(Url, Vec<SocketAddr>), HttpFetchError> {
         let url = Url::parse(raw).map_err(|e| HttpFetchError::InvalidUrl(e.to_string()))?;
         match url.scheme() {
             "http" | "https" => {}
@@ -266,8 +285,9 @@ impl HttpFetchHandler {
                 host: host.to_string(),
             });
         }
-        self.assert_safe_destination(host)?;
-        Ok(url)
+        let port = url.port_or_known_default().unwrap_or(0);
+        let pinned = self.assert_safe_destination(host, port)?;
+        Ok((url, pinned))
     }
 }
 
@@ -280,10 +300,28 @@ impl ToolHandler for HttpFetchHandler {
             .ok_or(HttpFetchError::MissingUrlArgument)
             .map_err(|e| e.to_string())?;
 
-        let url = self.validate_url(raw_url).map_err(|e| e.to_string())?;
+        let (url, pinned) = self.validate_url(raw_url).map_err(|e| e.to_string())?;
 
-        let response = self
-            .client
+        // For a hostname destination, pin this request's DNS resolution to the
+        // exact addresses we just validated so `reqwest` cannot re-resolve to a
+        // rebound (private/metadata) IP. IP-literal destinations need no
+        // pinning and reuse the shared pooled client.
+        let pinned_client = if pinned.is_empty() {
+            None
+        } else {
+            let host = url.host_str().unwrap_or_default().to_string();
+            Some(
+                Client::builder()
+                    .timeout(self.timeout)
+                    .redirect(redirect::Policy::none())
+                    .resolve_to_addrs(&host, &pinned)
+                    .build()
+                    .map_err(|e| HttpFetchError::ClientBuild(e.to_string()).to_string())?,
+            )
+        };
+        let client = pinned_client.as_ref().unwrap_or(&self.client);
+
+        let response = client
             .get(url.clone())
             .send()
             .map_err(|e| HttpFetchError::Request(e.to_string()).to_string())?;
@@ -291,7 +329,9 @@ impl ToolHandler for HttpFetchHandler {
         let status = response.status().as_u16();
         let final_url = response.url().clone();
         // Defense in depth: even with redirects disabled, refuse if the
-        // client somehow ended on a different / unsafe host.
+        // client somehow ended on a different / unsafe host. The connection
+        // was already pinned to validated IPs, so a plain allowlist check
+        // suffices here (no re-resolution needed).
         if let Some(host) = final_url.host_str() {
             if !self.host_allowed(host) {
                 return Err(HttpFetchError::HostNotAllowed {
@@ -299,8 +339,6 @@ impl ToolHandler for HttpFetchHandler {
                 }
                 .to_string());
             }
-            self.assert_safe_destination(host)
-                .map_err(|e| e.to_string())?;
         }
 
         let bytes = response

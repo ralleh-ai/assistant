@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-presence-current-modes"
+description = "Enables the presence_current_modes command without any pre-configured scope."
+commands.allow = ["presence_current_modes"]
+
+[[permission]]
+identifier = "deny-presence-current-modes"
+description = "Denies the presence_current_modes command without any pre-configured scope."
+commands.deny = ["presence_current_modes"]

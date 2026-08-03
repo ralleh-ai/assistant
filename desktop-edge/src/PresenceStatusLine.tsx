@@ -35,12 +35,21 @@ export function PresenceStatusLine() {
 
     useEffect(() => {
         let cancelled = false;
+        // M10: skip a tick while the previous IPC call is still
+        // outstanding. A fixed 200 ms `setInterval` firing an async
+        // callback stacks calls if the shell is momentarily slow
+        // (mid mic-pump, GC pause), which both wastes IPC and can
+        // apply an older snapshot after a newer one. `inFlight`
+        // collapses those to at most one outstanding read.
+        let inFlight = false;
         // 5 Hz. Tracker reads are `HashSet::iter().collect()` under
         // a `Mutex` — sub-microsecond critical sections — so the
         // cost of this timer is dominated by IPC overhead, not by
         // contention. Interval chosen to feel responsive without
         // spamming the log at info level if the poll ever errors.
         const tick = async () => {
+            if (inFlight) return;
+            inFlight = true;
             try {
                 const modes = await invoke<string[]>("presence_current_modes");
                 if (!cancelled) setPhrase(pickPhrase(modes));
@@ -49,10 +58,12 @@ export function PresenceStatusLine() {
                 // the last known phrase rather than flashing "Idle";
                 // the screen reader has already announced whatever
                 // was on air last.
+            } finally {
+                inFlight = false;
             }
         };
-        tick();
-        const id = window.setInterval(tick, 200);
+        void tick();
+        const id = window.setInterval(() => void tick(), 200);
         return () => {
             cancelled = true;
             window.clearInterval(id);

@@ -8,10 +8,19 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
+
+/// Wall-clock ceiling for a single `piper` invocation.
+const PIPER_CLI_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// PCM mono speech produced by a TTS engine.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SpeechAudio {
+    /// Synthesized PCM. Excluded from serialization for the same reason as
+    /// [`crate::source::AudioFrame::samples`]: raw audio must never leak into
+    /// a serialized log/audit/IPC payload. Callers consume `samples`
+    /// in-process (playback sink); nothing round-trips it through serde.
+    #[serde(skip)]
     pub samples: Vec<f32>,
     pub sample_rate_hz: u32,
 }
@@ -101,12 +110,13 @@ impl TextToSpeech for PiperCliTts {
         if text.trim().is_empty() {
             return Err(TtsError::EmptyText);
         }
-        let uniq = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let out_wav =
-            std::env::temp_dir().join(format!("ralleh-piper-{}-{}.wav", std::process::id(), uniq));
+        // Private, RAII-cleaned temp dir for the synthesized WAV (unpredictable
+        // name, removed on drop even on early-return/panic).
+        let tmp = tempfile::Builder::new()
+            .prefix("ralleh-piper-")
+            .tempdir()
+            .map_err(|e| TtsError::Engine(format!("create temp dir: {e}")))?;
+        let out_wav = tmp.path().join("speech.wav");
         let work_dir = self.cli_path.parent().unwrap_or_else(|| Path::new("."));
         let mut child = Command::new(&self.cli_path)
             .current_dir(work_dir)
@@ -128,21 +138,20 @@ impl TextToSpeech for PiperCliTts {
             stdin
                 .write_all(text.as_bytes())
                 .map_err(|e| TtsError::Engine(format!("piper stdin: {e}")))?;
-            // Piper reads until EOF.
+            // Piper reads until EOF (stdin dropped here).
         }
-        let output = child
-            .wait_with_output()
-            .map_err(|e| TtsError::Engine(format!("wait piper: {e}")))?;
+        // Bounded wait: a wedged piper is killed rather than hanging the TTS
+        // path forever.
+        let output = crate::proc::wait_with_timeout(child, PIPER_CLI_TIMEOUT)
+            .map_err(|e| TtsError::Engine(format!("piper: {e}")))?;
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
-            let _ = std::fs::remove_file(&out_wav);
             return Err(TtsError::Engine(format!(
                 "piper exited {}: {err}",
                 output.status
             )));
         }
         let pcm = crate::wav::read_pcm16(&out_wav).map_err(|e| TtsError::Engine(e.to_string()))?;
-        let _ = std::fs::remove_file(&out_wav);
         if pcm.samples.is_empty() {
             return Err(TtsError::Engine("piper produced empty audio".into()));
         }

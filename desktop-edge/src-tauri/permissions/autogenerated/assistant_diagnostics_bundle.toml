@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-assistant-diagnostics-bundle"
+description = "Enables the assistant_diagnostics_bundle command without any pre-configured scope."
+commands.allow = ["assistant_diagnostics_bundle"]
+
+[[permission]]
+identifier = "deny-assistant-diagnostics-bundle"
+description = "Denies the assistant_diagnostics_bundle command without any pre-configured scope."
+commands.deny = ["assistant_diagnostics_bundle"]

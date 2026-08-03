@@ -7,6 +7,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AudioFrame {
     /// Mono PCM samples, normalized to [-1.0, 1.0].
+    ///
+    /// Raw microphone audio is the most sensitive payload in the pipeline —
+    /// biometric voiceprint + whatever was said. It is deliberately excluded
+    /// from serialization (`#[serde(skip)]`) so a frame that accidentally
+    /// reaches a log line, an audit record, or an IPC boundary carries only
+    /// metadata (rate + sequence), never the PCM itself. Frames are always
+    /// constructed in-process, so nothing depends on round-tripping samples
+    /// through serde.
+    #[serde(skip)]
     pub samples: Vec<f32>,
     /// Sample rate in Hz for this frame's samples.
     pub sample_rate_hz: u32,

@@ -163,10 +163,17 @@ impl ApprovalStore {
         Ok(())
     }
 
-    fn persist_or_expect(&self) {
+    /// Persist best-effort: a snapshot write failure (full disk, revoked
+    /// permission, transient I/O) must **not** take down tool dispatch. The
+    /// in-memory map has already been mutated, so the approval remains
+    /// correct for the life of this process; only durability across a restart
+    /// is lost. We log loudly rather than panic — an audit-store-style
+    /// fail-open, because crashing the whole service on a persistence hiccup
+    /// is a strictly worse failure mode than a non-durable approval queue.
+    fn persist_best_effort(&self) {
         if let Err(e) = self.persist() {
-            panic!(
-                "failed to persist approval store to {}: {e}",
+            log::warn!(
+                "approval store: failed to persist snapshot to {} (queue is in-memory only until this recovers): {e}",
                 self.path
                     .as_ref()
                     .map(|p| p.display().to_string())
@@ -210,7 +217,7 @@ impl ApprovalStore {
             let mut map = self.inner.lock().expect("approval store mutex poisoned");
             map.insert(request.id, request.clone());
         }
-        self.persist_or_expect();
+        self.persist_best_effort();
         request
     }
 
@@ -252,7 +259,7 @@ impl ApprovalStore {
             entry.decided_by = Some(decided_by.into());
             snapshot
         };
-        self.persist_or_expect();
+        self.persist_best_effort();
         Ok(snapshot)
     }
 
@@ -266,7 +273,7 @@ impl ApprovalStore {
             }
             entry.status = ApprovalStatus::Executed;
         }
-        self.persist_or_expect();
+        self.persist_best_effort();
         Ok(())
     }
 }

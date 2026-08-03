@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-presence-set-interactive"
+description = "Enables the presence_set_interactive command without any pre-configured scope."
+commands.allow = ["presence_set_interactive"]
+
+[[permission]]
+identifier = "deny-presence-set-interactive"
+description = "Denies the presence_set_interactive command without any pre-configured scope."
+commands.deny = ["presence_set_interactive"]

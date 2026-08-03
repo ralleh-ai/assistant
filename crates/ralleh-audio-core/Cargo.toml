@@ -21,6 +21,9 @@ whisper = ["dep:whisper-rs"]
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+# Secure, RAII-cleaned temp files for the CLI STT/TTS bridges (private 0700
+# dir, unpredictable name, auto-removed on drop even on panic).
+tempfile = "3"
 cpal = { version = "0.15", optional = true }
 # 0.13: in-process whisper.cpp. On Windows MSVC, bindgen often fails;
 # use WhisperCliStt + tools/whisper instead.

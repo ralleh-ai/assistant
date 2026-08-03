@@ -165,6 +165,59 @@ jobs:
         working-directory: desktop-edge/src-tauri
         run: cargo test
 
+  supply-chain:
+    name: supply-chain (cargo-deny + npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo-deny across all three Cargo projects. `check advisories
+      # bans sources` is the security-relevant subset (see deny.toml for
+      # why licenses are documented but not yet gated). Each project has
+      # its own lockfile, so each gets its own pass against the shared
+      # root deny.toml.
+      - name: cargo-deny (workspace)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: Cargo.toml
+          arguments: --all-features --config deny.toml
+          command: check advisories bans sources
+
+      - name: cargo-deny (desktop-edge)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: desktop-edge/src-tauri/Cargo.toml
+          arguments: --all-features --config deny.toml
+          command: check advisories bans sources
+
+      - name: cargo-deny (presence-prototype)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: presence-prototype/Cargo.toml
+          arguments: --all-features --config deny.toml
+          command: check advisories bans sources
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop-edge/package-lock.json
+
+      - name: npm ci (desktop-edge)
+        working-directory: desktop-edge
+        run: npm ci
+
+      # Fail on a known-vulnerable *shipped* dependency. `--omit=dev`
+      # scopes this to what actually lands in the webview bundle (react,
+      # @tauri-apps/api, @fontsource); build-only tooling (vite, tsc) is
+      # audited separately and shouldn't block a release on a dev-only
+      # advisory. High/critical only — moderate advisories are triaged,
+      # not gated, to keep the signal actionable.
+      - name: npm audit (production deps, high+)
+        working-directory: desktop-edge
+        run: npm audit --omit=dev --audit-level=high
+
   presence-runtime:
     name: presence-runtime (winit/wgpu)
     runs-on: ubuntu-latest

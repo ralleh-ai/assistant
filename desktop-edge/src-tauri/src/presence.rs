@@ -33,7 +33,7 @@
 //!   EOF), and the child is killed if it hasn't already exited.
 
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -620,33 +620,109 @@ impl Drop for Presence {
     }
 }
 
+/// Hard cap on a single line read off the presence child's stdout /
+/// stderr. Reverse-channel `EventEnvelope`s are tiny (a variant plus a
+/// couple of scalars) and stderr is human-readable log text; anything
+/// past 64 KiB is malformed or hostile. A line over the cap is drained
+/// to its newline and dropped rather than buffered, so a child that
+/// floods one enormous unterminated line can't drive unbounded
+/// allocation in the shell (the shell-side complement to the runtime's
+/// own `ipc_stdin` cap — finding H6).
+const MAX_LINE_BYTES: usize = 64 * 1024;
+
+/// Outcome of reading one capped line from a child pipe.
+enum LineOutcome {
+    /// A complete line (newline-terminated, or the final line at EOF).
+    Line,
+    /// Clean end of stream with nothing buffered.
+    Eof,
+    /// The line exceeded [`MAX_LINE_BYTES`]; it was drained and skipped.
+    TooLong,
+    /// An I/O error; the reader should log and exit.
+    Io(std::io::Error),
+}
+
+/// Read one line into `buf` (without the trailing newline), refusing to
+/// buffer more than [`MAX_LINE_BYTES`]. Bytes past the cap are consumed
+/// up to the next newline but discarded, so an unterminated flood cannot
+/// exhaust memory.
+fn read_capped_line<R: Read>(input: &mut R, buf: &mut Vec<u8>) -> LineOutcome {
+    let mut byte = [0u8; 1];
+    let mut overflowed = false;
+    loop {
+        match input.read(&mut byte) {
+            Ok(0) => {
+                return if overflowed {
+                    LineOutcome::TooLong
+                } else if buf.is_empty() {
+                    LineOutcome::Eof
+                } else {
+                    LineOutcome::Line
+                };
+            }
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    return if overflowed {
+                        LineOutcome::TooLong
+                    } else {
+                        LineOutcome::Line
+                    };
+                }
+                if buf.len() < MAX_LINE_BYTES {
+                    buf.push(byte[0]);
+                } else {
+                    overflowed = true; // keep draining to the newline, stop storing
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return LineOutcome::Io(e),
+        }
+    }
+}
+
 fn reader_loop(stdout: std::process::ChildStdout, listener: EventListener, liveness: Liveness) {
-    // Line-buffered read of NDJSON `EventEnvelope` payloads. Malformed
+    // Bounded line read of NDJSON `EventEnvelope` payloads. Malformed
     // lines are logged and skipped (same policy the forward path
     // uses); an EOF on stdout is the normal terminate signal, either
     // from the child exiting or from us tearing it down on drop.
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(err) => {
+    let mut reader = BufReader::new(stdout);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        match read_capped_line(&mut reader, &mut buf) {
+            LineOutcome::Eof => return,
+            LineOutcome::Io(err) => {
                 log::warn!(
                     "desktop-edge: presence stdout read error ({err}); reader thread exiting"
                 );
                 return;
             }
+            LineOutcome::TooLong => {
+                log::warn!(
+                    "desktop-edge: dropping oversized presence event line (> {MAX_LINE_BYTES} bytes)"
+                );
+                continue;
+            }
+            LineOutcome::Line => {}
+        }
+        let line = match std::str::from_utf8(&buf) {
+            Ok(s) => s.trim(),
+            Err(_) => {
+                log::warn!("desktop-edge: dropping non-UTF-8 presence event line");
+                continue;
+            }
         };
-        if line.trim().is_empty() {
+        if line.is_empty() {
             continue;
         }
-        let env: EventEnvelope = match serde_json::from_str(&line) {
+        let env: EventEnvelope = match serde_json::from_str(line) {
             Ok(e) => e,
             Err(err) => {
                 log::warn!("desktop-edge: dropping malformed presence event envelope: {err}");
                 continue;
             }
         };
-        if !env.is_current() {
+        if !env.is_compatible() {
             log::warn!(
                 "desktop-edge: dropping presence event with unsupported version {} \
                  (this build expects {})",
@@ -689,28 +765,39 @@ fn reader_loop(stdout: std::process::ChildStdout, listener: EventListener, liven
 }
 
 fn stderr_reader_loop(stderr: std::process::ChildStderr, sink: StderrSink) {
-    // Line-buffered read of the runtime's stderr. Each line is
-    // handed to the sink verbatim — the sink decides whether to
-    // add a timestamp, prefix, or route it into structured
-    // logging. Non-UTF-8 bytes are lossily decoded rather than
-    // dropped so a rogue write from a native library (e.g. wgpu
-    // validation on some drivers) is still recorded.
-    let reader = BufReader::new(stderr);
-    for line in reader.lines() {
-        match line {
-            Ok(l) => {
-                if l.trim().is_empty() {
-                    continue;
-                }
-                sink(&l);
-            }
-            Err(err) => {
+    // Bounded line read of the runtime's stderr. Each line is handed to
+    // the sink verbatim — the sink decides whether to add a timestamp,
+    // prefix, or route it into structured logging. Non-UTF-8 bytes are
+    // lossily decoded rather than dropped so a rogue write from a native
+    // library (e.g. wgpu validation on some drivers) is still recorded.
+    // The same 64 KiB cap as the stdout reader applies so a runaway
+    // stderr line can't exhaust shell memory.
+    let mut reader = BufReader::new(stderr);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        match read_capped_line(&mut reader, &mut buf) {
+            LineOutcome::Eof => return,
+            LineOutcome::Io(err) => {
                 log::warn!(
                     "desktop-edge: presence stderr read error ({err}); stderr thread exiting"
                 );
                 return;
             }
+            LineOutcome::TooLong => {
+                log::warn!(
+                    "desktop-edge: dropping oversized presence stderr line (> {MAX_LINE_BYTES} bytes)"
+                );
+                continue;
+            }
+            LineOutcome::Line => {}
         }
+        let line = String::from_utf8_lossy(&buf);
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        sink(trimmed);
     }
 }
 
@@ -737,6 +824,7 @@ fn writer_loop(mut stdin: std::process::ChildStdin, rx: Receiver<Envelope>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::BufRead;
 
     #[test]
     fn a_disabled_presence_swallows_sends_and_reports_disabled() {
@@ -941,7 +1029,7 @@ mod tests {
                 let Ok(env) = serde_json::from_str::<EventEnvelope>(&line) else {
                     continue;
                 };
-                if !env.is_current() {
+                if !env.is_compatible() {
                     continue;
                 }
                 listener(env.payload);
@@ -967,5 +1055,45 @@ mod tests {
         assert_eq!(got.len(), 2, "got {got:?}");
         assert_eq!(got[0], Event::Ready { x: 10, y: 20 });
         assert_eq!(got[1], Event::Moved { x: 30, y: 40 });
+    }
+
+    #[test]
+    fn read_capped_line_drops_oversized_and_keeps_the_next_line() {
+        // A giant unterminated-until-very-late line must be reported as
+        // `TooLong` (and not buffered whole), and the following valid
+        // line must still read back intact. This is the shell-side H6
+        // guard against a runaway presence child flooding one line.
+        use std::io::Cursor;
+        let huge = "x".repeat(MAX_LINE_BYTES + 10);
+        let stream = format!("{huge}\nsecond\n");
+        let mut reader = Cursor::new(stream.into_bytes());
+        let mut buf: Vec<u8> = Vec::new();
+
+        buf.clear();
+        assert!(
+            matches!(
+                read_capped_line(&mut reader, &mut buf),
+                LineOutcome::TooLong
+            ),
+            "oversized first line should be reported TooLong"
+        );
+        assert!(
+            buf.len() <= MAX_LINE_BYTES,
+            "buffer must stay capped, got {}",
+            buf.len()
+        );
+
+        buf.clear();
+        assert!(matches!(
+            read_capped_line(&mut reader, &mut buf),
+            LineOutcome::Line
+        ));
+        assert_eq!(&buf, b"second");
+
+        buf.clear();
+        assert!(matches!(
+            read_capped_line(&mut reader, &mut buf),
+            LineOutcome::Eof
+        ));
     }
 }

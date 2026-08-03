@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-assistant-save-backend"
+description = "Enables the assistant_save_backend command without any pre-configured scope."
+commands.allow = ["assistant_save_backend"]
+
+[[permission]]
+identifier = "deny-assistant-save-backend"
+description = "Denies the assistant_save_backend command without any pre-configured scope."
+commands.deny = ["assistant_save_backend"]

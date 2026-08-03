@@ -31,7 +31,18 @@ pub struct LiveMicSmokeResult {
     pub max_abs: f32,
 }
 
+/// Hard ceiling on how much PCM a single utterance may accumulate before we
+/// force it closed: 30 seconds at 16 kHz. Without this, a source that never
+/// returns to silence (a stuck-open mic, a noisy room, or a hostile frame
+/// generator) would grow the buffer without bound and exhaust memory. 30 s is
+/// far longer than any wake-word command yet still a fixed, provable cap.
+const MAX_UTTERANCE_SAMPLES: usize = 16_000 * 30;
+
 /// Collect PCM from frames while VAD reports speech (after confirm).
+///
+/// Bounded by [`MAX_UTTERANCE_SAMPLES`]: once the cap is hit the utterance is
+/// truncated and treated as complete, so an endless "speech" stream can never
+/// drive unbounded allocation.
 fn collect_utterance(source: &mut dyn AudioSource, vad: &mut VoiceActivityDetector) -> Vec<f32> {
     let mut pcm = Vec::new();
     let mut in_speech = false;
@@ -40,7 +51,15 @@ fn collect_utterance(source: &mut dyn AudioSource, vad: &mut VoiceActivityDetect
         match state {
             VadState::Speech | VadState::MaybeSilence => {
                 in_speech = true;
-                pcm.extend_from_slice(&frame.samples);
+                let remaining = MAX_UTTERANCE_SAMPLES.saturating_sub(pcm.len());
+                if remaining == 0 {
+                    break;
+                }
+                let take = frame.samples.len().min(remaining);
+                pcm.extend_from_slice(&frame.samples[..take]);
+                if pcm.len() >= MAX_UTTERANCE_SAMPLES {
+                    break;
+                }
             }
             VadState::Silence if in_speech => break,
             VadState::MaybeSpeech => {}

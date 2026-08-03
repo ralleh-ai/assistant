@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-presence-set-reduced-motion"
+description = "Enables the presence_set_reduced_motion command without any pre-configured scope."
+commands.allow = ["presence_set_reduced_motion"]
+
+[[permission]]
+identifier = "deny-presence-set-reduced-motion"
+description = "Denies the presence_set_reduced_motion command without any pre-configured scope."
+commands.deny = ["presence_set_reduced_motion"]

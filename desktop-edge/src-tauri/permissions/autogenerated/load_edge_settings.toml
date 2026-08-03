@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-load-edge-settings"
+description = "Enables the load_edge_settings command without any pre-configured scope."
+commands.allow = ["load_edge_settings"]
+
+[[permission]]
+identifier = "deny-load-edge-settings"
+description = "Denies the load_edge_settings command without any pre-configured scope."
+commands.deny = ["load_edge_settings"]

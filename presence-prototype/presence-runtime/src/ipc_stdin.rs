@@ -36,7 +36,7 @@
 //! other part of `presence-runtime` needs.
 
 use std::io::BufRead;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread;
 
 use presence_ipc::{Command, Envelope};
@@ -46,6 +46,30 @@ use presence_ipc::{Command, Envelope};
 /// (including unset) leaves the transport off.
 pub const OPT_IN_ENV: &str = "PRESENCE_STDIN_IPC";
 
+/// Hard cap on a single JSON line. Envelopes are tiny (a command plus a few
+/// scalars); anything past 64 KiB is malformed or hostile. A line over the cap
+/// is drained to its newline and dropped rather than buffered, so a peer that
+/// never sends a newline can't drive unbounded allocation.
+const MAX_LINE_BYTES: usize = 64 * 1024;
+
+/// Bound on the command queue between the reader thread and the event loop.
+/// A full queue applies backpressure (the reader blocks, then the shell's pipe
+/// write blocks) instead of growing without limit — the correct behavior for a
+/// hot command stream where dropping is worse than briefly stalling the sender.
+const CHANNEL_CAPACITY: usize = 1024;
+
+/// Outcome of reading one capped line from the transport.
+enum ReadOutcome {
+    /// A complete line (newline-terminated, or the final line at EOF).
+    Line,
+    /// Clean end of stream with nothing buffered.
+    Eof,
+    /// The line exceeded [`MAX_LINE_BYTES`]; it was drained and must be skipped.
+    TooLong,
+    /// An I/O error; the reader should log and exit.
+    Io(std::io::Error),
+}
+
 /// Returns a receiver iff [`OPT_IN_ENV`] is set to a truthy value. When
 /// disabled — the default — this returns `None` and does not spawn a
 /// thread, so behavior matches the pre-transport prototype exactly.
@@ -53,7 +77,7 @@ pub fn spawn_if_enabled() -> Option<Receiver<Command>> {
     if !opted_in() {
         return None;
     }
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(CHANNEL_CAPACITY);
     thread::Builder::new()
         .name("presence-ipc-stdin".to_string())
         .spawn(move || run(std::io::stdin().lock(), tx))
@@ -100,25 +124,77 @@ fn opted_in() -> bool {
 ///
 /// `pub(crate)` for the tests below — external callers should go through
 /// [`spawn_if_enabled`].
-pub(crate) fn run<R: BufRead>(mut input: R, tx: Sender<Command>) {
-    let mut line = String::new();
+pub(crate) fn run<R: BufRead>(mut input: R, tx: SyncSender<Command>) {
+    let mut buf: Vec<u8> = Vec::new();
     loop {
-        line.clear();
-        match input.read_line(&mut line) {
-            Ok(0) => return, // EOF
-            Ok(_) => {}
-            Err(err) => {
+        buf.clear();
+        match read_capped_line(&mut input, &mut buf) {
+            ReadOutcome::Eof => return,
+            ReadOutcome::Io(err) => {
                 log::warn!("presence-runtime: stdin ipc read error: {err}");
                 return;
             }
+            ReadOutcome::TooLong => {
+                log::warn!(
+                    "presence-runtime: dropping oversized ipc line (> {MAX_LINE_BYTES} bytes)"
+                );
+                continue;
+            }
+            ReadOutcome::Line => {}
         }
-        let trimmed = line.trim();
+        let trimmed = match std::str::from_utf8(&buf) {
+            Ok(s) => s.trim(),
+            Err(_) => {
+                log::warn!("presence-runtime: dropping non-UTF-8 ipc line");
+                continue;
+            }
+        };
         if trimmed.is_empty() {
             continue;
         }
         let Some(cmd) = decode(trimmed) else { continue };
+        // Blocking send is intentional: a full queue means the event loop is
+        // behind, and back-pressuring the reader (and thus the shell) is the
+        // bounded-memory choice. `Err` only occurs when the receiver is gone.
         if tx.send(cmd).is_err() {
             return; // main loop gone
+        }
+    }
+}
+
+/// Read one line into `buf` (without the trailing newline), refusing to buffer
+/// more than [`MAX_LINE_BYTES`]. Bytes past the cap are consumed up to the next
+/// newline but discarded, so an unterminated flood cannot exhaust memory.
+fn read_capped_line<R: BufRead>(input: &mut R, buf: &mut Vec<u8>) -> ReadOutcome {
+    let mut byte = [0u8; 1];
+    let mut overflowed = false;
+    loop {
+        match input.read(&mut byte) {
+            Ok(0) => {
+                return if overflowed {
+                    ReadOutcome::TooLong
+                } else if buf.is_empty() {
+                    ReadOutcome::Eof
+                } else {
+                    ReadOutcome::Line
+                };
+            }
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    return if overflowed {
+                        ReadOutcome::TooLong
+                    } else {
+                        ReadOutcome::Line
+                    };
+                }
+                if buf.len() < MAX_LINE_BYTES {
+                    buf.push(byte[0]);
+                } else {
+                    overflowed = true; // keep draining to the newline, stop storing
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return ReadOutcome::Io(e),
         }
     }
 }
@@ -128,7 +204,7 @@ pub(crate) fn run<R: BufRead>(mut input: R, tx: Sender<Command>) {
 /// the version-mismatch path are covered by unit tests.
 pub(crate) fn decode(line: &str) -> Option<Command> {
     match serde_json::from_str::<Envelope>(line) {
-        Ok(envelope) if envelope.is_current() => Some(envelope.payload),
+        Ok(envelope) if envelope.is_compatible() => Some(envelope.payload),
         Ok(envelope) => {
             log::warn!(
                 "presence-runtime: dropping ipc envelope with unsupported \
@@ -196,7 +272,7 @@ mod tests {
             serde_json::to_string(&b).unwrap()
         );
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(CHANNEL_CAPACITY);
         run(Cursor::new(stream), tx); // returns at EOF
 
         let out = drain(&rx);
@@ -213,8 +289,25 @@ mod tests {
         let env = Envelope::wrap(Command::SetReducedMotion { enabled: true });
         let stream = format!("{}\n", serde_json::to_string(&env).unwrap());
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(CHANNEL_CAPACITY);
         drop(rx);
         run(Cursor::new(stream), tx); // must not hang
+    }
+
+    #[test]
+    fn run_drops_an_oversized_line_but_keeps_processing() {
+        // A giant unterminated-until-very-late line must be dropped without
+        // buffering it whole, and a following valid line still gets through.
+        let huge = "x".repeat(MAX_LINE_BYTES + 10);
+        let valid = serde_json::to_string(&Envelope::wrap(Command::SetRingWanted { wanted: true }))
+            .unwrap();
+        let stream = format!("{huge}\n{valid}\n");
+
+        let (tx, rx) = mpsc::sync_channel(CHANNEL_CAPACITY);
+        run(Cursor::new(stream), tx);
+
+        let out = drain(&rx);
+        assert_eq!(out.len(), 1, "oversized line should be dropped, valid kept");
+        assert!(matches!(out[0], Command::SetRingWanted { wanted: true }));
     }
 }

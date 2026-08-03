@@ -30,6 +30,8 @@ pub enum FsWriteTextError {
     MissingContentsArgument,
     #[error("path escapes the configured sandbox root")]
     PathEscapesRoot,
+    #[error("refusing to write through a symlink (sandbox escape guard)")]
+    SymlinkRejected,
     #[error("refusing to overwrite existing file (pass \"overwrite\": true to allow)")]
     RefusingOverwrite,
     #[error("parent directory does not exist within the sandbox root")]
@@ -53,6 +55,15 @@ impl FsWriteTextHandler {
     /// canonicalize the *parent* directory (which must exist) and rebuild
     /// the full path from that, rather than canonicalizing the target
     /// itself.
+    ///
+    /// Canonicalizing the parent defeats `../` traversal in the directory
+    /// components, but not a **symlink as the final path component** — a
+    /// symlink named `link` inside the sandbox that points at `/etc/passwd`
+    /// would otherwise be followed by `fs::write`. We therefore additionally
+    /// reject a symlink leaf, and (when the target already exists)
+    /// canonicalize the full path and re-confirm it stays under `root`. The
+    /// write path itself uses `create_new` (fail-if-exists) so a symlink
+    /// planted between this check and the open cannot be followed.
     fn resolve_within_root(&self, requested: &str) -> Result<PathBuf, FsWriteTextError> {
         let candidate = self.root.join(requested);
 
@@ -73,7 +84,22 @@ impl FsWriteTextHandler {
             return Err(FsWriteTextError::PathEscapesRoot);
         }
 
-        Ok(canonical_parent.join(file_name))
+        let resolved = canonical_parent.join(&file_name);
+
+        // If anything already exists at the leaf, it must not be a symlink,
+        // and its real (symlink-resolved) location must stay under the root.
+        if let Ok(meta) = fs::symlink_metadata(&resolved) {
+            if meta.file_type().is_symlink() {
+                return Err(FsWriteTextError::SymlinkRejected);
+            }
+            if let Ok(canonical_target) = resolved.canonicalize() {
+                if !canonical_target.starts_with(&self.root) {
+                    return Err(FsWriteTextError::PathEscapesRoot);
+                }
+            }
+        }
+
+        Ok(resolved)
     }
 }
 
@@ -103,11 +129,27 @@ impl ToolHandler for FsWriteTextHandler {
             .resolve_within_root(requested_path)
             .map_err(|e| e.to_string())?;
 
-        if !overwrite && resolved.exists() {
-            return Err(FsWriteTextError::RefusingOverwrite.to_string());
+        // `create_new` makes the "refuse to clobber" check atomic and, as a
+        // side effect, refuses to follow a symlink planted at the leaf after
+        // `resolve_within_root` ran (O_EXCL semantics). When overwrite is
+        // allowed we truncate an existing regular file (symlink leaves were
+        // already rejected during resolution).
+        let mut open_opts = fs::OpenOptions::new();
+        open_opts.write(true);
+        if overwrite {
+            open_opts.create(true).truncate(true);
+        } else {
+            open_opts.create_new(true);
         }
 
-        fs::write(&resolved, contents.as_bytes())
+        let mut file = open_opts.open(&resolved).map_err(|e| {
+            if !overwrite && e.kind() == std::io::ErrorKind::AlreadyExists {
+                FsWriteTextError::RefusingOverwrite.to_string()
+            } else {
+                FsWriteTextError::Io(e.to_string()).to_string()
+            }
+        })?;
+        std::io::Write::write_all(&mut file, contents.as_bytes())
             .map_err(|e| FsWriteTextError::Io(e.to_string()).to_string())?;
 
         Ok(ToolResult {
@@ -251,5 +293,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let handler = FsWriteTextHandler::new(dir.path()).unwrap();
         assert_eq!(sandbox_root(&handler), dir.path().canonicalize().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_write_through_a_symlink_leaf_escaping_the_sandbox() {
+        use std::os::unix::fs::symlink;
+
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("secret.txt");
+        fs::write(&target, "original outside contents").unwrap();
+
+        let sandbox = tempfile::tempdir().unwrap();
+        // Plant a symlink INSIDE the sandbox whose leaf points outside it.
+        symlink(&target, sandbox.path().join("escape.txt")).unwrap();
+
+        let handler = FsWriteTextHandler::new(sandbox.path()).unwrap();
+
+        // Both overwrite and non-overwrite must refuse to follow the symlink.
+        let err = handler
+            .invoke(&invocation("escape.txt", "attacker", true))
+            .unwrap_err();
+        assert_eq!(err, FsWriteTextError::SymlinkRejected.to_string());
+
+        // The external file must be untouched.
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "original outside contents"
+        );
     }
 }

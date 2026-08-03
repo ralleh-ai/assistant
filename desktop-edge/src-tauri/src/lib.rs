@@ -1124,8 +1124,24 @@ fn reveal_path_in_file_manager(app: AppHandle, path: String) -> Result<(), Strin
     // affordance across desktop environments.
     #[cfg(target_os = "windows")]
     {
+        // L5: `explorer` parses its own command line rather than a
+        // clean argv, and the `/select,<path>` selector only works
+        // as a single combined token — splitting it into two args
+        // reliably breaks the highlight. Argument injection is
+        // already precluded here: `target` was canonicalized and
+        // proven to sit under the app config dir above, and
+        // `Command` never routes through a shell, so the value is
+        // both trusted and passed without shell interpretation.
+        //
+        // The real bug worth fixing is that `canonicalize` yields a
+        // `\\?\` extended-length prefix on Windows that `explorer`
+        // won't accept for `/select`; strip it so the highlight
+        // actually lands on the file instead of silently opening a
+        // default folder.
+        let display = target.to_string_lossy();
+        let native = display.strip_prefix(r"\\?\").unwrap_or(display.as_ref());
         std::process::Command::new("explorer")
-            .arg(format!("/select,{}", target.display()))
+            .arg(format!("/select,{native}"))
             .spawn()
             .map_err(|e| format!("explorer: {e}"))?;
     }

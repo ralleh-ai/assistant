@@ -15,6 +15,8 @@ ralleh-ai-router = { path = "../ralleh-ai-router" }
 ralleh-audit-store = { path = "../ralleh-audit-store" }
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.5", features = ["timeout", "trace"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

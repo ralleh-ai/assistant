@@ -22,6 +22,7 @@ and next steps.
 12. [`PRESENCE_SCENES.md`](./PRESENCE_SCENES.md) — the Scene/Entity/Generator/Behavior/Shape/Mode/Director architecture that realizes those states as concrete, renderable visuals (Idle, Loading, the activity modes, and how to add more).
 13. [`PRESENCE_INTEGRATION_PLAN.md`](./PRESENCE_INTEGRATION_PLAN.md) — how/when the presence entity plugs into the actual `desktop-edge` codebase (phasing, dependencies, decisions). Phase 1 prototype in progress; rest not yet implemented.
 14. [`adr/`](./adr/) — architecture decision records, both from the original planning doc and any made during implementation.
+15. [`CODE_REVIEW.md`](./CODE_REVIEW.md) — enterprise-hardening code review: security-first findings (Critical→nit) across the Rust workspace, Tauri shell, and TS frontend, with a prioritized remediation roadmap. Cross-references `THREAT_MODEL.md` (T1–T22).
 
 ## Why this exists
 

@@ -233,17 +233,52 @@ pub fn build_bundle(app: &AppHandle) -> Result<DiagnosticsBundle, String> {
 /// filename is `ralleh-diagnostics-<utc-timestamp>.json`,
 /// deterministic enough for chronological sorting but
 /// specific enough to avoid clobbering an earlier bundle.
+///
+/// # Path confinement (M8)
+///
+/// A caller-supplied `dest_dir` is confined to the app config
+/// dir subtree, mirroring the guard on
+/// `reveal_path_in_file_manager`. The bundle carries the
+/// tenant/device/actor identity triple and the audit tail, so an
+/// unconfined write would let any code reaching this command
+/// (post-H5, still only allowlisted, but the surface is now
+/// explicit) drop that content anywhere the process can write —
+/// e.g. a startup folder or a world-readable location. Confining
+/// to the same directory the reveal affordance can open also
+/// keeps "write" and "show in file manager" consistent: a bundle
+/// we can't reveal is a bundle we shouldn't have written.
 pub fn write_bundle(
     app: &AppHandle,
     bundle: &DiagnosticsBundle,
     dest_dir: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
+    let allowed_root = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("app config dir: {e}"))?;
+    // Ensure the root exists so it (and any confined subdir) can
+    // be canonicalized for the `starts_with` containment check.
+    fs::create_dir_all(&allowed_root).map_err(|e| format!("create config dir: {e}"))?;
+    let allowed_root = allowed_root
+        .canonicalize()
+        .map_err(|e| format!("canonicalize config dir: {e}"))?;
+
     let dir = match dest_dir {
-        Some(d) => d,
-        None => app
-            .path()
-            .app_config_dir()
-            .map_err(|e| format!("app config dir: {e}"))?,
+        Some(requested) => {
+            fs::create_dir_all(&requested).map_err(|e| format!("create bundle dir: {e}"))?;
+            let resolved = requested
+                .canonicalize()
+                .map_err(|e| format!("canonicalize bundle dir: {e}"))?;
+            if !resolved.starts_with(&allowed_root) {
+                return Err(format!(
+                    "diagnostics dest refused: {} is not under {}",
+                    resolved.display(),
+                    allowed_root.display()
+                ));
+            }
+            resolved
+        }
+        None => allowed_root,
     };
     fs::create_dir_all(&dir).map_err(|e| format!("create bundle dir: {e}"))?;
     // Filename-safe timestamp: colons are illegal on Windows,

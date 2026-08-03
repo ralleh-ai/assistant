@@ -5,6 +5,7 @@
 //! Device open is best-effort via `try_open_default` — broken Pulse/ALSA
 //! setups return `Ok(None)` instead of failing the unit suite.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 
@@ -55,6 +56,14 @@ pub struct CpalMicSource {
     rx: Receiver<Vec<f32>>,
     assembler: FrameAssembler,
     ready: std::collections::VecDeque<AudioFrame>,
+    /// Last error reported by the cpal stream error callback, if any. Surfaced
+    /// via [`CpalMicSource::take_stream_error`] so a caller can distinguish
+    /// "mic is quiet" from "the stream faulted and is delivering nothing".
+    err_flag: Arc<Mutex<Option<String>>>,
+    /// Count of capture chunks dropped because the bounded channel was full
+    /// (consumer not draining fast enough). Silently discarding audio is a
+    /// correctness signal a caller may want to observe, not hide.
+    dropped: Arc<AtomicU64>,
 }
 
 impl CpalMicSource {
@@ -82,22 +91,36 @@ impl CpalMicSource {
 
         let (tx, rx) = mpsc::sync_channel::<Vec<f32>>(64);
         let err_flag = Arc::new(Mutex::new(None::<String>));
-        let err_flag_cb = err_flag.clone();
+        let dropped = Arc::new(AtomicU64::new(0));
 
         let stream = match sample_format {
-            SampleFormat::F32 => {
-                build_input_stream::<f32, _>(&device, &config, channels, tx, err_flag_cb, |s| *s)?
-            }
-            SampleFormat::I16 => {
-                build_input_stream::<i16, _>(&device, &config, channels, tx, err_flag_cb, |s| {
-                    (*s).to_sample::<f32>()
-                })?
-            }
-            SampleFormat::U16 => {
-                build_input_stream::<u16, _>(&device, &config, channels, tx, err_flag_cb, |s| {
-                    (*s).to_sample::<f32>()
-                })?
-            }
+            SampleFormat::F32 => build_input_stream::<f32, _>(
+                &device,
+                &config,
+                channels,
+                tx,
+                err_flag.clone(),
+                dropped.clone(),
+                |s| *s,
+            )?,
+            SampleFormat::I16 => build_input_stream::<i16, _>(
+                &device,
+                &config,
+                channels,
+                tx,
+                err_flag.clone(),
+                dropped.clone(),
+                |s| (*s).to_sample::<f32>(),
+            )?,
+            SampleFormat::U16 => build_input_stream::<u16, _>(
+                &device,
+                &config,
+                channels,
+                tx,
+                err_flag.clone(),
+                dropped.clone(),
+                |s| (*s).to_sample::<f32>(),
+            )?,
             other => return Err(CpalMicError::UnsupportedFormat(other)),
         };
 
@@ -110,6 +133,8 @@ impl CpalMicSource {
             rx,
             assembler: FrameAssembler::new(sample_rate_hz, frame_len),
             ready: std::collections::VecDeque::new(),
+            err_flag,
+            dropped,
         })
     }
 
@@ -126,14 +151,30 @@ impl CpalMicSource {
     pub fn sample_rate_hz(&self) -> u32 {
         self.assembler.sample_rate_hz()
     }
+
+    /// Take and clear the most recent stream-error string, if the cpal error
+    /// callback has fired since the last call. `None` means the stream is
+    /// healthy (or at least has not reported a fault).
+    pub fn take_stream_error(&self) -> Option<String> {
+        self.err_flag.lock().ok().and_then(|mut slot| slot.take())
+    }
+
+    /// Number of capture chunks dropped so far because the consumer wasn't
+    /// draining `next_frame` fast enough. Monotonic; a rising value indicates
+    /// backpressure (the pipeline is falling behind real time).
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_input_stream<T, F>(
     device: &cpal::Device,
     config: &StreamConfig,
     channels: usize,
     tx: mpsc::SyncSender<Vec<f32>>,
     err_flag: Arc<Mutex<Option<String>>>,
+    dropped: Arc<AtomicU64>,
     convert: F,
 ) -> Result<Stream, CpalMicError>
 where
@@ -154,7 +195,13 @@ where
                         })
                         .collect()
                 };
-                let _ = tx.try_send(mono);
+                // Non-blocking send from the realtime audio thread: if the
+                // consumer is behind and the bounded channel is full, drop the
+                // chunk (never block the audio callback) but record it so the
+                // loss is observable via `dropped_frames`.
+                if tx.try_send(mono).is_err() {
+                    dropped.fetch_add(1, Ordering::Relaxed);
+                }
             },
             move |err| {
                 if let Ok(mut slot) = err_flag.lock() {
