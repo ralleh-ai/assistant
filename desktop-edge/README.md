@@ -95,6 +95,25 @@ CLI/tests — not on the core home screen.
   file and rename the backup). Migrations must be idempotent
   (rerun after crash-mid-write is safe) — enforced by unit
   tests.
+- **Audit log hash chain** — every audit event now carries a
+  SHA-256 `hash` of its canonical serialization plus a
+  `prevHash` linking to the previous event. `assistant_audit_verify`
+  (Tauri command) walks the active file and returns any
+  `content-tampered` / `prev-hash-mismatch` / `missing-hash` /
+  `unparseable` / `recompute-failed` findings with 1-indexed
+  line numbers so an operator can locate them. The chain
+  restarts on rotation (each active file is verified
+  independently). Legacy events written before the chain
+  shipped surface as `missing-hash` at the boundary between
+  pre-chain and post-chain history. **Property**:
+  tamper-*evident* — a mutation or deletion is detectable
+  against on-disk state. **Not** tamper-*proof*: an attacker
+  with FS write access can regenerate the whole chain. A
+  stronger guarantee would require offline-key signing or
+  external notarization; that layer is deliberately not built
+  yet and is documented in the crate header. Diagnostics
+  bundles now embed the verify report so a support attachment
+  proves chain integrity at the moment of capture.
 - **Diagnostics bundle** — the `assistant_diagnostics_bundle`
   Tauri command packages the redacted settings, active
   backend + health snapshot, presence liveness snapshot, last

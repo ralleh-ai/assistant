@@ -38,7 +38,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::assistant::AssistantState;
 use crate::assistant_health;
-use crate::audit::{AuditEvent, AuditLog};
+use crate::audit::{AuditEvent, AuditLog, AuditVerifyReport};
 use crate::presence::Presence;
 use crate::presence_log::PresenceLog;
 use crate::secret_store::open_default as open_default_secret_store;
@@ -64,6 +64,11 @@ pub struct DiagnosticsBundle {
     pub backend_status: BackendSection,
     pub presence_status: PresenceSection,
     pub audit_tail: Vec<AuditEvent>,
+    /// Chain-verification result at the moment of capture.
+    /// `None` when no `AuditLog` is managed (e.g. in the
+    /// stubbed tests below). A support ticket reader can trust
+    /// the audit tail iff `auditVerify.issues` is empty.
+    pub audit_verify: Option<AuditVerifyReport>,
     pub presence_log_tail: Vec<String>,
 }
 
@@ -195,10 +200,16 @@ pub fn build_bundle(app: &AppHandle) -> Result<DiagnosticsBundle, String> {
     // (rotated file missing, etc.) we'd rather return the
     // bundle without those events than refuse the whole
     // request -- the settings/health sections are still useful.
-    let audit_tail = app
-        .try_state::<AuditLog>()
+    let audit_state = app.try_state::<AuditLog>();
+    let audit_tail = audit_state
+        .as_ref()
         .and_then(|s| s.tail(AUDIT_TAIL_LIMIT).ok())
         .unwrap_or_default();
+    // Chain verification: fail-open on error so a corrupted
+    // audit file still yields a bundle. A `None` here means we
+    // didn't even try (no log managed); a `Some(report)` with
+    // issues is a live tamper signal the receiver should see.
+    let audit_verify = audit_state.as_ref().and_then(|s| s.verify().ok());
 
     // Presence log: same fail-open posture. Wrapped in an Arc
     // by the setup path.
@@ -213,6 +224,7 @@ pub fn build_bundle(app: &AppHandle) -> Result<DiagnosticsBundle, String> {
         backend_status: backend_section,
         presence_status: presence_section,
         audit_tail,
+        audit_verify,
         presence_log_tail,
     })
 }
@@ -300,6 +312,7 @@ mod tests {
                 last_heartbeat_uptime_ms: Some(84_000),
             },
             audit_tail: Vec::new(),
+            audit_verify: None,
             presence_log_tail: vec!["[info] presence-runtime started".into()],
         }
     }
@@ -317,6 +330,7 @@ mod tests {
             "backendStatus",
             "presenceStatus",
             "auditTail",
+            "auditVerify",
             "presenceLogTail",
         ] {
             assert!(

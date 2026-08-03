@@ -764,6 +764,7 @@ dependencies = [
  "ralleh-tool-gateway",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tempfile",

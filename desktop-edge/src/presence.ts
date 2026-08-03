@@ -419,6 +419,33 @@ export function assistantAuditTail(limit = 50): Promise<AuditEvent[]> {
   return invoke<AuditEvent[]>("assistant_audit_tail", { limit });
 }
 
+export type AuditVerifyIssueKind =
+  | "content-tampered"
+  | "prev-hash-mismatch"
+  | "missing-hash"
+  | "unparseable"
+  | "recompute-failed";
+
+export type AuditVerifyIssue = {
+  line: number;
+  kind: AuditVerifyIssueKind;
+  detail: string;
+};
+
+export type AuditVerifyReport = {
+  eventsChecked: number;
+  issues: AuditVerifyIssue[];
+};
+
+/** Walk the audit log's hash chain and report any tampering
+ * detected. An empty `issues` array means the chain is intact
+ * against on-disk content right now. This is tamper-evident,
+ * not tamper-proof -- an attacker with FS write access can
+ * regenerate the whole chain. */
+export function assistantAuditVerify(): Promise<AuditVerifyReport> {
+  return invoke<AuditVerifyReport>("assistant_audit_verify");
+}
+
 /** Build a diagnostics bundle (redacted settings + backend
  * status + audit tail + presence log tail + liveness
  * snapshot) and write it to a JSON file the operator can

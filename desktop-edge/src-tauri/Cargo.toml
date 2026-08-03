@@ -47,6 +47,13 @@ log = "0.4"
 # pinned to the 3.x line — 4.x is a breaking API rework, revisit
 # when the ecosystem catches up.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# SHA-256 for the audit log's tamper-evident hash chain. Pure Rust,
+# small, and audited -- we deliberately avoid a keyed HMAC here
+# because the shell has no offline key custody story yet. The chain
+# proves "no line was silently mutated after the fact against a
+# specific persisted state" but not "no attacker with FS write
+# access reforged the whole chain". See audit.rs for the caveat.
+sha2 = "0.10"
 
 [dev-dependencies]
 # Sandboxed working directories for the audit-log tests so we

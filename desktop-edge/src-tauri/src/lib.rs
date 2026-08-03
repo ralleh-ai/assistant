@@ -1060,6 +1060,19 @@ fn assistant_audit_tail(
     audit_log.tail(n)
 }
 
+/// Walk the audit log's hash chain and report any tampering
+/// the verifier detected. Empty `issues` means the chain is
+/// consistent with on-disk content right now; a non-empty list
+/// names the specific lines and failure mode. See
+/// `audit::AuditVerifyReport` for the caveat that this is
+/// tamper-evident, not tamper-proof.
+#[tauri::command]
+fn assistant_audit_verify(
+    audit: State<'_, AuditLog>,
+) -> Result<audit::AuditVerifyReport, String> {
+    audit.verify()
+}
+
 /// Assemble a diagnostics bundle (settings redacted, backend
 /// status, health snapshot, audit tail, presence log tail)
 /// and write it to a JSON file the operator can attach to a
@@ -1583,6 +1596,7 @@ pub fn run() {
             assistant_test_backend,
             assistant_save_backend,
             assistant_audit_tail,
+            assistant_audit_verify,
             assistant_diagnostics_bundle,
             assistant_probe_backend,
             presence_log_tail,
