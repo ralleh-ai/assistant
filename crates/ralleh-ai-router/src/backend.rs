@@ -1,6 +1,19 @@
 use async_trait::async_trait;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::request::{CompletionRequest, CompletionResponse};
+
+/// Sink handed to `CompletionBackend::stream_complete`. Each item is
+/// either the next chunk of completion text or a fatal error that
+/// terminates the stream. Concatenating every `Ok` in the order it
+/// arrives reproduces the full response — same invariant as
+/// `CompletionStreamEvent::Chunk` in `crate::request`.
+///
+/// Dropping the sender closes the channel, which is how the router
+/// distinguishes "stream ended successfully" from "stream ended
+/// with an error" — a clean drop with no `Err` sent is `Done`, an
+/// `Err(_)` sent (before or without drop) is `Failed`.
+pub type StreamChunkSender = UnboundedSender<Result<String, String>>;
 
 /// Abstraction over a concrete AI backend (a specific model provider,
 /// local inference engine, etc.). The router never talks to a provider
@@ -23,6 +36,28 @@ pub trait CompletionBackend: Send + Sync {
     /// panics or opaque error types, mirroring how `ToolHandler::invoke`
     /// works in `ralleh-tool-gateway`.
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, String>;
+
+    /// Streaming variant. Push each chunk of completion text through `tx`
+    /// as it becomes available; drop `tx` (i.e. return) to signal a clean
+    /// end-of-stream, or send an `Err` to signal a fatal error (the router
+    /// will translate that into `CompletionStreamEvent::Failed`).
+    ///
+    /// The default implementation calls `complete` and yields the whole
+    /// response as one chunk, so backends that don't have real network
+    /// streaming (e.g. `EchoBackend` in its raw form, or providers that
+    /// only expose a non-streaming API) still work through
+    /// `AiRouter::route_stream`. Override this method to plug into a real
+    /// SSE / chunked-transfer stream and emit deltas as they arrive.
+    async fn stream_complete(&self, request: &CompletionRequest, tx: StreamChunkSender) {
+        match self.complete(request).await {
+            Ok(response) => {
+                let _ = tx.send(Ok(response.text));
+            }
+            Err(error) => {
+                let _ = tx.send(Err(error));
+            }
+        }
+    }
 }
 
 /// A trivial backend for tests and local development: it does not call any
@@ -44,6 +79,51 @@ impl CompletionBackend for EchoBackend {
             text: format!("echo: {}", request.prompt),
         })
     }
+
+    /// Override the default one-shot streaming to yield word-by-word with
+    /// a small pacing delay. This gives the presence UI (and any human
+    /// testing against the echo backend) something visibly progressive to
+    /// render even when no real network I/O is involved. Real backends
+    /// don't need this pacing because their network latency naturally
+    /// spaces chunks out.
+    async fn stream_complete(&self, request: &CompletionRequest, tx: StreamChunkSender) {
+        let full = format!("echo: {}", request.prompt);
+        for piece in split_preserving_whitespace(&full) {
+            if tx.send(Ok(piece)).is_err() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+}
+
+/// Word-by-word splitter that preserves every byte: the concatenation
+/// of every returned piece equals the input exactly. This is the
+/// invariant `AiRouter::route_stream` (and its tests) rely on to
+/// reconstruct the full response from chunks.
+fn split_preserving_whitespace(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut pieces = Vec::new();
+    let mut current = String::new();
+    let mut in_whitespace = text.chars().next().is_some_and(|c| c.is_whitespace());
+    for ch in text.chars() {
+        let ch_is_ws = ch.is_whitespace();
+        if ch_is_ws == in_whitespace {
+            current.push(ch);
+        } else {
+            if !current.is_empty() {
+                pieces.push(std::mem::take(&mut current));
+            }
+            current.push(ch);
+            in_whitespace = ch_is_ws;
+        }
+    }
+    if !current.is_empty() {
+        pieces.push(current);
+    }
+    pieces
 }
 
 /// A real (non-mocked) backend: speaks the OpenAI-compatible
@@ -98,6 +178,8 @@ impl HttpCompletionBackend {
 struct ChatCompletionRequestBody<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -121,6 +203,27 @@ struct ChatCompletionMessage {
     content: Option<String>,
 }
 
+// SSE streaming shape: each `data: {...}` frame decodes into this
+// (roughly the OpenAI chat.completion.chunk envelope, plus the parts of
+// it that self-hosted engines like vllm / ollama / llama.cpp emit).
+#[derive(serde::Deserialize)]
+struct ChatCompletionStreamChunk {
+    #[serde(default)]
+    choices: Vec<ChatCompletionStreamChoice>,
+}
+
+#[derive(serde::Deserialize)]
+struct ChatCompletionStreamChoice {
+    #[serde(default)]
+    delta: ChatCompletionStreamDelta,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct ChatCompletionStreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+}
+
 #[async_trait]
 impl CompletionBackend for HttpCompletionBackend {
     fn name(&self) -> &str {
@@ -136,6 +239,7 @@ impl CompletionBackend for HttpCompletionBackend {
                 role: "user",
                 content: &request.prompt,
             }],
+            stream: false,
         };
 
         let mut req = self.client.post(&url).json(&body);
@@ -173,6 +277,193 @@ impl CompletionBackend for HttpCompletionBackend {
             backend: self.name.clone(),
             text,
         })
+    }
+
+    /// Real network streaming: sets `stream: true` on the OpenAI-shaped
+    /// request body and parses the resulting Server-Sent Events stream,
+    /// emitting each `delta.content` through `tx` as it arrives. This is
+    /// the payoff for the whole `stream_complete` plumbing -- with a real
+    /// backend, tokens arrive on the presence UI as the model generates
+    /// them rather than all at once after generation finishes.
+    ///
+    /// Malformed frames are skipped rather than fatal: real providers
+    /// occasionally emit heartbeats, empty `data: {}` keepalives, or
+    /// chunks with `delta: {}` (role-only prefixes) that would otherwise
+    /// abort the stream. We only treat transport-level failures and
+    /// non-2xx HTTP responses as `Err`.
+    async fn stream_complete(&self, request: &CompletionRequest, tx: StreamChunkSender) {
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+
+        let body = ChatCompletionRequestBody {
+            model: request.model_hint.as_deref().unwrap_or(&self.model),
+            messages: vec![ChatMessage {
+                role: "user",
+                content: &request.prompt,
+            }],
+            stream: true,
+        };
+
+        let mut req = self
+            .client
+            .post(&url)
+            .header("accept", "text/event-stream")
+            .json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let response = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = tx.send(Err(format!("request to {url} failed: {e}")));
+                return;
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read error body>".to_string());
+            let _ = tx.send(Err(format!("backend returned HTTP {status}: {body_text}")));
+            return;
+        }
+
+        let mut parser = SseParser::new();
+        let mut response = response;
+        loop {
+            match response.chunk().await {
+                Ok(Some(bytes)) => {
+                    for frame in parser.push_bytes(&bytes) {
+                        match frame {
+                            SseFrame::Data(text) => {
+                                if tx.send(Ok(text)).is_err() {
+                                    return;
+                                }
+                            }
+                            SseFrame::Done => return,
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Flush any final buffered frame that wasn't terminated
+                    // by a trailing blank line (some providers omit it).
+                    for frame in parser.flush() {
+                        if let SseFrame::Data(text) = frame {
+                            if tx.send(Ok(text)).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    return;
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(format!("stream from {url} interrupted: {e}")));
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Semantic output of the SSE parser: either a decoded chunk of text
+/// (`delta.content`), or a sentinel signaling the provider sent
+/// `data: [DONE]`. Empty deltas, malformed JSON, comments, and
+/// non-`data:` lines are dropped by the parser -- callers only see
+/// these two variants.
+#[derive(Debug, PartialEq)]
+enum SseFrame {
+    Data(String),
+    Done,
+}
+
+/// Incremental Server-Sent Events parser for OpenAI-shaped chat
+/// completion streams. Split off from `HttpCompletionBackend` so it
+/// can be unit-tested without spinning up a mock HTTP server.
+///
+/// Semantics:
+/// - Events are separated by `\n\n` (a blank line).
+/// - Within an event, only `data:` lines are inspected; other fields
+///   (`id:`, `event:`, comments starting with `:`) are ignored.
+/// - `data: [DONE]` yields `SseFrame::Done`.
+/// - `data: {...}` is parsed as `ChatCompletionStreamChunk`; if that
+///   succeeds and there's a non-empty `delta.content`, it yields a
+///   `SseFrame::Data(text)`. Otherwise (parse error, empty delta) the
+///   frame is silently skipped.
+struct SseParser {
+    buffer: String,
+}
+
+impl SseParser {
+    fn new() -> Self {
+        Self {
+            buffer: String::new(),
+        }
+    }
+
+    /// Ingest a byte chunk and return any complete frames that fell
+    /// out. Bytes that aren't yet part of a complete event stay
+    /// buffered until the next call (or `flush`).
+    fn push_bytes(&mut self, bytes: &[u8]) -> Vec<SseFrame> {
+        // Providers only ever emit UTF-8 here in practice, but split
+        // multi-byte codepoints across TCP chunks are possible. We
+        // tolerate them by using `from_utf8_lossy` (replacement chars
+        // are fine for our purposes -- SSE framing is ASCII).
+        self.buffer.push_str(&String::from_utf8_lossy(bytes));
+        let mut out = Vec::new();
+        while let Some(idx) = self.buffer.find("\n\n") {
+            let event = self.buffer[..idx].to_string();
+            self.buffer.drain(..idx + 2);
+            if let Some(frame) = parse_sse_event(&event) {
+                out.push(frame);
+            }
+        }
+        out
+    }
+
+    /// Drain any trailing event still in the buffer that wasn't
+    /// terminated by `\n\n`. Called when the underlying transport
+    /// closes.
+    fn flush(&mut self) -> Vec<SseFrame> {
+        if self.buffer.trim().is_empty() {
+            self.buffer.clear();
+            return Vec::new();
+        }
+        let event = std::mem::take(&mut self.buffer);
+        parse_sse_event(&event).into_iter().collect()
+    }
+}
+
+fn parse_sse_event(event: &str) -> Option<SseFrame> {
+    // Concatenate every `data:` line in the event, per the SSE spec
+    // (multi-line data uses multiple `data:` fields joined by `\n`).
+    let mut data = String::new();
+    for line in event.lines() {
+        let line = line.strip_prefix('\u{feff}').unwrap_or(line);
+        if let Some(rest) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+        }
+    }
+    if data.is_empty() {
+        return None;
+    }
+    if data.trim() == "[DONE]" {
+        return Some(SseFrame::Done);
+    }
+    let chunk: ChatCompletionStreamChunk = serde_json::from_str(&data).ok()?;
+    let content = chunk
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|c| c.delta.content)?;
+    if content.is_empty() {
+        None
+    } else {
+        Some(SseFrame::Data(content))
     }
 }
 
@@ -324,5 +615,170 @@ mod tests {
         let backend = HttpCompletionBackend::new("test-backend", server.uri(), "test-model", None);
         let err = backend.complete(&test_request("hi", None)).await.unwrap_err();
         assert!(err.contains("no completion choices"));
+    }
+
+    // ---- SSE parser unit tests ------------------------------------
+
+    fn make_data_frame(content: &str) -> String {
+        let payload = serde_json::json!({
+            "choices": [{ "delta": { "content": content } }]
+        });
+        format!("data: {payload}\n\n")
+    }
+
+    #[test]
+    fn sse_parser_yields_content_from_a_single_frame() {
+        let mut parser = SseParser::new();
+        let frames = parser.push_bytes(make_data_frame("Hello").as_bytes());
+        assert_eq!(frames, vec![SseFrame::Data("Hello".to_string())]);
+    }
+
+    #[test]
+    fn sse_parser_buffers_across_partial_chunks() {
+        // Real TCP transports split frames at arbitrary byte offsets.
+        // Feed the same "Hello" frame in three pieces and confirm the
+        // parser only emits it once, whole, after the terminator arrives.
+        let mut parser = SseParser::new();
+        let full = make_data_frame("Hello");
+        let (a, rest) = full.split_at(5);
+        let (b, c) = rest.split_at(10);
+        assert!(parser.push_bytes(a.as_bytes()).is_empty());
+        assert!(parser.push_bytes(b.as_bytes()).is_empty());
+        let frames = parser.push_bytes(c.as_bytes());
+        assert_eq!(frames, vec![SseFrame::Data("Hello".to_string())]);
+    }
+
+    #[test]
+    fn sse_parser_yields_done_on_done_sentinel() {
+        let mut parser = SseParser::new();
+        let frames = parser.push_bytes(b"data: [DONE]\n\n");
+        assert_eq!(frames, vec![SseFrame::Done]);
+    }
+
+    #[test]
+    fn sse_parser_skips_role_only_and_empty_delta_frames() {
+        // OpenAI's first chunk is typically a role prefix with no content.
+        // We must skip these silently rather than treating them as errors,
+        // otherwise every stream would emit a stray empty chunk up front.
+        let mut parser = SseParser::new();
+        let role_only = r#"data: {"choices":[{"delta":{"role":"assistant"}}]}"#;
+        let empty_content = r#"data: {"choices":[{"delta":{"content":""}}]}"#;
+        let real = make_data_frame("Hi");
+        let mut input = String::new();
+        input.push_str(role_only);
+        input.push_str("\n\n");
+        input.push_str(empty_content);
+        input.push_str("\n\n");
+        input.push_str(&real);
+        let frames = parser.push_bytes(input.as_bytes());
+        assert_eq!(frames, vec![SseFrame::Data("Hi".to_string())]);
+    }
+
+    #[test]
+    fn sse_parser_skips_malformed_json_rather_than_aborting() {
+        // If a provider emits a garbled frame mid-stream we don't want
+        // to lose the frames that come after it. The parser must skip
+        // the bad frame and keep going.
+        let mut parser = SseParser::new();
+        let mut input = String::new();
+        input.push_str("data: {not valid json\n\n");
+        input.push_str(&make_data_frame("still here"));
+        let frames = parser.push_bytes(input.as_bytes());
+        assert_eq!(frames, vec![SseFrame::Data("still here".to_string())]);
+    }
+
+    #[test]
+    fn sse_parser_ignores_comment_and_non_data_lines() {
+        let mut parser = SseParser::new();
+        let event = ": ping\nid: 42\nevent: message\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n";
+        let frames = parser.push_bytes(event.as_bytes());
+        assert_eq!(frames, vec![SseFrame::Data("ok".to_string())]);
+    }
+
+    // ---- HTTP streaming end-to-end -------------------------------
+
+    fn sse_body(chunks: &[&str], terminate_with_done: bool) -> String {
+        let mut out = String::new();
+        for c in chunks {
+            out.push_str(&make_data_frame(c));
+        }
+        if terminate_with_done {
+            out.push_str("data: [DONE]\n\n");
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn http_backend_streams_sse_deltas_in_order() {
+        let server = wiremock::MockServer::start().await;
+        let body = sse_body(&["Hello", " ", "world"], true);
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "stream": true
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string(body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let backend = HttpCompletionBackend::new("test-backend", server.uri(), "test-model", None);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
+        backend.stream_complete(&test_request("hi", None), tx).await;
+        let mut collected = String::new();
+        while let Some(item) = rx.recv().await {
+            collected.push_str(&item.unwrap());
+        }
+        assert_eq!(collected, "Hello world");
+    }
+
+    #[tokio::test]
+    async fn http_backend_stream_reports_http_error_as_err_not_partial_data() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/chat/completions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(429).set_body_string("rate limited"),
+            )
+            .mount(&server)
+            .await;
+
+        let backend = HttpCompletionBackend::new("test-backend", server.uri(), "test-model", None);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
+        backend.stream_complete(&test_request("hi", None), tx).await;
+        let first = rx.recv().await.expect("terminal error");
+        let err = first.expect_err("must be Err");
+        assert!(err.contains("429"), "expected 429 in error, got {err}");
+        assert!(rx.recv().await.is_none(), "stream must end after error");
+    }
+
+    #[tokio::test]
+    async fn http_backend_stream_handles_stream_that_omits_trailing_done() {
+        // Not every provider terminates cleanly with `data: [DONE]`;
+        // some just close the connection. Confirm we still deliver
+        // every buffered frame in that case.
+        let server = wiremock::MockServer::start().await;
+        let body = sse_body(&["A", "B"], false);
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/chat/completions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string(body)
+                    .insert_header("content-type", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let backend = HttpCompletionBackend::new("test-backend", server.uri(), "test-model", None);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
+        backend.stream_complete(&test_request("hi", None), tx).await;
+        let mut collected = String::new();
+        while let Some(item) = rx.recv().await {
+            collected.push_str(&item.unwrap());
+        }
+        assert_eq!(collected, "AB");
     }
 }

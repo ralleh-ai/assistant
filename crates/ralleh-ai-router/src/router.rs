@@ -123,15 +123,17 @@ impl AiRouter {
     ///
     /// # Chunking policy
     ///
-    /// This landing chunks server-side by splitting the completed
-    /// response on whitespace boundaries and pacing them at
-    /// ~10 ms per chunk. That gives the frontend a real streaming
-    /// UX today without waiting on per-backend SSE parsing (the
-    /// natural follow-up: `CompletionBackend::stream_complete`
-    /// with a default impl equivalent to what happens here, and
-    /// per-backend overrides for OpenAI / Anthropic that consume
-    /// their native event-stream formats). When those overrides
-    /// land, this method's public contract does not change.
+    /// Chunking is a per-backend concern, delegated to
+    /// `CompletionBackend::stream_complete`. The router no longer
+    /// splits the completed response server-side: real backends
+    /// (`HttpCompletionBackend`) parse Server-Sent Events and emit
+    /// deltas as they arrive from the provider, while
+    /// backends without native streaming
+    /// (fallback via the default trait method) yield the full
+    /// response as one chunk. Development backends may add their
+    /// own visible pacing (`EchoBackend` splits word-by-word). The
+    /// router just forwards whatever chunks the backend produces
+    /// and appends the terminal event.
     pub fn route_stream(
         &self,
         request: &CompletionRequest,
@@ -169,95 +171,77 @@ impl AiRouter {
             PolicyOutcome::Allowed => {}
         }
 
-        // Allowed. Spawn the backend call + chunking on a task so
-        // the caller gets the receiver back without waiting. `Arc`
-        // clone rather than borrowing self through the task, since
-        // the caller may drop the router reference before the task
-        // finishes on a very short-lived query.
+        // Allowed. Spawn the backend stream + forwarder on a task
+        // so the caller gets the receiver back without waiting.
+        // `Arc` clone rather than borrowing self through the task,
+        // since the caller may drop the router reference before
+        // the task finishes.
         let backend = self.backend.clone();
         let request = request.clone();
         tokio::spawn(async move {
             let backend_name = backend.name().to_string();
-            match backend.complete(&request).await {
-                Ok(response) => {
-                    emit_chunks(&tx, &backend_name, &response.text).await;
-                    let _ = tx.send(CompletionStreamEvent::Done {
-                        backend: backend_name,
-                    });
-                }
-                Err(error) => {
-                    let _ = tx.send(CompletionStreamEvent::Failed {
-                        backend: backend_name,
-                        error,
-                    });
+            let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<Result<String, String>>();
+
+            // Drive the backend on a subtask so we can concurrently
+            // forward chunks as they arrive rather than waiting for
+            // the whole stream to buffer.
+            let backend_task = {
+                let backend = backend.clone();
+                let request = request.clone();
+                tokio::spawn(async move {
+                    backend.stream_complete(&request, chunk_tx).await;
+                })
+            };
+
+            let mut fatal: Option<String> = None;
+            while let Some(item) = chunk_rx.recv().await {
+                match item {
+                    Ok(text) => {
+                        // Drop empty chunks -- providers occasionally
+                        // emit role-only prefix frames with no content,
+                        // and the frontend has no use for zero-length
+                        // pieces.
+                        if text.is_empty() {
+                            continue;
+                        }
+                        if tx
+                            .send(CompletionStreamEvent::Chunk {
+                                backend: backend_name.clone(),
+                                text,
+                            })
+                            .is_err()
+                        {
+                            // Downstream dropped the receiver.
+                            // Abandon the backend task and stop.
+                            backend_task.abort();
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        fatal = Some(error);
+                        break;
+                    }
                 }
             }
+            // Ensure the backend subtask has exited before we send
+            // the terminal event, so `Done` never races with an
+            // in-flight chunk.
+            let _ = backend_task.await;
+
+            let terminal = match fatal {
+                None => CompletionStreamEvent::Done {
+                    backend: backend_name,
+                },
+                Some(error) => CompletionStreamEvent::Failed {
+                    backend: backend_name,
+                    error,
+                },
+            };
+            let _ = tx.send(terminal);
         });
 
         rx
     }
-}
-
-/// Splits `text` at whitespace-preserving boundaries and pushes
-/// each piece as its own `Chunk` event, with a small pacing delay
-/// so the frontend sees the response arrive progressively rather
-/// than in one burst.
-///
-/// The whitespace-preserving split is important: if we stripped
-/// whitespace the reconstructed text would lose its word spacing.
-/// Instead we split so each chunk is either a word or the
-/// whitespace that follows it, and concatenation reproduces the
-/// original exactly.
-async fn emit_chunks(
-    tx: &mpsc::UnboundedSender<CompletionStreamEvent>,
-    backend_name: &str,
-    text: &str,
-) {
-    // ~10 ms per chunk feels responsive without flooding the
-    // frontend on a long response. Tuned against a 100-word Echo
-    // reply — the eye reads it as it arrives, not as a wall.
-    const PACE_MS: u64 = 10;
-
-    for piece in split_preserving_whitespace(text) {
-        if tx
-            .send(CompletionStreamEvent::Chunk {
-                backend: backend_name.to_string(),
-                text: piece.to_string(),
-            })
-            .is_err()
-        {
-            // Receiver dropped — caller lost interest. Stop
-            // spending CPU on chunks nobody will read.
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(PACE_MS)).await;
-    }
-}
-
-/// Splits `text` into alternating word / whitespace pieces such
-/// that concatenating all returned slices reproduces `text`
-/// byte-for-byte. Handles empty input, all-whitespace input, and
-/// unicode word characters correctly.
-fn split_preserving_whitespace(text: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut current_start = 0;
-    let mut in_whitespace = None;
-    for (idx, ch) in text.char_indices() {
-        let is_ws = ch.is_whitespace();
-        match in_whitespace {
-            None => in_whitespace = Some(is_ws),
-            Some(prev) if prev != is_ws => {
-                out.push(&text[current_start..idx]);
-                current_start = idx;
-                in_whitespace = Some(is_ws);
-            }
-            _ => {}
-        }
-    }
-    if current_start < text.len() {
-        out.push(&text[current_start..]);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -413,14 +397,6 @@ mod tests {
                 assert_eq!(error, "upstream provider unreachable");
             }
             other => panic!("expected Failed, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn split_preserving_whitespace_round_trips_arbitrary_text() {
-        for input in ["", " ", "hello", "hello world", "  a  b  c  ", "多bytechars 🚀 ok"] {
-            let joined: String = split_preserving_whitespace(input).concat();
-            assert_eq!(joined, input, "round-trip failed for {input:?}");
         }
     }
 

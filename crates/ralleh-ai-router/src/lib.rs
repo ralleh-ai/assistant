@@ -24,7 +24,7 @@ mod request;
 mod router;
 
 pub use anthropic::AnthropicMessagesBackend;
-pub use backend::{CompletionBackend, EchoBackend, HttpCompletionBackend};
+pub use backend::{CompletionBackend, EchoBackend, HttpCompletionBackend, StreamChunkSender};
 pub use request::{
     CompletionOutcome, CompletionRequest, CompletionResponse, CompletionStreamEvent,
 };
