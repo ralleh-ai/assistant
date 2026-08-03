@@ -5,7 +5,7 @@ use crate::palette::PresencePalette;
 /// Rest position of the camera. The animated eye orbits within a few
 /// centimetres of this — enough to give the volume parallax without ever
 /// reading as a camera move.
-const REST_EYE: Vec3 = Vec3::new(0.0, 0.3, 5.2);
+pub(crate) const REST_EYE: Vec3 = Vec3::new(0.0, 0.3, 5.2);
 const ORBIT_RADIUS: f32 = 0.16;
 const ORBIT_SPEED: f32 = 0.055;
 /// Breathing on the field of view rather than on the eye distance: it reads

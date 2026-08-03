@@ -1,230 +1,67 @@
-//! Scene Director — `docs/PRESENCE_SCENES.md` §6.3 / `docs/PRESENCE_VISUAL_ENTITY.md` §8.
-//!
-//! Phase 1 scope (`docs/PRESENCE_SCENES.md` §9): drive `AssistantCloud`
-//! (always present, Idle-only visual signature) and toggle `LoadingRing`
-//! on/off as a secondary entity, with a continuous presence-fade
-//! transition rather than a hard cut. "High-level state from the
-//! assistant" is dev-control input here (keyboard/egui), not a real
-//! signal — see `docs/PRESENCE_INTEGRATION_PLAN.md` §4, Phase 1.
+//! Scene Director — registry-driven stack with TTL overlays (`PRESENCE_ADAPTIVE_SCENES` P0).
 
-use glam::Vec3;
-
-use crate::scene::entity::{EntityInstance, EntityKind};
+use crate::scene::disposition::Disposition;
+use crate::scene::entity::EntityInstance;
 use crate::scene::mode::{step_toward, ModeLayer, PresenceMode};
+use crate::scene::params::SceneParams;
+use crate::scene::placement::{Placement, ViewportExtent};
+use crate::scene::provenance::{Provenance, ProvenanceSource};
 use crate::scene::quality::QualityTier;
-use crate::sim::shapes::{
-    PresenceShell, ResonancePlate, SurfaceBehavior, SurfaceGenerator, SurfaceShape,
-};
+use crate::scene::registry::SceneRegistry;
+use crate::scene::templates::builtins::{IDLE_ID, LOADING_ID};
 use crate::sim::{EntityParams, PresenceSignals};
 
-/// Idle's per-mode multipliers, matching the `DEFAULTS.states.idle` entry
-/// in `docs/PRESENCE_VISUAL_ENTITY.md` §9. These are the *resting* values the
-/// mode layer raises from, not a state of their own — with nothing engaged the
-/// presence sits here, and `ModeLayer::apply` leaves them untouched.
-const IDLE_INTENSITY: f32 = 0.15;
-/// Zero, not merely small: §6's usage table specifies idle as "low-frequency
-/// Simplex + gentle scale, almost no curl". A token non-zero swirl bought
-/// sub-pixel motion for 18 of the 19 noise evaluations per particle, so
-/// idle's wander comes from `NoiseField::drift` instead. Curl re-enters with
-/// `thinking` ("highest internal complexity"), which is a later phase.
-const IDLE_SWIRL: f32 = 0.0;
-const IDLE_EXPAND: f32 = 0.0;
-const IDLE_COOL: f32 = 0.0;
+/// Maximum simultaneous dynamic scenes (excludes cloud + loading builtins).
+pub const MAX_LIVE_SCENES: usize = 4;
 
-/// How long a presence fade (entity appearing/disappearing) takes.
-///
-/// Inside the same `TRANSITION_WINDOW_SECONDS` the mode weights use, so an
-/// entity coming or going has the same visual cadence as a mode engaging
-/// or releasing — a shell speeding up its terms twice as fast as it fades
-/// itself in would read as two motion languages spliced together. This is
-/// at the slow end of the window on purpose: an entity vanishing is a
-/// bigger event than a mode weight sliding, and the fade has to be
-/// unmistakably deliberate rather than glitchy. Guarded by
-/// `presence_fade_is_within_the_transition_window`.
 const TRANSITION_SECONDS: f32 = 0.7;
-
-/// What the idle shell fades to while Loading is showing.
-///
-/// Loading *reduces* the primary presence rather than compositing over a
-/// full-strength one — `docs/PRESENCE_SCENES.md` §4.2, and §2.2's "hierarchy of
-/// attention" applied to simultaneous entities. At full strength the two
-/// entities are the same hue at similar scale and simply sum into a denser
-/// blob, so the modal pattern that distinguishes Loading is not merely
-/// harder to see, it is not visible at all.
-///
-/// Not lower, though: the shell has to stay legible as the thing Loading is
-/// happening *to*. Taken far enough down it reads as the presence having been
-/// replaced rather than occupied, which is the wrong story for a transient
-/// state.
 const SUBDUED_PRESENCE: f32 = 0.45;
-
-/// How much the *modes* are pulled back toward the resting shell while
-/// Loading is active. `presence` alone (above) fades the shell's brightness,
-/// but leaves its geometry — a lobe or a pendant would still visibly deform
-/// the silhouette at half brightness and steal attention from the plate.
-///
-/// This scales the additive mode contributions (intensity, expand, cool, and
-/// the shell-drive weights) toward the resting values, so activity persists
-/// *inside* the subdued shell rather than dominating it. Guide §5.2 asks for
-/// exactly this — "automatically subdue the shell intensity" when Loading is
-/// composited with activity — and P0.4 asks for the general rule the
-/// SceneDirector enforces on its own.
-///
-/// Not zero: a shell that stops thinking the moment Loading appears would
-/// read as the work being *paused* to load rather than continuing behind the
-/// wait. The plate is signalling progress on top of the still-running task.
 const LOADING_ACTIVITY_SCALE: f32 = 0.55;
-
-/// How slowly the shell's animation clock advances in reduced-motion mode,
-/// as a fraction of real time. Small, because the point of the mode is that
-/// motion becomes non-distracting rather than merely slower — 0.5 is still
-/// visibly animating, just laggily. Not zero either: a shell whose folds
-/// never reshape at all reads as a frozen bug rather than as a considered
-/// accessibility state, and the "am I looking at a static image" question
-/// is exactly the ambiguity a live presence must not create.
 const REDUCED_MOTION_TIME_SCALE: f32 = 0.12;
-
-/// How far mode-added intensity/expand/cool is pulled back in reduced-motion
-/// mode. Guide §5.5's reduced-motion preset says "collapse most deformation
-/// to brightness + slow breathing" — this is the deformation half, applied
-/// on top of `LOADING_ACTIVITY_SCALE`'s hierarchy pass so both rules take
-/// their expected share when both are on at once.
 const REDUCED_MOTION_ACTIVITY_SCALE: f32 = 0.4;
-
-// Point budgets and refresh stride are supplied by `QualityTier` — the same
-// values live there, and a comment describing the reasoning for `Balanced`
-// (the previous compile-time constants) is at that module.
+const PRESENCE_EPSILON: f32 = 0.01;
 
 pub struct SceneDirector {
+    pub registry: SceneRegistry,
     pub assistant_cloud: EntityInstance,
     pub loading_ring: EntityInstance,
+    pub live_scenes: Vec<EntityInstance>,
     pub signals: PresenceSignals,
     pub ring_wanted: bool,
-    /// What the assistant is doing, and how far each mode's contribution has
-    /// ramped. Drives the shell only — the loading plate is a separate entity
-    /// on a different domain and is orthogonal to all of this.
     pub modes: ModeLayer,
-    /// The shell's resting parameters, before the mode layer raises them.
-    /// Held separately because `apply` blends *from* a baseline, so writing
-    /// the result back into the entity's own params would let each frame's
-    /// output become the next frame's floor and ratchet the presence upward.
     cloud_resting: EntityParams,
-    /// Fraction of the additive mode contribution that is applied to the
-    /// shell. `1.0` when nothing competes for attention, easing down toward
-    /// `LOADING_ACTIVITY_SCALE` while Loading is showing. This is the
-    /// hierarchy-of-attention rule made explicit rather than left to a
-    /// coincidence of tuning.
     activity_scale: f32,
-    /// Accessibility preference: minimise motion while keeping the presence
-    /// legible. When true the shell's animation clock slows to
-    /// `REDUCED_MOTION_TIME_SCALE` and mode contributions to
-    /// `REDUCED_MOTION_ACTIVITY_SCALE`, so state is still communicated but
-    /// the shell mostly stops moving.
     pub reduced_motion: bool,
-    /// Active quality tier. Read-only from outside — mutate with
-    /// `set_quality_tier` so the entities are regenerated at the new budget
-    /// rather than the value drifting out of sync with the point sets.
     tier: QualityTier,
-    /// A palette change requested by a shell command (`presence_ipc`'s
-    /// `Command::SetPalette`) that the runtime has not yet copied into
-    /// `Renderer::palette`. `None` when nothing is pending. Only touched
-    /// by `SceneDirector::apply_command` / `take_pending_palette` in
-    /// `crate::ipc` — those live behind the `ipc` feature, so this field
-    /// is `#[allow(dead_code)]` under a no-features build.
     #[allow(dead_code)]
     pub(crate) pending_palette: Option<crate::palette::PaletteId>,
-    /// A hittest / interactivity change requested by
-    /// `Command::SetInteractive`. Same idiom as `pending_palette`
-    /// because winit's `set_cursor_hittest` needs the `Window`
-    /// handle, which lives in the runtime, not in this crate.
     #[allow(dead_code)]
     pub(crate) pending_hittest: Option<bool>,
-    /// Window position (physical px, top-left) requested via
-    /// `Command::SetPosition`. Same one-shot pattern as
-    /// `pending_hittest` — the runtime owns the `winit::Window` and
-    /// applies the outer position between frames.
     #[allow(dead_code)]
     pub(crate) pending_position: Option<(i32, i32)>,
+    viewport_extent: ViewportExtent,
+    clock: f32,
 }
 
 impl SceneDirector {
     pub fn new() -> Self {
-        let cloud_params = {
-            // Scaled to leave margin inside the viewport: §2.1 frames this as
-            // a volume observed inside a scanned space, which needs the entity
-            // to sit within the frame rather than crop against it.
-            //
-            // The margin is sized for the *loudest* state, not for idle. A
-            // shell scaled to fill the frame at rest has nowhere to put a lobe
-            // or a pendant, so every mode would crop against the top of the
-            // viewport — and cropping is the one thing that makes a presence
-            // read as a texture behind the window rather than as an object in
-            // it.
-            let mut p = EntityParams::new(Vec3::ZERO, 1.32);
-            p.intensity = IDLE_INTENSITY;
-            p.swirl = IDLE_SWIRL;
-            p.expand = IDLE_EXPAND;
-            p.cool = IDLE_COOL;
-            p
-        };
-        // One shell for every mode, not one shape per state. What the assistant
-        // is doing raises weights on it (see `ModeLayer`); with nothing engaged
-        // those weights are the resting fold and the shell is the idle
-        // signature. The generator and behavior split from `PRESENCE_SCENES.md`
-        // §5 is unchanged — the shape is what the behavior springs toward.
+        let registry = SceneRegistry::with_builtin_scenes();
         let tier = QualityTier::default();
-        let shell = PresenceShell::new(0x1DEE);
-        let shell_domain = shell.domain();
-        let mut shell_behavior = SurfaceBehavior::new(shell);
-        shell_behavior.deform_stride = tier.deform_stride();
-        let assistant_cloud = EntityInstance::new(
-            EntityKind::AssistantCloud,
-            Box::new(SurfaceGenerator::new(shell_domain)),
-            Box::new(shell_behavior),
-            tier.shell_budget(),
-            0,
-            cloud_params,
-        );
-        let cloud_resting = cloud_params;
+        let ceiling = tier.global_ceiling();
+        let cloud_budget = tier.shell_budget().min(ceiling);
 
-        let ring_params = {
-            // Wider than the shell, so the two entities read as a field with
-            // the presence at its centre rather than as two overlapping
-            // objects competing for the same space — §2.2's "hierarchy of
-            // attention" applied to simultaneous entities.
-            //
-            // This is a *half-width*, not a radius: the sheet is square, so its
-            // corners reach `scale * sqrt(2)`. Carried over from the round
-            // plate unchanged it overflowed the viewport diagonally.
-            let mut p = EntityParams::new(Vec3::ZERO, 1.5);
-            p.intensity = 0.7;
-            p.expand = 0.1;
-            p
-        };
-        let plate = ResonancePlate::new(0x400D);
-        let plate_domain = plate.domain();
-        let mut plate_behavior = SurfaceBehavior::new(plate);
-        plate_behavior.deform_stride = tier.deform_stride();
-        let mut loading_ring = EntityInstance::new(
-            EntityKind::LoadingRing,
-            Box::new(SurfaceGenerator::new(plate_domain)),
-            Box::new(plate_behavior),
-            // A modal pattern is legible only if grains are dense enough to
-            // draw its nodal lines. Showing this at full density alongside a
-            // full-density idle shell is a dev-harness artifact of toggling both
-            // at once — in production Loading is a scene that reduces the shell
-            // rather than an overlay on top of it.
-            tier.plate_budget(),
-            1,
-            ring_params,
-        );
-        // Starts hidden — Phase 1 opens on the calm Idle-only view.
-        loading_ring.active = false;
-        loading_ring.presence = 0.0;
+        let idle = registry.get(IDLE_ID).expect("idle template");
+        let assistant_cloud = idle.build(SceneParams::default(), cloud_budget, tier);
+        let cloud_resting = assistant_cloud.params;
+
+        let loading = registry.get(LOADING_ID).expect("loading template");
+        let loading_ring = loading.build(SceneParams::default(), tier.plate_budget(), tier);
 
         Self {
+            registry,
             assistant_cloud,
             loading_ring,
+            live_scenes: Vec::new(),
             signals: PresenceSignals::default(),
             ring_wanted: false,
             modes: ModeLayer::new(),
@@ -235,51 +72,27 @@ impl SceneDirector {
             pending_palette: None,
             pending_hittest: None,
             pending_position: None,
+            viewport_extent: ViewportExtent::from_pixels(800, 600),
+            clock: 0.0,
         }
     }
 
-    /// Currently active quality tier. Change with `set_quality_tier`, which
-    /// regenerates the point sets — you cannot mutate this directly.
     pub fn tier(&self) -> QualityTier {
         self.tier
     }
 
-    /// Switch to a different quality tier. This is deliberately an outside
-    /// operation on the director rather than a field: changing tier means
-    /// regenerating each entity's particles at the new budget, which is
-    /// visible as a brief re-settling — and something the caller should be
-    /// aware they are triggering rather than something a stray write can do.
+    pub fn set_viewport_extent(&mut self, extent: ViewportExtent) {
+        self.viewport_extent = extent;
+    }
+
     pub fn set_quality_tier(&mut self, tier: QualityTier) {
         if tier == self.tier {
             return;
         }
         self.tier = tier;
-        // Point count is set at generation time and the vector is what the
-        // renderer reads directly, so a tier change means regenerating both
-        // entities. Cheap enough — 80k particles come out in a few
-        // milliseconds and this is an infrequent action.
-        self.assistant_cloud.particles = self
-            .assistant_cloud
-            .generator
-            .generate(tier.shell_budget(), &self.assistant_cloud.params);
-        self.loading_ring.particles = self
-            .loading_ring
-            .generator
-            .generate(tier.plate_budget(), &self.loading_ring.params);
-        self.assistant_cloud.point_budget = tier.shell_budget();
-        self.loading_ring.point_budget = tier.plate_budget();
-        self.assistant_cloud
-            .behavior
-            .set_deform_stride(tier.deform_stride());
-        self.loading_ring
-            .behavior
-            .set_deform_stride(tier.deform_stride());
+        self.apply_budget_allocation();
     }
 
-    /// The current activity dampening factor. `1.0` at rest, easing toward
-    /// `LOADING_ACTIVITY_SCALE` while Loading is active. Exposed so the
-    /// debug overlay can show the resolved hierarchy value; the tick uses it
-    /// internally.
     pub fn activity_scale(&self) -> f32 {
         self.activity_scale
     }
@@ -287,10 +100,38 @@ impl SceneDirector {
     pub fn set_ring_wanted(&mut self, wanted: bool) {
         self.ring_wanted = wanted;
         self.loading_ring.active = wanted;
+        self.apply_budget_allocation();
     }
 
     pub fn toggle_ring(&mut self) {
         self.set_ring_wanted(!self.ring_wanted);
+    }
+
+    /// True while a named scene is live (active, not pending dismiss).
+    pub fn is_scene_live(&self, id: &str) -> bool {
+        self.live_scenes
+            .iter()
+            .any(|e| e.scene_id == Some(id) && e.active && !e.dismiss_pending)
+    }
+
+    /// Generic dev-harness toggle for any registered scene id at a chosen
+    /// disposition and placement. No TTL — the caller (debug panel / hotkey)
+    /// owns the lifetime. If already live, it is dismissed.
+    pub fn toggle_scene(&mut self, id: &str, disposition: Disposition, placement: Placement) {
+        if self.is_scene_live(id) {
+            self.dismiss_scene(id);
+            return;
+        }
+        self.present_scene(
+            id,
+            SceneParams::default(),
+            disposition,
+            placement,
+            None,
+            Provenance {
+                source: ProvenanceSource::Builtin,
+            },
+        );
     }
 
     pub fn set_mode(&mut self, mode: PresenceMode, engaged: bool) {
@@ -301,12 +142,208 @@ impl SceneDirector {
         self.modes.toggle(mode);
     }
 
-    pub fn tick(&mut self, dt: f32) {
-        let target = if self.loading_ring.active { 1.0 } else { 0.0 };
-        self.loading_ring.presence =
-            step_toward(self.loading_ring.presence, target, dt, TRANSITION_SECONDS);
+    /// Present a registered template on the live stack.
+    pub fn present_scene(
+        &mut self,
+        id: &str,
+        mut params: SceneParams,
+        disposition: Disposition,
+        placement: Placement,
+        ttl: Option<f32>,
+        provenance: Provenance,
+    ) -> bool {
+        let template = self.registry.get(id);
+        let template = match template {
+            Some(t) => t,
+            None => {
+                log::warn!("present_scene: unknown id {id}");
+                return false;
+            }
+        };
 
-        let cloud_target = if self.loading_ring.active {
+        if id == IDLE_ID || id == LOADING_ID {
+            log::warn!("present_scene: cannot present builtin shell id {id}");
+            return false;
+        }
+
+        if self.live_scenes.len() >= MAX_LIVE_SCENES {
+            if let Some(pos) = self.live_scenes.iter().position(|e| e.scene_id == Some(id)) {
+                self.live_scenes.remove(pos);
+            } else {
+                log::warn!("present_scene: live stack cap {MAX_LIVE_SCENES}");
+                return false;
+            }
+        } else if let Some(pos) = self.live_scenes.iter().position(|e| e.scene_id == Some(id)) {
+            self.live_scenes.remove(pos);
+        }
+
+        params.clamp_to(&template.param_schema);
+        let (_, _, scene_budgets) = self.compute_budgets_with_extra(1);
+        let budget = scene_budgets.first().copied().unwrap_or(2000);
+
+        let mut entity = template.build(params, budget.max(500), self.tier);
+        entity.disposition = disposition;
+        entity.placement = placement.clamped();
+        entity.provenance = provenance;
+        entity.ttl = ttl;
+        entity.spawned_at = self.clock;
+        entity.dismiss_pending = false;
+        entity.active = true;
+        entity.presence = 0.0;
+
+        self.apply_placement_to_entity(&mut entity, template.base_scale);
+        self.live_scenes.push(entity);
+        self.apply_budget_allocation();
+        true
+    }
+
+    pub fn dismiss_scene(&mut self, id: &str) -> bool {
+        let pos = self.live_scenes.iter().position(|e| e.scene_id == Some(id));
+        match pos {
+            Some(i) => {
+                self.live_scenes[i].active = false;
+                self.live_scenes[i].dismiss_pending = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn compute_budgets_with_extra(&self, extra_scenes: usize) -> (usize, usize, Vec<usize>) {
+        let ceiling = self.tier.global_ceiling();
+        let n = self.live_scenes.len() + extra_scenes;
+        let loading_needs = self.ring_wanted
+            || self.loading_ring.active
+            || self.loading_ring.presence > PRESENCE_EPSILON;
+
+        if n == 0 && !loading_needs {
+            let cloud = self.tier.shell_budget().min(ceiling);
+            return (cloud, 0, vec![]);
+        }
+
+        let cloud = self.tier.cloud_budget_floor().min(ceiling);
+        let mut remaining = ceiling.saturating_sub(cloud);
+
+        let loading = if loading_needs {
+            let l = self.tier.plate_budget().min(remaining / 2).min(remaining);
+            remaining = remaining.saturating_sub(l);
+            l
+        } else {
+            0
+        };
+
+        let per_scene = remaining / n.max(1);
+        (cloud, loading, vec![per_scene; n])
+    }
+
+    fn compute_budgets(&self) -> (usize, usize, Vec<usize>) {
+        self.compute_budgets_with_extra(0)
+    }
+
+    fn apply_budget_allocation(&mut self) {
+        let (cloud_b, loading_b, scene_bs) = self.compute_budgets();
+        let stride = self.tier.deform_stride();
+        self.assistant_cloud.set_point_budget(cloud_b, stride);
+        if loading_b > 0 {
+            self.loading_ring.set_point_budget(loading_b, stride);
+        }
+        for (entity, budget) in self.live_scenes.iter_mut().zip(scene_bs) {
+            if budget > 0 {
+                entity.set_point_budget(budget, stride);
+            }
+        }
+    }
+
+    fn apply_placement_to_entity(&mut self, entity: &mut EntityInstance, base_scale: f32) {
+        let cloud_center = self.assistant_cloud.params.center;
+        entity.params.center = entity
+            .placement
+            .resolve_center(&self.viewport_extent, cloud_center);
+        entity.params.scale = entity.placement.resolved_scale(base_scale);
+    }
+
+    fn apply_entity_placements(&mut self) {
+        let cloud_center = self.assistant_cloud.params.center;
+        let extent = self.viewport_extent;
+        let bases: Vec<f32> = self
+            .live_scenes
+            .iter()
+            .map(|e| {
+                e.scene_id
+                    .and_then(|sid| self.registry.get(sid))
+                    .map(|t| t.base_scale)
+                    .unwrap_or(1.0)
+            })
+            .collect();
+        for (entity, base) in self.live_scenes.iter_mut().zip(bases) {
+            entity.params.center = entity.placement.resolve_center(&extent, cloud_center);
+            entity.params.scale = entity.placement.resolved_scale(base);
+        }
+    }
+
+    fn has_active_replace_scene(&self) -> bool {
+        self.live_scenes.iter().any(|e| {
+            e.disposition == Disposition::Replace
+                && !e.dismiss_pending
+                && (e.active || e.presence > PRESENCE_EPSILON)
+        })
+    }
+
+    fn overlay_scene_active(&self) -> bool {
+        self.live_scenes.iter().any(|e| {
+            e.disposition == Disposition::Overlay
+                && !e.dismiss_pending
+                && (e.active || e.presence > PRESENCE_EPSILON)
+        })
+    }
+
+    fn preemption_active(&self) -> bool {
+        self.modes.is_engaged(PresenceMode::Error) || self.modes.is_engaged(PresenceMode::Speaking)
+    }
+
+    pub fn tick(&mut self, dt: f32) {
+        self.clock += dt;
+
+        if self.preemption_active() {
+            for scene in &mut self.live_scenes {
+                if scene.disposition == Disposition::Replace {
+                    scene.active = false;
+                    scene.dismiss_pending = true;
+                }
+            }
+        }
+
+        for scene in &mut self.live_scenes {
+            if let Some(ttl) = scene.ttl {
+                if !scene.dismiss_pending && self.clock - scene.spawned_at >= ttl {
+                    scene.active = false;
+                    scene.dismiss_pending = true;
+                }
+            }
+        }
+
+        let loading_target = if self.loading_ring.active { 1.0 } else { 0.0 };
+        self.loading_ring.presence = step_toward(
+            self.loading_ring.presence,
+            loading_target,
+            dt,
+            TRANSITION_SECONDS,
+        );
+
+        for scene in &mut self.live_scenes {
+            let target = if scene.active && !scene.dismiss_pending {
+                1.0
+            } else {
+                0.0
+            };
+            scene.presence = step_toward(scene.presence, target, dt, TRANSITION_SECONDS);
+        }
+
+        let cloud_target = if self.preemption_active() {
+            1.0
+        } else if self.has_active_replace_scene() {
+            0.0
+        } else if self.loading_ring.active || self.overlay_scene_active() {
             SUBDUED_PRESENCE
         } else {
             1.0
@@ -318,9 +355,6 @@ impl SceneDirector {
             TRANSITION_SECONDS,
         );
 
-        // Resolved fresh from the resting baseline each frame rather than
-        // nudged from wherever it ended up last frame, so a mode's weight is
-        // the single source of how far the presence has departed from calm.
         self.modes.tick(dt, &self.signals);
         let carried = self.assistant_cloud.params;
         self.assistant_cloud.params = EntityParams {
@@ -329,21 +363,14 @@ impl SceneDirector {
         };
         self.modes.apply(&mut self.assistant_cloud.params);
 
-        // Hierarchy of attention: while Loading is showing, pull the mode's
-        // added intensity/expand/cool and its drive weights back toward the
-        // resting shell so the plate's modal pattern is not fighting a
-        // full-strength thinking or tool-use signature for the eye. The
-        // effect is *proportional* — a mode still shows through, just
-        // subdued in step with the shell's own subdued brightness above.
-        //
-        // Reduced-motion multiplies the same scale further: an accessibility
-        // preference should compose with the hierarchy rule, not race it. If
-        // both are on the effective scale is the *product*.
-        let mut scale_target = if self.loading_ring.active {
+        let mut scale_target = if self.loading_ring.active || self.overlay_scene_active() {
             LOADING_ACTIVITY_SCALE
         } else {
             1.0
         };
+        if self.preemption_active() && self.overlay_scene_active() {
+            scale_target *= LOADING_ACTIVITY_SCALE;
+        }
         if self.reduced_motion {
             scale_target *= REDUCED_MOTION_ACTIVITY_SCALE;
         }
@@ -361,32 +388,57 @@ impl SceneDirector {
             p.intensity = base.intensity + (p.intensity - base.intensity) * s;
             p.expand = base.expand + (p.expand - base.expand) * s;
             p.cool = base.cool + (p.cool - base.cool) * s;
-            // The additive-term weights scale directly. Fold is 1.0 at rest
-            // and yields under load, so its subdue is `1 - (1 - fold) * s`
-            // — pulling *toward* 1.0 rather than toward 0.0, so the shell's
-            // identity does not evaporate along with the activity.
             p.drive.fold = 1.0 - (1.0 - p.drive.fold) * s;
             p.drive.lobes *= s;
             p.drive.pulse *= s;
             p.drive.neck *= s;
-            // Speech's phrase envelope is the geometric driver of the pulse
-            // term (§6, spring bandwidth), so subduing pulse without also
-            // subduing the envelope would leave the wave amplitude untouched
-            // while claiming to have quieted the shell.
             p.audio_envelope *= s;
         }
 
+        self.apply_entity_placements();
+
         self.assistant_cloud.update(dt, &self.signals);
-        // Skip simulating the ring once it's fully invisible and settled —
-        // no visible cost, and matches "calm by default" (don't spend
-        // budget animating something nobody can see).
-        if self.loading_ring.presence > 0.001 || self.loading_ring.active {
+        if self.loading_ring.presence > PRESENCE_EPSILON || self.loading_ring.active {
             self.loading_ring.update(dt, &self.signals);
+        }
+        for scene in &mut self.live_scenes {
+            if scene.presence > PRESENCE_EPSILON || scene.active {
+                scene.update(dt, &self.signals);
+            }
+        }
+
+        let before = self.live_scenes.len();
+        self.live_scenes
+            .retain(|e| !e.dismiss_pending || e.presence > PRESENCE_EPSILON);
+        if self.live_scenes.len() != before {
+            self.apply_budget_allocation();
         }
     }
 
-    pub fn entities(&self) -> [&EntityInstance; 2] {
-        [&self.assistant_cloud, &self.loading_ring]
+    pub fn entities(&self) -> Vec<&EntityInstance> {
+        let mut out: Vec<&EntityInstance> = Vec::new();
+        out.push(&self.assistant_cloud);
+        out.push(&self.loading_ring);
+        for scene in &self.live_scenes {
+            out.push(scene);
+        }
+        out.sort_by_key(|e| e.priority);
+        out
+    }
+
+    pub fn total_point_count(&self) -> usize {
+        self.assistant_cloud.particles.len()
+            + self.loading_ring.particles.len()
+            + self
+                .live_scenes
+                .iter()
+                .map(|e| e.particles.len())
+                .sum::<usize>()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_push_live_scene(&mut self, entity: EntityInstance) {
+        self.live_scenes.push(entity);
     }
 }
 
@@ -399,7 +451,11 @@ impl Default for SceneDirector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::entity::EntityKind;
     use crate::scene::mode::TRANSITION_WINDOW_SECONDS;
+    use crate::scene::placement::Anchor;
+    use crate::scene::provenance::ProvenanceSource;
+    use crate::scene::specs::PRECIPITATION_ID;
 
     #[test]
     fn ring_starts_hidden() {
@@ -420,9 +476,6 @@ mod tests {
         assert!(!director.loading_ring.active);
     }
 
-    /// Loading has to take attention *from* the shell rather than adding to it.
-    /// Without this the two entities sum into a denser blob and Loading has no
-    /// distinguishable signature at all.
     #[test]
     fn showing_loading_subdues_the_idle_shell_and_restoring_brings_it_back() {
         let mut director = SceneDirector::new();
@@ -450,39 +503,30 @@ mod tests {
         assert!(director.loading_ring.presence < 0.01);
     }
 
-    /// The registry is the description of what scenes exist; the director
-    /// is the code that instantiates them. Anything that lives in one and
-    /// not the other is a scene that is either invisible in the debug panel
-    /// or invisible on the screen, and both failure modes stay silent until
-    /// somebody hits them. This test asserts they cover the same set.
     #[test]
-    fn builtins_match_the_scene_director() {
-        use crate::scene::SceneRegistry;
+    fn default_active_builtins_match_the_director() {
         let registry = SceneRegistry::with_builtin_scenes();
         let director = SceneDirector::new();
 
-        let director_kinds: Vec<_> = director.entities().iter().map(|e| e.kind).collect();
-        let registry_kinds: Vec<_> = registry.all().map(|d| d.entity_kind).collect();
-        for kind in &director_kinds {
+        for template in registry.default_active() {
+            let matches = match template.entity_kind {
+                EntityKind::AssistantCloud => director.assistant_cloud.kind == template.entity_kind,
+                EntityKind::LoadingRing => director.loading_ring.kind == template.entity_kind,
+                EntityKind::Scene => director
+                    .live_scenes
+                    .iter()
+                    .any(|e| e.kind == template.entity_kind),
+            };
             assert!(
-                registry_kinds.contains(kind),
-                "{} is instantiated by the director but not registered",
-                kind.label(),
+                matches,
+                "{} is default_active but the director did not build one",
+                template.entity_kind.label(),
             );
         }
-        for kind in &registry_kinds {
-            assert!(
-                director_kinds.contains(kind),
-                "{} is registered but the director doesn't build one",
-                kind.label(),
-            );
-        }
+        assert_eq!(director.assistant_cloud.kind, EntityKind::AssistantCloud);
+        assert_eq!(director.loading_ring.kind, EntityKind::LoadingRing);
     }
 
-    /// A tier switch is not a knob the caller mutates directly; it is an
-    /// operation that regenerates the point sets to match the new budget.
-    /// Testing it as an *operation* is what makes the invariant "tier and
-    /// particle count agree" impossible to accidentally violate later.
     #[test]
     fn set_quality_tier_regenerates_the_point_sets_at_the_new_budget() {
         let mut director = SceneDirector::new();
@@ -502,19 +546,11 @@ mod tests {
             director.assistant_cloud.particles.len(),
             QualityTier::Low.shell_budget(),
         );
-        assert_eq!(
-            director.loading_ring.particles.len(),
-            QualityTier::Low.plate_budget(),
-        );
 
-        // Idempotent on the same tier — no regeneration, no work.
         director.set_quality_tier(QualityTier::Low);
         assert_eq!(director.tier(), QualityTier::Low);
     }
 
-    /// Reduced-motion collapses shell dynamics to breath + slow crease
-    /// updates while leaving the physics real, so modes still communicate
-    /// state via brightness but nothing distracts.
     #[test]
     fn reduced_motion_slows_the_shells_clock_and_dampens_activity() {
         let mut director = SceneDirector::new();
@@ -558,10 +594,6 @@ mod tests {
         );
     }
 
-    /// Enforces the family similarity with the mode transitions — the mode
-    /// layer polices its own window, but a slow entity fade paired with fast
-    /// mode ramps would give the presence two different tempos that any
-    /// desktop-edge crossfade would then splice into.
     #[test]
     fn presence_fade_is_within_the_transition_window() {
         assert!(
@@ -580,10 +612,6 @@ mod tests {
         assert_eq!(director.loading_ring.presence, before);
     }
 
-    // Transition math (docs/PRESENCE_SCENES.md §6.1-6.2), tested directly
-    // as a pure function rather than by running hundreds of full-particle
-    // simulation ticks (which is what `SceneDirector::tick` does and is
-    // deliberately not cheap in a debug build).
     #[test]
     fn presence_converges_and_never_overshoots() {
         let mut presence = 0.0_f32;
@@ -603,10 +631,6 @@ mod tests {
         assert!(presence.abs() < 1e-4);
     }
 
-    /// The shell's params are rebuilt from the resting baseline every frame.
-    /// Blending from last frame's *output* instead would make each frame's
-    /// result the next frame's floor, so intensity would ratchet up and never
-    /// come back down — a drift that only shows after minutes of running.
     #[test]
     fn engaging_and_releasing_a_mode_returns_the_shell_to_rest() {
         let mut director = SceneDirector::new();
@@ -636,12 +660,6 @@ mod tests {
         );
     }
 
-    /// Hierarchy of attention: Loading + Thinking is not two full-strength
-    /// signatures competing for the eye, it is Loading in front of a subdued
-    /// still-running shell. The check is that the shell's mode-added values
-    /// are strictly *lower* when Loading is up than when it is not, not that
-    /// they hit any specific number — the constant can move; the ordering
-    /// cannot.
     #[test]
     fn loading_dampens_active_modes_without_stopping_them() {
         let mut director = SceneDirector::new();
@@ -688,9 +706,6 @@ mod tests {
         );
     }
 
-    /// Loading is a separate entity on a different domain, so a mode must not
-    /// reach it. If it did, the plate would inherit the shell's drive and its
-    /// figures would change for reasons that have nothing to do with progress.
     #[test]
     fn modes_do_not_touch_the_loading_plate() {
         let mut director = SceneDirector::new();
@@ -718,8 +733,158 @@ mod tests {
 
         director.toggle_mode(PresenceMode::Thinking);
         director.tick(1.0 / 60.0);
-        // A shape's animation is a function of `time`, so resetting it while
-        // rebuilding the params would teleport the folds on every state change.
         assert!(director.assistant_cloud.params.time > before);
+    }
+
+    #[test]
+    fn present_scene_adds_precipitation_and_dismiss_removes_it() {
+        let mut director = SceneDirector::new();
+        assert!(director.present_scene(
+            PRECIPITATION_ID,
+            SceneParams::default(),
+            Disposition::Overlay,
+            Placement::default(),
+            None,
+            Provenance {
+                source: ProvenanceSource::Ipc,
+            },
+        ));
+        assert_eq!(director.live_scenes.len(), 1);
+        for _ in 0..120 {
+            director.tick(1.0 / 60.0);
+        }
+        assert!(director.live_scenes[0].presence > 0.9);
+
+        director.dismiss_scene(PRECIPITATION_ID);
+        for _ in 0..120 {
+            director.tick(1.0 / 60.0);
+        }
+        assert!(director.live_scenes.is_empty());
+    }
+
+    #[test]
+    fn ttl_auto_dismisses_a_scene() {
+        let mut director = SceneDirector::new();
+        director.present_scene(
+            PRECIPITATION_ID,
+            SceneParams::default(),
+            Disposition::Overlay,
+            Placement::default(),
+            Some(0.5),
+            Provenance {
+                source: ProvenanceSource::Ipc,
+            },
+        );
+        for _ in 0..200 {
+            director.tick(1.0 / 60.0);
+        }
+        assert!(director.live_scenes.is_empty());
+    }
+
+    #[test]
+    fn max_live_scenes_cap_blocks_another_present() {
+        let mut director = SceneDirector::new();
+        let mut entities = Vec::new();
+        let registry = SceneRegistry::with_builtin_scenes();
+        let template = registry.get(PRECIPITATION_ID).unwrap();
+        for i in 0..MAX_LIVE_SCENES {
+            let mut entity = template.build(SceneParams::default(), 500, QualityTier::Balanced);
+            entity.scene_id = Some(match i {
+                0 => "slot_a",
+                1 => "slot_b",
+                2 => "slot_c",
+                _ => "slot_d",
+            });
+            entities.push(entity);
+        }
+        for entity in entities {
+            director.test_push_live_scene(entity);
+        }
+        assert_eq!(director.live_scenes.len(), MAX_LIVE_SCENES);
+        assert!(!director.present_scene(
+            PRECIPITATION_ID,
+            SceneParams::default(),
+            Disposition::Overlay,
+            Placement::default(),
+            None,
+            Provenance {
+                source: ProvenanceSource::Ipc,
+            },
+        ));
+    }
+
+    #[test]
+    fn global_budget_sum_stays_within_tier_ceiling_with_scenes() {
+        let mut director = SceneDirector::new();
+        director.present_scene(
+            PRECIPITATION_ID,
+            SceneParams::default(),
+            Disposition::Overlay,
+            Placement::default(),
+            None,
+            Provenance {
+                source: ProvenanceSource::Ipc,
+            },
+        );
+        director.toggle_ring();
+        director.apply_budget_allocation();
+        let ceiling = director.tier().global_ceiling();
+        assert!(
+            director.total_point_count() <= ceiling,
+            "total {} > ceiling {}",
+            director.total_point_count(),
+            ceiling
+        );
+    }
+
+    #[test]
+    fn replace_scene_crossfades_cloud_presence_down() {
+        let mut director = SceneDirector::new();
+        director.present_scene(
+            PRECIPITATION_ID,
+            SceneParams::default(),
+            Disposition::Replace,
+            Placement::default(),
+            None,
+            Provenance {
+                source: ProvenanceSource::Ipc,
+            },
+        );
+        for _ in 0..120 {
+            director.tick(1.0 / 60.0);
+        }
+        assert!(director.assistant_cloud.presence < 0.2);
+        assert!(director.live_scenes[0].presence > 0.8);
+    }
+
+    #[test]
+    fn corner_placement_offsets_precipitation_center() {
+        let mut director = SceneDirector::new();
+        director.set_viewport_extent(ViewportExtent::from_pixels(800, 600));
+        let placement = Placement {
+            anchor: Anchor::BottomRight,
+            offset: glam::Vec2::ZERO,
+            scale: 0.5,
+        };
+        director.present_scene(
+            PRECIPITATION_ID,
+            SceneParams::default(),
+            Disposition::Overlay,
+            placement,
+            None,
+            Provenance {
+                source: ProvenanceSource::Ipc,
+            },
+        );
+        director.tick(1.0 / 60.0);
+        let center = director.live_scenes[0].params.center;
+        assert!(
+            center.x > 0.5,
+            "expected corner placement on +X: {center:?}"
+        );
+        assert!(
+            center.y < 0.0,
+            "expected corner placement on -Y: {center:?}"
+        );
     }
 }

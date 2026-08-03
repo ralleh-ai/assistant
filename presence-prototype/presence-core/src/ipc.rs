@@ -14,11 +14,16 @@
 //! consumer of it.
 
 use presence_ipc::{
-    Command, PaletteId as IpcPalette, PresenceMode as IpcMode, QualityTier as IpcTier, Signals,
+    Command, IpcAnchor, IpcDisposition, IpcPlacement, PaletteId as IpcPalette,
+    PresenceMode as IpcMode, QualityTier as IpcTier, SceneParamsWire, Signals, MAX_SCENE_ID_LEN,
 };
 
 use crate::palette::PaletteId;
+use crate::scene::disposition::Disposition;
 use crate::scene::mode::PresenceMode;
+use crate::scene::params::{SceneParams, PARAM_DENSITY, PARAM_WIND};
+use crate::scene::placement::{Anchor, Placement};
+use crate::scene::provenance::{Provenance, ProvenanceSource};
 use crate::scene::{QualityTier, SceneDirector};
 use crate::sim::PresenceSignals;
 
@@ -86,6 +91,43 @@ impl From<PaletteId> for IpcPalette {
             PaletteId::Ember => IpcPalette::Ember,
         }
     }
+}
+
+impl From<IpcDisposition> for Disposition {
+    fn from(d: IpcDisposition) -> Self {
+        match d {
+            IpcDisposition::Overlay => Disposition::Overlay,
+            IpcDisposition::Replace => Disposition::Replace,
+        }
+    }
+}
+
+impl From<IpcAnchor> for Anchor {
+    fn from(a: IpcAnchor) -> Self {
+        match a {
+            IpcAnchor::Center => Anchor::Center,
+            IpcAnchor::TopLeft => Anchor::TopLeft,
+            IpcAnchor::TopRight => Anchor::TopRight,
+            IpcAnchor::BottomLeft => Anchor::BottomLeft,
+            IpcAnchor::BottomRight => Anchor::BottomRight,
+            IpcAnchor::CloudRelative => Anchor::CloudRelative,
+        }
+    }
+}
+
+fn placement_from_wire(w: IpcPlacement) -> Placement {
+    Placement {
+        anchor: w.anchor.into(),
+        offset: glam::Vec2::new(w.offset[0], w.offset[1]),
+        scale: w.scale,
+    }
+}
+
+fn scene_params_from_wire(w: SceneParamsWire) -> SceneParams {
+    let mut params = SceneParams::default();
+    params.set(PARAM_DENSITY, w.density);
+    params.set(PARAM_WIND, w.wind);
+    params
 }
 
 /// Copies the scalars out of a wire [`Signals`] into a
@@ -204,11 +246,48 @@ impl SceneDirector {
                 // director keeps `apply_command` self-contained.
                 self.pending_palette = Some(palette.into());
             }
-            // `Command` is `#[non_exhaustive]` (by design — see the crate
-            // docs on `presence-ipc`). A newer wire version might carry a
-            // command this build has never heard of; ignoring it is safer
-            // than panicking, but we still log so a mismatch is visible
-            // during rollout rather than silently dropped.
+            Command::PresentScene {
+                id,
+                params,
+                disposition,
+                placement,
+                transition_secs: _,
+                ttl_ms,
+            } => {
+                if id.len() > MAX_SCENE_ID_LEN {
+                    log::warn!(
+                        "present_scene: id length {} exceeds cap {MAX_SCENE_ID_LEN}",
+                        id.len()
+                    );
+                    return;
+                }
+                let mut scene_params = scene_params_from_wire(params);
+                if let Some(template) = self.registry.get(&id) {
+                    scene_params.clamp_to(&template.param_schema);
+                }
+                let ttl = ttl_ms.map(|ms| ms as f32 / 1000.0);
+                let provenance = Provenance {
+                    source: ProvenanceSource::Ipc,
+                };
+                if !self.present_scene(
+                    &id,
+                    scene_params,
+                    disposition.into(),
+                    placement_from_wire(placement),
+                    ttl,
+                    provenance,
+                ) {
+                    log::warn!("present_scene: director rejected id {id}");
+                }
+            }
+            Command::DismissScene { id } => {
+                if id.len() > MAX_SCENE_ID_LEN {
+                    return;
+                }
+                if !self.dismiss_scene(&id) {
+                    log::warn!("dismiss_scene: no live scene with id {id}");
+                }
+            }
             other => {
                 log::warn!(
                     "presence-core: ignoring unknown ipc command {:?} \
@@ -367,7 +446,34 @@ mod tests {
             palette: IpcPalette::Ember,
         });
         assert_eq!(director.take_pending_palette(), Some(PaletteId::Ember));
-        // Idempotent: `take_` semantics mean a second call returns None.
         assert!(director.take_pending_palette().is_none());
+    }
+
+    #[test]
+    fn present_and_dismiss_scene_round_trip_via_apply_command() {
+        use crate::scene::specs::PRECIPITATION_ID;
+        use presence_ipc::{Command, IpcAnchor, IpcDisposition, IpcPlacement, SceneParamsWire};
+
+        let mut director = SceneDirector::new();
+        director.apply_command(Command::PresentScene {
+            id: PRECIPITATION_ID.to_string(),
+            params: SceneParamsWire {
+                density: 0.9,
+                wind: 0.2,
+            },
+            disposition: IpcDisposition::Overlay,
+            placement: IpcPlacement {
+                anchor: IpcAnchor::BottomRight,
+                offset: [0.0, 0.0],
+                scale: 0.4,
+            },
+            transition_secs: None,
+            ttl_ms: None,
+        });
+        assert_eq!(director.live_scenes.len(), 1);
+        director.apply_command(Command::DismissScene {
+            id: PRECIPITATION_ID.to_string(),
+        });
+        assert!(director.live_scenes[0].dismiss_pending);
     }
 }

@@ -2,6 +2,7 @@ pub mod behaviors;
 pub mod generators;
 pub mod noise;
 pub mod shapes;
+pub mod terms;
 pub mod types;
 
 pub use behaviors::PointBehavior;

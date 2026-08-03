@@ -32,6 +32,8 @@ fn main() {
             "presence_set_ring_wanted",
             "presence_set_quality_tier",
             "presence_set_interactive",
+            "presence_present_scene",
+            "presence_dismiss_scene",
             "presence_mic_status",
             "presence_mic_start",
             "presence_mic_stop",

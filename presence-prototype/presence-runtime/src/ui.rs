@@ -13,8 +13,52 @@ use presence_core::render::post::PostSettings;
 use presence_core::render::Frame;
 use presence_core::scene::entity::EntityInstance;
 use presence_core::scene::mode::PresenceMode;
-use presence_core::scene::{SceneDirector, SceneRegistry};
+use presence_core::scene::params::SceneParams;
+use presence_core::scene::provenance::{Provenance, ProvenanceSource};
+use presence_core::scene::templates::builtins::{IDLE_ID, LOADING_ID};
+use presence_core::scene::{Anchor, Disposition, Placement, SceneDirector, SceneRegistry};
 use presence_core::sim::Layer;
+
+/// Persistent debug-panel state for the dynamic scene selector. Lives on the
+/// `App` (see `crate::app`) so choices survive across frames.
+pub struct SceneSelector {
+    /// Registry id of the scene to present.
+    pub scene: String,
+    pub anchor: Anchor,
+    /// `true` = Replace (crossfade the cloud), `false` = Overlay.
+    pub replace: bool,
+    pub scale: f32,
+}
+
+impl Default for SceneSelector {
+    fn default() -> Self {
+        Self {
+            scene: presence_core::scene::specs::PRECIPITATION_ID.to_string(),
+            anchor: Anchor::Center,
+            replace: false,
+            scale: 0.7,
+        }
+    }
+}
+
+fn anchor_label(anchor: Anchor) -> &'static str {
+    match anchor {
+        Anchor::Center => "center",
+        Anchor::TopLeft => "top-left",
+        Anchor::TopRight => "top-right",
+        Anchor::BottomLeft => "bottom-left",
+        Anchor::BottomRight => "bottom-right",
+        Anchor::CloudRelative => "cloud-relative",
+    }
+}
+
+const SELECTOR_ANCHORS: [Anchor; 5] = [
+    Anchor::Center,
+    Anchor::TopLeft,
+    Anchor::TopRight,
+    Anchor::BottomLeft,
+    Anchor::BottomRight,
+];
 
 pub struct EguiLayer {
     context: egui::Context,
@@ -28,6 +72,7 @@ pub struct EguiLayer {
 pub struct PanelState<'a> {
     pub director: &'a mut SceneDirector,
     pub registry: &'a SceneRegistry,
+    pub selector: &'a mut SceneSelector,
     pub material: &'a mut PointMaterial,
     pub post: &'a mut PostSettings,
     pub palette: &'a mut PresencePalette,
@@ -136,6 +181,7 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
     let PanelState {
         director,
         registry,
+        selector,
         material,
         post,
         palette,
@@ -187,6 +233,44 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
                     "fading out"
                 }
             ));
+            // Live scene stack (whatever the director currently holds), with a
+            // per-scene dismiss. Collect first so we can call &mut director
+            // afterwards without borrowing its fields across the closure.
+            let live: Vec<(String, usize, f32, &'static str)> = director
+                .live_scenes
+                .iter()
+                .map(|e| {
+                    let state = if e.dismiss_pending {
+                        "fading out"
+                    } else if e.active {
+                        "live"
+                    } else {
+                        "idle"
+                    };
+                    (
+                        e.scene_id.unwrap_or("?").to_string(),
+                        e.particles.len(),
+                        e.presence,
+                        state,
+                    )
+                })
+                .collect();
+            let mut dismiss_id: Option<String> = None;
+            if live.is_empty() {
+                ui.label("scenes: none live");
+            } else {
+                for (id, pts, presence, state) in &live {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{id}: {pts} pts, {presence:.2} ({state})"));
+                        if ui.small_button("dismiss").clicked() {
+                            dismiss_id = Some(id.clone());
+                        }
+                    });
+                }
+            }
+            if let Some(id) = dismiss_id {
+                director.dismiss_scene(&id);
+            }
             ui.separator();
 
             let mut ring_on = director.ring_wanted;
@@ -196,6 +280,62 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
             {
                 director.set_ring_wanted(ring_on);
             }
+
+            // Dynamic scene selector: pick any registered (non-builtin) scene,
+            // an anchor, disposition, and scale, then present/dismiss it. This
+            // replaces the old rain-only controls — the whole point is that
+            // scenes are data, driven through one generic path.
+            ui.horizontal(|ui| {
+                ui.label("scene:");
+                egui::ComboBox::from_id_salt("scene_select")
+                    .selected_text(selector.scene.clone())
+                    .show_ui(ui, |ui| {
+                        for t in registry.all() {
+                            if t.id == IDLE_ID || t.id == LOADING_ID {
+                                continue;
+                            }
+                            ui.selectable_value(&mut selector.scene, t.id.to_string(), t.id);
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("anchor:");
+                egui::ComboBox::from_id_salt("scene_anchor")
+                    .selected_text(anchor_label(selector.anchor))
+                    .show_ui(ui, |ui| {
+                        for a in SELECTOR_ANCHORS {
+                            ui.selectable_value(&mut selector.anchor, a, anchor_label(a));
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("disposition:");
+                ui.selectable_value(&mut selector.replace, false, "overlay");
+                ui.selectable_value(&mut selector.replace, true, "replace");
+            });
+            ui.add(egui::Slider::new(&mut selector.scale, 0.25..=1.0).text("scale"));
+            ui.horizontal(|ui| {
+                if ui.button("present — [P]").clicked() {
+                    let disposition = if selector.replace {
+                        Disposition::Replace
+                    } else {
+                        Disposition::Overlay
+                    };
+                    director.present_scene(
+                        &selector.scene,
+                        SceneParams::default(),
+                        disposition,
+                        Placement::anchored(selector.anchor, selector.scale),
+                        None,
+                        Provenance {
+                            source: ProvenanceSource::Builtin,
+                        },
+                    );
+                }
+                if ui.button("dismiss").clicked() {
+                    director.dismiss_scene(&selector.scene);
+                }
+            });
             ui.separator();
 
             // Checkboxes rather than a radio group, because the modes are
@@ -323,7 +463,7 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
                 });
             ui.separator();
             ui.label(
-                "Keys: [L] loading · [T] thinking · [S] speaking · [U] tool_use \
+                "Keys: [L] loading · [P] rain · [T] thinking · [S] speaking · [U] tool_use \
                  · [N] listening · [A] attention · [E] error · [R] reduced motion \
                  · [Q] cycle quality · [Esc] quit",
             );

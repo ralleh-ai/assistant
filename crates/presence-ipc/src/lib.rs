@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 /// semantic meaning changes; additive optional fields do not require a
 /// bump. Peers that receive a version they don't recognise should treat
 /// the message as unrecoverable and log rather than guess.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Oldest wire version this build can still parse. Peers within
 /// `[MIN_SUPPORTED_VERSION, VERSION]` are accepted by [`Envelope::is_compatible`];
@@ -172,6 +172,70 @@ pub struct Signals {
     pub active_modes: Vec<PresenceMode>,
 }
 
+/// Hard cap on scene id length on the wire (bounded deserialization).
+pub const MAX_SCENE_ID_LEN: usize = 64;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IpcDisposition {
+    #[default]
+    Overlay,
+    Replace,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IpcAnchor {
+    #[default]
+    Center,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    CloudRelative,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IpcPlacement {
+    #[serde(default)]
+    pub anchor: IpcAnchor,
+    #[serde(default)]
+    pub offset: [f32; 2],
+    #[serde(default = "default_placement_scale")]
+    pub scale: f32,
+}
+
+fn default_placement_scale() -> f32 {
+    1.0
+}
+
+impl Default for IpcPlacement {
+    fn default() -> Self {
+        Self {
+            anchor: IpcAnchor::Center,
+            offset: [0.0, 0.0],
+            scale: 1.0,
+        }
+    }
+}
+
+/// Precipitation template params on the wire (Phase 0: rain only).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneParamsWire {
+    #[serde(default = "default_density")]
+    pub density: f32,
+    #[serde(default = "default_wind")]
+    pub wind: f32,
+}
+
+fn default_density() -> f32 {
+    0.7
+}
+
+fn default_wind() -> f32 {
+    0.1
+}
+
 /// A command the shell issues to the presence. Enum rather than a set of
 /// separate messages because the presence should apply every command in
 /// the order it arrived, and a single tagged type is the easiest way to
@@ -238,6 +302,24 @@ pub enum Command {
     /// on the reverse channel can hand it right back on the next
     /// launch.
     SetPosition { x: i32, y: i32 },
+    /// Spawn a registered scene template on the live stack.
+    PresentScene {
+        id: String,
+        #[serde(default)]
+        params: SceneParamsWire,
+        #[serde(default)]
+        disposition: IpcDisposition,
+        #[serde(default)]
+        placement: IpcPlacement,
+        /// Fade duration hint; director uses its own transition window in P0.
+        #[serde(default)]
+        transition_secs: Option<f32>,
+        /// Auto-dismiss after this many milliseconds; `None` = no TTL.
+        #[serde(default)]
+        ttl_ms: Option<u64>,
+    },
+    /// Fade out and remove a live scene by registry id.
+    DismissScene { id: String },
 }
 
 /// A message the presence sends *back* to its host. Reverse channel
@@ -485,6 +567,24 @@ mod tests {
             },
             Command::SetInteractive { interactive: true },
             Command::SetPosition { x: 100, y: 200 },
+            Command::PresentScene {
+                id: "precipitation".to_string(),
+                params: SceneParamsWire {
+                    density: 0.8,
+                    wind: 0.05,
+                },
+                disposition: IpcDisposition::Overlay,
+                placement: IpcPlacement {
+                    anchor: IpcAnchor::BottomRight,
+                    offset: [0.1, -0.1],
+                    scale: 0.5,
+                },
+                transition_secs: None,
+                ttl_ms: Some(30_000),
+            },
+            Command::DismissScene {
+                id: "precipitation".to_string(),
+            },
         ];
         for cmd in commands {
             let env = Envelope::wrap(cmd.clone());

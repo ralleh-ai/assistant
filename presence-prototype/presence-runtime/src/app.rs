@@ -12,10 +12,10 @@ use winit::window::{Window, WindowId, WindowLevel};
 
 use presence_core::render::{Renderer, RendererOptions};
 use presence_core::scene::mode::PresenceMode;
-use presence_core::scene::SceneDirector;
+use presence_core::scene::{SceneDirector, ViewportExtent};
 
 #[cfg(feature = "dev")]
-use crate::ui::{EguiLayer, PanelState};
+use crate::ui::{EguiLayer, PanelState, SceneSelector};
 #[cfg(feature = "dev")]
 use egui_wgpu::ScreenDescriptor;
 #[cfg(feature = "dev")]
@@ -45,6 +45,10 @@ pub struct App {
     /// will move into `presence-core`'s public surface.
     #[cfg(feature = "dev")]
     registry: SceneRegistry,
+    /// Debug-panel scene selector state (which scene / anchor / disposition /
+    /// scale to present). Dev-only, like the panel that drives it.
+    #[cfg(feature = "dev")]
+    scene_sel: SceneSelector,
     last_frame: Instant,
     sim_accumulator: f32,
     fps: f32,
@@ -171,6 +175,8 @@ impl App {
             director: SceneDirector::new(),
             #[cfg(feature = "dev")]
             registry: SceneRegistry::with_builtin_scenes(),
+            #[cfg(feature = "dev")]
+            scene_sel: SceneSelector::default(),
             last_frame: Instant::now(),
             sim_accumulator: 0.0,
             fps: 0.0,
@@ -286,6 +292,10 @@ impl App {
 
         let Some(live) = &mut self.live else { return };
 
+        let size = live.window.inner_size();
+        self.director
+            .set_viewport_extent(ViewportExtent::from_pixels(size.width, size.height));
+
         let now = Instant::now();
         let frame_dt = (now - self.last_frame).as_secs_f32().min(0.25);
         self.last_frame = now;
@@ -395,6 +405,7 @@ impl App {
                 &mut PanelState {
                     director: &mut self.director,
                     registry: &self.registry,
+                    selector: &mut self.scene_sel,
                     material: &mut live.renderer.material,
                     post: &mut live.renderer.post.settings,
                     palette: &mut live.renderer.palette,
@@ -413,6 +424,15 @@ impl App {
         }
         match &key_event.logical_key {
             Key::Character(c) if c.eq_ignore_ascii_case("l") => self.director.toggle_ring(),
+            Key::Character(c) if c.eq_ignore_ascii_case("p") => {
+                use presence_core::scene::specs::PRECIPITATION_ID;
+                use presence_core::scene::{Anchor, Disposition, Placement};
+                self.director.toggle_scene(
+                    PRECIPITATION_ID,
+                    Disposition::Overlay,
+                    Placement::anchored(Anchor::Center, 0.7),
+                );
+            }
             Key::Character(c) if c.eq_ignore_ascii_case("r") => {
                 self.director.reduced_motion = !self.director.reduced_motion;
             }
@@ -591,6 +611,8 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(live) = &mut self.live {
                     live.renderer.resize(size.width, size.height);
+                    self.director
+                        .set_viewport_extent(ViewportExtent::from_pixels(size.width, size.height));
                 }
             }
             WindowEvent::KeyboardInput {

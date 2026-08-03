@@ -22,6 +22,8 @@
     "allow-presence-set-ring-wanted",
     "allow-presence-set-quality-tier",
     "allow-presence-set-interactive",
+    "allow-presence-present-scene",
+    "allow-presence-dismiss-scene",
     "allow-presence-mic-status",
     "allow-presence-mic-start",
     "allow-presence-mic-stop",

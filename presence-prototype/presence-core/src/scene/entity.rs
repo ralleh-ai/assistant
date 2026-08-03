@@ -1,11 +1,16 @@
 //! `EntityInstance` — `docs/PRESENCE_SCENES.md` §5.1.
 
+use crate::scene::disposition::Disposition;
+use crate::scene::placement::Placement;
+use crate::scene::provenance::Provenance;
 use crate::sim::{EntityParams, Particle, PointBehavior, PointGenerator, PresenceSignals};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntityKind {
     AssistantCloud,
     LoadingRing,
+    /// Any data-defined scene realized from a `SceneSpec` (rain, fog, …).
+    Scene,
 }
 
 impl EntityKind {
@@ -13,35 +18,32 @@ impl EntityKind {
         match self {
             EntityKind::AssistantCloud => "AssistantCloud",
             EntityKind::LoadingRing => "LoadingRing",
+            EntityKind::Scene => "Scene",
         }
     }
 }
 
 pub struct EntityInstance {
     pub kind: EntityKind,
-    /// Used by the scene director's quality-tier path to regenerate points
-    /// at a new budget without rebuilding the entity from scratch.
+    /// Registry id when this entity was spawned from a template.
+    pub scene_id: Option<&'static str>,
     pub generator: Box<dyn PointGenerator>,
     pub behavior: Box<dyn PointBehavior>,
     pub particles: Vec<Particle>,
-    /// Kept in sync with the last budget the generator was asked for. Not
-    /// the source of truth for the current point count (that is
-    /// `particles.len()`) — it is what the tier switch reads to decide
-    /// whether a regeneration would change anything.
     pub point_budget: usize,
-    /// Hierarchy ordering for future multi-entity crowding rules
-    /// (`docs/PRESENCE_VISUAL_ENTITY.md` §4.3) — not yet enforced.
-    #[allow(dead_code)]
     pub priority: u8,
-    /// Whether the Scene Director currently wants this entity visible.
-    /// Distinct from `presence` (§ below) — `active` is the target,
-    /// `presence` is the (possibly still-transitioning) current fade level.
     pub active: bool,
-    /// 0.0 (fully dissolved) .. 1.0 (fully present). Lerped toward
-    /// `active`'s target each frame by the director — this is what makes
-    /// entities fade in/out instead of popping.
     pub presence: f32,
     pub params: EntityParams,
+    pub disposition: Disposition,
+    pub placement: Placement,
+    pub provenance: Provenance,
+    /// Auto-dismiss after this many seconds; `None` for persistent builtins.
+    pub ttl: Option<f32>,
+    /// Director clock when this entity was presented.
+    pub spawned_at: f32,
+    /// Graceful fade-out before removal from the live stack.
+    pub dismiss_pending: bool,
 }
 
 impl EntityInstance {
@@ -56,6 +58,7 @@ impl EntityInstance {
         let particles = generator.generate(point_budget, &params);
         Self {
             kind,
+            scene_id: None,
             generator,
             behavior,
             particles,
@@ -64,17 +67,30 @@ impl EntityInstance {
             active: true,
             presence: 1.0,
             params,
+            disposition: Disposition::default(),
+            placement: Placement::default(),
+            provenance: Provenance::default(),
+            ttl: None,
+            spawned_at: 0.0,
+            dismiss_pending: false,
         }
     }
 
     pub fn update(&mut self, dt: f32, signals: &PresenceSignals) {
         self.params.dt = dt;
-        // The animation clock advances at whatever fraction of real time the
-        // scene has asked for — see `EntityParams::time_scale`. The physics
-        // clock passed to the behavior below is always real time.
         self.params.time += dt * self.params.time_scale;
         self.params.presence = self.presence;
         self.behavior
             .update(&mut self.particles, dt, &self.params, signals);
+    }
+
+    /// Regenerate particles at a new budget (global allocator / tier change).
+    pub fn set_point_budget(&mut self, budget: usize, tier_stride: usize) {
+        if budget == self.point_budget && self.particles.len() == budget {
+            return;
+        }
+        self.point_budget = budget;
+        self.particles = self.generator.generate(budget, &self.params);
+        self.behavior.set_deform_stride(tier_stride);
     }
 }

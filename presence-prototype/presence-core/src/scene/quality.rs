@@ -35,7 +35,7 @@ impl QualityTier {
         }
     }
 
-    /// Shell point count for this tier.
+    /// Shell point count for this tier when it is the sole occupant of the budget.
     pub fn shell_budget(self) -> usize {
         match self {
             QualityTier::Balanced => 80_000,
@@ -70,6 +70,19 @@ impl QualityTier {
     }
 
     /// The next lower tier, if any. Used by the adaptive downshifter.
+    /// Global point ceiling across all live entities (`PRESENCE_ADAPTIVE_SCENES` §3.0).
+    pub fn global_ceiling(self) -> usize {
+        match self {
+            QualityTier::Balanced => 80_000,
+            QualityTier::Low => 30_000,
+        }
+    }
+
+    /// Floor reserved for the cloud when overlays / replace scenes share the budget.
+    pub fn cloud_budget_floor(self) -> usize {
+        self.global_ceiling() / 2
+    }
+
     pub fn lower(self) -> Option<Self> {
         match self {
             QualityTier::Balanced => Some(QualityTier::Low),

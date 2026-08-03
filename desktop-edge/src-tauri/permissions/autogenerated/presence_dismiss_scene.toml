@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-presence-dismiss-scene"
+description = "Enables the presence_dismiss_scene command without any pre-configured scope."
+commands.allow = ["presence_dismiss_scene"]
+
+[[permission]]
+identifier = "deny-presence-dismiss-scene"
+description = "Denies the presence_dismiss_scene command without any pre-configured scope."
+commands.deny = ["presence_dismiss_scene"]

@@ -1,65 +1,72 @@
-//! Scene registration — `docs/PRESENCE_SCENES.md` §5.4 and §8's
-//! "Adding a scene" flow.
-//!
-//! Phase 1's `SceneDirector` still hardcodes exactly two entities in
-//! `director::SceneDirector::new` rather than instantiating from a builder
-//! stored here; a real factory-registered director is speculative for a
-//! two-scene prototype and would trade a lot of dynamism for no shipping
-//! behaviour. The registry's job right now is narrower:
-//!
-//! - It is the *single* description of what scenes exist, so the debug
-//!   overlay and any future integration point read the same names,
-//!   priorities, and entity kinds instead of duplicating literals.
-//! - The builtin set has to match what the director actually constructs;
-//!   `builtins_match_the_scene_director` in `director` asserts this at test
-//!   time, so a scene added to one side but not the other is a compilation
-//!   *check* rather than a runtime surprise.
-//! - New scenes register their descriptor first (`register`), then wire
-//!   their factory into `SceneDirector::new` — the sequence documented in
-//!   `docs/PRESENCE_SCENES.md` §8.
-//!
-//! When the director generalises to consume factories from the registry
-//! directly, this file's shape is what that generalisation extends; the
-//! rest of the code base already reads only from here.
+//! Scene registration — factory-driven templates (`PRESENCE_ADAPTIVE_SCENES` Phase 0).
 
 use std::collections::HashMap;
 
-use crate::scene::entity::EntityKind;
+use crate::scene::disposition::Disposition;
+use crate::scene::entity::{EntityInstance, EntityKind};
+use crate::scene::params::{ParamSchema, SceneParams};
+use crate::scene::placement::Placement;
+use crate::scene::quality::QualityTier;
+use crate::scene::realize;
+use crate::scene::spec::SceneSpec;
+use crate::scene::specs::{
+    EMITTER_PARAM_SCHEMA, FOG_ID, FOG_SPEC, PRECIPITATION_ID, PRECIPITATION_SPEC,
+};
+use crate::scene::templates::builtins::{build_idle, build_loading, IDLE_ID, LOADING_ID};
 
 pub type SceneId = &'static str;
 
-// These fields form the registry's public contract; they are read by the
-// `builtins_match_the_scene_director` test in `director` and by the future
-// factory-registered director path described at the top of this file. The
-// non-test binary happens not to read them today, and the compiler cannot
-// tell the difference between "field never read yet" and "field part of an
-// API someone will register descriptors against tomorrow". The `#[allow]`
-// documents that difference so it does not gradually become an argument
-// for deleting the fields.
-#[allow(dead_code)]
+pub type SceneBuildFn = fn(SceneParams, usize, QualityTier) -> EntityInstance;
+
+/// How a template turns into a live entity: a hand-built surface factory
+/// (idle/loading shells) or a data-defined `SceneSpec` realized generically.
 #[derive(Clone, Copy, Debug)]
-pub struct SceneDescriptor {
+pub enum SceneSource {
+    Builtin(SceneBuildFn),
+    Spec(&'static SceneSpec),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SceneTemplate {
     pub id: SceneId,
     pub label: &'static str,
     pub summary: &'static str,
-    /// The entity kind this scene builds. Kept on the descriptor so the
-    /// registry itself knows the truth of every scene rather than only its
-    /// display text — that is what makes the
-    /// `builtins_match_the_scene_director` test possible.
     pub entity_kind: EntityKind,
-    /// Compositing order — `0` is background, higher numbers layer over it.
-    /// Two scenes with the same priority are drawn in registration order,
-    /// which is only stable within the builtin set and is not something
-    /// callers should depend on.
     pub priority: u8,
-    /// Whether the scene starts active when the presence launches. Only one
-    /// builtin is active on launch (the shell); the loading plate is
-    /// summoned on demand.
     pub default_active: bool,
+    pub param_schema: ParamSchema,
+    pub default_disposition: Disposition,
+    pub default_placement: Placement,
+    pub base_scale: f32,
+    pub source: SceneSource,
+}
+
+impl SceneTemplate {
+    pub fn build(&self, params: SceneParams, budget: usize, tier: QualityTier) -> EntityInstance {
+        match self.source {
+            SceneSource::Builtin(build_fn) => build_fn(params, budget, tier),
+            SceneSource::Spec(spec) => {
+                let mut params = params;
+                params.clamp_to(&self.param_schema);
+                let terms = spec.resolved_terms(&params, &self.param_schema);
+                let mut entity =
+                    realize::realize(spec, terms, budget, tier, self.priority, self.base_scale);
+                entity.scene_id = Some(self.id);
+                entity.disposition = self.default_disposition;
+                entity.placement = self.default_placement;
+                // Spec scenes are ephemeral overlays; the director's
+                // `present_scene` sets active/presence/placement/ttl when it
+                // actually goes live.
+                entity.active = false;
+                entity.presence = 0.0;
+                entity
+            }
+        }
+    }
 }
 
 pub struct SceneRegistry {
-    scenes: HashMap<SceneId, SceneDescriptor>,
+    scenes: HashMap<SceneId, SceneTemplate>,
 }
 
 impl SceneRegistry {
@@ -67,61 +74,92 @@ impl SceneRegistry {
         let mut registry = Self {
             scenes: HashMap::new(),
         };
-        registry.register(SceneDescriptor {
-            id: "idle",
+        registry.register(SceneTemplate {
+            id: IDLE_ID,
             label: "Idle — Presence Shell",
             summary: "Always active. Folded surface with the mode terms \
                       resolving to zero; the shell any mode raises weights on.",
             entity_kind: EntityKind::AssistantCloud,
             priority: 0,
             default_active: true,
+            param_schema: ParamSchema::empty(),
+            default_disposition: Disposition::Overlay,
+            default_placement: Placement::default(),
+            base_scale: 1.32,
+            source: SceneSource::Builtin(build_idle),
         });
-        registry.register(SceneDescriptor {
-            id: "loading",
+        registry.register(SceneTemplate {
+            id: LOADING_ID,
             label: "Loading — Chladni Plate",
             summary: "Secondary entity. Grains migrating onto the nodal \
                       lines of a driven square plate; toggled on/off.",
             entity_kind: EntityKind::LoadingRing,
             priority: 1,
             default_active: false,
+            param_schema: ParamSchema::empty(),
+            default_disposition: Disposition::Overlay,
+            default_placement: Placement::default(),
+            base_scale: 1.5,
+            source: SceneSource::Builtin(build_loading),
+        });
+        registry.register(SceneTemplate {
+            id: PRECIPITATION_ID,
+            label: "Precipitation — Rain",
+            summary: "Drifting cloud band with rain falling beneath it \
+                      (CloudBand + Rain terms).",
+            entity_kind: EntityKind::Scene,
+            priority: 2,
+            default_active: false,
+            param_schema: EMITTER_PARAM_SCHEMA,
+            default_disposition: Disposition::Overlay,
+            default_placement: Placement::default(),
+            base_scale: 0.85,
+            source: SceneSource::Spec(&PRECIPITATION_SPEC),
+        });
+        registry.register(SceneTemplate {
+            id: FOG_ID,
+            label: "Fog — Cloud Band",
+            summary: "A soft drifting cloud mass alone (CloudBand term) — \
+                      shows term reuse across scenes.",
+            entity_kind: EntityKind::Scene,
+            priority: 2,
+            default_active: false,
+            param_schema: EMITTER_PARAM_SCHEMA,
+            default_disposition: Disposition::Overlay,
+            default_placement: Placement::default(),
+            base_scale: 0.9,
+            source: SceneSource::Spec(&FOG_SPEC),
         });
         registry
     }
 
-    /// Registers a scene. Also used by third-party integrators: the future
-    /// factory-based path will accept a builder here rather than the plain
-    /// descriptor, but the shape of the call — one function, one entry per
-    /// scene — is what §8's "adding a scene" flow relies on.
-    pub fn register(&mut self, descriptor: SceneDescriptor) {
-        self.scenes.insert(descriptor.id, descriptor);
+    pub fn register(&mut self, template: SceneTemplate) {
+        self.scenes.insert(template.id, template);
     }
 
-    // See the comment above `SceneDescriptor` — these are the registry's
-    // read side, exercised by the crate's tests and by the future
-    // consumers described in this module's docs.
-    #[allow(dead_code)]
-    pub fn get(&self, id: SceneId) -> Option<&SceneDescriptor> {
+    pub fn get(&self, id: &str) -> Option<&SceneTemplate> {
         self.scenes.get(id)
     }
 
-    pub fn all(&self) -> impl Iterator<Item = &SceneDescriptor> {
+    pub fn all(&self) -> impl Iterator<Item = &SceneTemplate> {
         self.scenes.values()
     }
 
-    #[allow(dead_code)]
+    pub fn default_active(&self) -> impl Iterator<Item = &SceneTemplate> {
+        self.all().filter(|t| t.default_active)
+    }
+
     pub fn len(&self) -> usize {
         self.scenes.len()
     }
 
-    /// Companion to [`len`] required by clippy for public APIs. Always
-    /// `false` in the current build because `with_builtin_scenes` inserts
-    /// two entries, but the method is kept so callers can compose their own
-    /// registries in the future without a wart.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.scenes.is_empty()
     }
 }
+
+/// Alias for transitional readers.
+pub type SceneDescriptor = SceneTemplate;
 
 #[cfg(test)]
 mod tests {
@@ -130,29 +168,56 @@ mod tests {
     #[test]
     fn builtins_expose_the_expected_ids_and_kinds() {
         let registry = SceneRegistry::with_builtin_scenes();
-        assert_eq!(registry.len(), 2);
-        let idle = registry.get("idle").expect("idle scene missing");
+        assert_eq!(registry.len(), 4);
+        let idle = registry.get(IDLE_ID).expect("idle scene missing");
         assert_eq!(idle.entity_kind, EntityKind::AssistantCloud);
         assert!(idle.default_active);
-        let loading = registry.get("loading").expect("loading scene missing");
+        let loading = registry.get(LOADING_ID).expect("loading scene missing");
         assert_eq!(loading.entity_kind, EntityKind::LoadingRing);
         assert!(!loading.default_active);
         assert!(loading.priority > idle.priority);
+        let rain = registry
+            .get(PRECIPITATION_ID)
+            .expect("precipitation missing");
+        assert_eq!(rain.entity_kind, EntityKind::Scene);
+        assert!(!rain.default_active);
+        let fog = registry.get(FOG_ID).expect("fog missing");
+        assert_eq!(fog.entity_kind, EntityKind::Scene);
+        assert!(!fog.default_active);
     }
 
     #[test]
-    fn register_replaces_an_existing_descriptor_by_id() {
+    fn precipitation_template_builds_deterministically() {
+        let registry = SceneRegistry::with_builtin_scenes();
+        let template = registry.get(PRECIPITATION_ID).unwrap();
+        let params = SceneParams::from_schema(&template.param_schema);
+        let a = template.build(params, 400, QualityTier::Balanced);
+        let b = template.build(params, 400, QualityTier::Balanced);
+        assert_eq!(a.particles.len(), b.particles.len());
+        assert_eq!(
+            a.particles.first().map(|p| p.position),
+            b.particles.first().map(|p| p.position)
+        );
+    }
+
+    #[test]
+    fn register_replaces_an_existing_template_by_id() {
         let mut registry = SceneRegistry::with_builtin_scenes();
-        let before = registry.get("idle").unwrap().label;
-        registry.register(SceneDescriptor {
-            id: "idle",
+        let before = registry.get(IDLE_ID).unwrap().label;
+        registry.register(SceneTemplate {
+            id: IDLE_ID,
             label: "Idle — reshaped",
             summary: "replacement",
             entity_kind: EntityKind::AssistantCloud,
             priority: 0,
             default_active: true,
+            param_schema: ParamSchema::empty(),
+            default_disposition: Disposition::Overlay,
+            default_placement: Placement::default(),
+            base_scale: 1.32,
+            source: SceneSource::Builtin(build_idle),
         });
-        let after = registry.get("idle").unwrap().label;
+        let after = registry.get(IDLE_ID).unwrap().label;
         assert_ne!(before, after);
         assert_eq!(after, "Idle — reshaped");
     }

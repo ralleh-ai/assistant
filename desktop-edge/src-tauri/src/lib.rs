@@ -384,6 +384,60 @@ fn presence_set_interactive(
     Ok(())
 }
 
+fn default_scene_placement_scale() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentSceneArgs {
+    pub id: String,
+    #[serde(default)]
+    pub density: f32,
+    #[serde(default)]
+    pub wind: f32,
+    #[serde(default)]
+    pub disposition: presence_ipc::IpcDisposition,
+    #[serde(default)]
+    pub anchor: presence_ipc::IpcAnchor,
+    #[serde(default)]
+    pub offset_x: f32,
+    #[serde(default)]
+    pub offset_y: f32,
+    #[serde(default = "default_scene_placement_scale")]
+    pub scale: f32,
+    pub ttl_ms: Option<u64>,
+}
+
+#[tauri::command]
+fn presence_present_scene(
+    args: PresentSceneArgs,
+    presence: State<'_, Presence>,
+) -> Result<(), String> {
+    presence.send(PresenceCommand::PresentScene {
+        id: args.id,
+        params: presence_ipc::SceneParamsWire {
+            density: args.density,
+            wind: args.wind,
+        },
+        disposition: args.disposition,
+        placement: presence_ipc::IpcPlacement {
+            anchor: args.anchor,
+            offset: [args.offset_x, args.offset_y],
+            scale: args.scale,
+        },
+        transition_secs: None,
+        ttl_ms: args.ttl_ms,
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn presence_dismiss_scene(id: String, presence: State<'_, Presence>) -> Result<(), String> {
+    presence.send(PresenceCommand::DismissScene { id });
+    Ok(())
+}
+
 /// Handle to the active mic pump (if any). Mutex because Tauri hands
 /// out shared references to managed state and we need to swap the
 /// `Option` in-place from the start/stop commands.
@@ -1643,6 +1697,8 @@ pub fn run() {
             presence_set_ring_wanted,
             presence_set_quality_tier,
             presence_set_interactive,
+            presence_present_scene,
+            presence_dismiss_scene,
             presence_mic_status,
             presence_mic_start,
             presence_mic_stop,
