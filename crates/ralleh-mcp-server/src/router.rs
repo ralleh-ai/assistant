@@ -170,8 +170,7 @@ async fn dispatch_tool(
         req.arguments,
     );
 
-    outcome_to_response(event.capability, &event.outcome, event.approval_request_id)
-        .into_response()
+    outcome_to_response(event.capability, &event.outcome, event.approval_request_id).into_response()
 }
 
 /// Body for approve/reject — identifies who is deciding, scoped to a tenant
@@ -336,7 +335,9 @@ mod tests {
     use axum::http::Request;
     use http_body_util::BodyExt;
     use ralleh_policy_core::{PolicyEngine, PolicyRule, RuleEffect};
-    use ralleh_tool_gateway::{ToolDefinition, ToolGateway, ToolHandler, ToolInvocation, ToolResult, ToolRegistry};
+    use ralleh_tool_gateway::{
+        ToolDefinition, ToolGateway, ToolHandler, ToolInvocation, ToolRegistry, ToolResult,
+    };
     use tower::ServiceExt;
 
     struct EchoHandler;
@@ -457,7 +458,12 @@ mod tests {
     async fn healthz_reports_ok() {
         let app = build_router(test_state());
         let response = app
-            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);

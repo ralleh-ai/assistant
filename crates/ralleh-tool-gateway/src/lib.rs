@@ -22,16 +22,20 @@ mod approval;
 mod event;
 mod fs_read_handler;
 mod fs_write_handler;
-mod http_fetch_handler;
 pub mod gateway;
 mod handler;
+mod http_fetch_handler;
 mod registry;
 
 pub use approval::{ApprovalError, ApprovalRequest, ApprovalStatus, ApprovalStore};
 pub use event::{GatewayEvent, ToolCallOutcome};
-pub use fs_read_handler::{sandbox_root as fs_read_sandbox_root, FsReadTextError, FsReadTextHandler};
-pub use fs_write_handler::{sandbox_root as fs_write_sandbox_root, FsWriteTextError, FsWriteTextHandler};
-pub use http_fetch_handler::{HttpFetchError, HttpFetchHandler};
+pub use fs_read_handler::{
+    sandbox_root as fs_read_sandbox_root, FsReadTextError, FsReadTextHandler,
+};
+pub use fs_write_handler::{
+    sandbox_root as fs_write_sandbox_root, FsWriteTextError, FsWriteTextHandler,
+};
 pub use gateway::{AuditSink, ToolGateway};
 pub use handler::{AlwaysFailHandler, EchoHandler, ToolHandler, ToolInvocation, ToolResult};
+pub use http_fetch_handler::{HttpFetchError, HttpFetchHandler};
 pub use registry::{ToolDefinition, ToolRegistry};

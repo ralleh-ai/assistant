@@ -661,8 +661,14 @@ mod tests {
         let resting = params;
         layer.apply(&mut params);
 
-        assert!(params.intensity > resting.intensity, "listening did not brighten the shell");
-        assert!(params.expand > resting.expand, "listening did not lift the shell");
+        assert!(
+            params.intensity > resting.intensity,
+            "listening did not brighten the shell"
+        );
+        assert!(
+            params.expand > resting.expand,
+            "listening did not lift the shell"
+        );
         // Listening should be visibly gentler than thinking.
         let mut alt = resting;
         let mut thinking = ModeLayer::new();

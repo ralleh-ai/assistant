@@ -129,8 +129,7 @@ mod tests {
     #[test]
     fn empty_engine_denies_everything() {
         let engine = PolicyEngine::empty();
-        let req =
-            PolicyRequest::new("t1", "d1", "u1", "tool.anything", "public").unwrap();
+        let req = PolicyRequest::new("t1", "d1", "u1", "tool.anything", "public").unwrap();
         let decision = engine.evaluate(&req);
         assert_eq!(decision.outcome, PolicyOutcome::Denied);
         assert_eq!(decision.matched_rule_id, None);
@@ -163,11 +162,14 @@ mod tests {
             allow_rule("allow-all-tools", "tool."),
             deny_rule("deny-finance", "tool.finance"),
         ]);
-        let req = PolicyRequest::new("t1", "d1", "u1", "tool.finance.transfer", "confidential")
-            .unwrap();
+        let req =
+            PolicyRequest::new("t1", "d1", "u1", "tool.finance.transfer", "confidential").unwrap();
         let decision = engine.evaluate(&req);
         assert_eq!(decision.outcome, PolicyOutcome::Allowed);
-        assert_eq!(decision.matched_rule_id, Some("allow-all-tools".to_string()));
+        assert_eq!(
+            decision.matched_rule_id,
+            Some("allow-all-tools".to_string())
+        );
     }
 
     #[test]
@@ -179,8 +181,8 @@ mod tests {
             deny_rule("deny-finance", "tool.finance"),
             allow_rule("allow-all-tools", "tool."),
         ]);
-        let req = PolicyRequest::new("t1", "d1", "u1", "tool.finance.transfer", "confidential")
-            .unwrap();
+        let req =
+            PolicyRequest::new("t1", "d1", "u1", "tool.finance.transfer", "confidential").unwrap();
         let decision = engine.evaluate(&req);
         assert_eq!(decision.outcome, PolicyOutcome::Denied);
         assert_eq!(decision.matched_rule_id, Some("deny-finance".to_string()));
@@ -199,8 +201,8 @@ mod tests {
             reason: "financial actions require human approval".to_string(),
         };
         let engine = PolicyEngine::new(vec![rule]);
-        let req = PolicyRequest::new("t1", "d1", "u1", "tool.finance.transfer", "confidential")
-            .unwrap();
+        let req =
+            PolicyRequest::new("t1", "d1", "u1", "tool.finance.transfer", "confidential").unwrap();
         let decision = engine.evaluate(&req);
         assert_eq!(decision.outcome, PolicyOutcome::ApprovalRequired);
     }

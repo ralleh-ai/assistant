@@ -160,7 +160,11 @@ impl HttpFetchHandler {
     /// construction time — fail closed rather than "allow nothing silently
     /// forever" which looks like a misconfiguration.
     pub fn new(allowed_hosts: Vec<String>) -> Result<Self, HttpFetchError> {
-        Self::with_limits(allowed_hosts, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_TIMEOUT_SECS)
+        Self::with_limits(
+            allowed_hosts,
+            DEFAULT_MAX_RESPONSE_BYTES,
+            DEFAULT_TIMEOUT_SECS,
+        )
     }
 
     pub fn with_limits(
@@ -305,11 +309,15 @@ impl ToolHandler for HttpFetchHandler {
         if bytes.len() > self.max_response_bytes {
             return Err(HttpFetchError::ResponseTooLarge(self.max_response_bytes).to_string());
         }
-        let body = String::from_utf8(bytes.to_vec())
-            .map_err(|_| HttpFetchError::NotUtf8.to_string())?;
+        let body =
+            String::from_utf8(bytes.to_vec()).map_err(|_| HttpFetchError::NotUtf8.to_string())?;
 
         Ok(ToolResult {
-            summary: format!("fetched {} bytes from {} (HTTP {status})", body.len(), raw_url),
+            summary: format!(
+                "fetched {} bytes from {} (HTTP {status})",
+                body.len(),
+                raw_url
+            ),
             data: serde_json::json!({
                 "status": status,
                 "url": final_url.as_str(),
@@ -341,8 +349,14 @@ mod tests {
         assert_eq!(classify_ip("127.0.0.1".parse().unwrap()), IpClass::Loopback);
         assert_eq!(classify_ip("10.0.0.5".parse().unwrap()), IpClass::Private);
         assert_eq!(classify_ip("172.16.1.1".parse().unwrap()), IpClass::Private);
-        assert_eq!(classify_ip("192.168.1.1".parse().unwrap()), IpClass::Private);
-        assert_eq!(classify_ip("169.254.169.254".parse().unwrap()), IpClass::LinkLocal);
+        assert_eq!(
+            classify_ip("192.168.1.1".parse().unwrap()),
+            IpClass::Private
+        );
+        assert_eq!(
+            classify_ip("169.254.169.254".parse().unwrap()),
+            IpClass::LinkLocal
+        );
         assert_eq!(classify_ip("8.8.8.8".parse().unwrap()), IpClass::Public);
         assert_eq!(classify_ip("::1".parse().unwrap()), IpClass::Loopback);
         assert_eq!(

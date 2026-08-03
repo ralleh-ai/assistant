@@ -72,8 +72,10 @@ impl ToolHandler for FsReadTextHandler {
             .resolve_within_root(requested_path)
             .map_err(|e| e.to_string())?;
 
-        let bytes = fs::read(&resolved).map_err(|e| FsReadTextError::Io(e.to_string()).to_string())?;
-        let contents = String::from_utf8(bytes).map_err(|_| FsReadTextError::NotUtf8.to_string())?;
+        let bytes =
+            fs::read(&resolved).map_err(|e| FsReadTextError::Io(e.to_string()).to_string())?;
+        let contents =
+            String::from_utf8(bytes).map_err(|_| FsReadTextError::NotUtf8.to_string())?;
 
         Ok(ToolResult {
             summary: format!("read {} bytes from {}", contents.len(), requested_path),
@@ -179,7 +181,9 @@ mod tests {
     fn nonexistent_file_returns_io_error_not_panic() {
         let dir = tempfile::tempdir().unwrap();
         let handler = FsReadTextHandler::new(dir.path()).unwrap();
-        let err = handler.invoke(&invocation("does-not-exist.txt")).unwrap_err();
+        let err = handler
+            .invoke(&invocation("does-not-exist.txt"))
+            .unwrap_err();
         assert!(err.contains("read file"));
     }
 

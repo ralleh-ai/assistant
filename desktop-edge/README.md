@@ -124,6 +124,22 @@ CLI/tests — not on the core home screen.
   which storage the shell is running under; a unit test
   pins that invariant. Attach the file to a support ticket
   instead of asking users to hunt down five paths.
+  The settings panel surfaces this behind a
+  "Copy diagnostics for support" button that shows the
+  path when ready and offers "Show in file manager" (via a
+  path-scoped `reveal_path_in_file_manager` command that
+  refuses paths outside the app config dir) and "Copy
+  path" affordances.
+- **Backend reachability UI** — the always-visible backend
+  pill's dot now reflects the health probe's state
+  (`healthy`, `unhealthy`, `skipped`/`unknown`). Red means a
+  wedged provider even without opening the panel; the dot
+  gently pulses to draw the eye without being alarming, and
+  respects `prefers-reduced-motion`. The expanded panel
+  renders the full reachability card (state + last-latency
+  + last-error + last-probe-age, refreshed every 15 s) plus
+  a "Check now" button that runs an on-demand probe via
+  `assistant_probe_backend`.
 - **Router health probe** — a background thread pings the
   active completion backend every 60 s (overridable with
   `RALLEH_HEALTH_PROBE_INTERVAL_MS`, floor 5 s; disabled with

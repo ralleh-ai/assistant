@@ -113,11 +113,7 @@ mod whisper_engine {
     }
 
     impl SpeechToText for WhisperStt {
-        fn transcribe(
-            &self,
-            samples: &[f32],
-            sample_rate_hz: u32,
-        ) -> Result<Transcript, SttError> {
+        fn transcribe(&self, samples: &[f32], sample_rate_hz: u32) -> Result<Transcript, SttError> {
             if samples.is_empty() {
                 return Err(SttError::EmptyAudio);
             }
@@ -129,9 +125,8 @@ mod whisper_engine {
                 .ctx
                 .create_state()
                 .map_err(|e| SttError::Engine(e.to_string()))?;
-            let params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy {
-                best_of: 1,
-            });
+            let params =
+                whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
             state
                 .full(params, samples)
                 .map_err(|e| SttError::Engine(e.to_string()))?;
@@ -309,8 +304,7 @@ mod tests {
         assert!(quiet.no_speech || quiet.text.len() < 80);
 
         // Prefer repo sample if present (scripts download it next to the model).
-        let jfk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../models/jfk.wav");
+        let jfk = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/jfk.wav");
         if jfk.is_file() {
             let uttered = stt.transcribe_file(&jfk).expect("jfk");
             assert!(!uttered.no_speech, "expected speech for jfk.wav");

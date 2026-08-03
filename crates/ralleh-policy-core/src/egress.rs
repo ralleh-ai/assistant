@@ -134,11 +134,7 @@ impl EgressPolicy {
     pub fn allowed_hosts_display(&self) -> String {
         let mut hosts: Vec<&String> = self.allowed_hosts.iter().collect();
         hosts.sort();
-        hosts
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ")
+        hosts.into_iter().cloned().collect::<Vec<_>>().join(", ")
     }
 
     /// Check that `url` targets an allowed host over an allowed

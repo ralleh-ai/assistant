@@ -13,7 +13,9 @@
 //! *canonical* wire format; this module is the reverse map for a single
 //! consumer of it.
 
-use presence_ipc::{Command, PaletteId as IpcPalette, PresenceMode as IpcMode, QualityTier as IpcTier, Signals};
+use presence_ipc::{
+    Command, PaletteId as IpcPalette, PresenceMode as IpcMode, QualityTier as IpcTier, Signals,
+};
 
 use crate::palette::PaletteId;
 use crate::scene::mode::PresenceMode;
@@ -104,7 +106,11 @@ fn signals_from_wire(w: &Signals) -> PresenceSignals {
     // before clamping — a misbehaving sender should not be able to break
     // the presence, only fail to command it.
     let sanitize = |v: f32, lo: f32, hi: f32| {
-        if v.is_nan() { lo } else { v.clamp(lo, hi) }
+        if v.is_nan() {
+            lo
+        } else {
+            v.clamp(lo, hi)
+        }
     };
     PresenceSignals {
         intensity: sanitize(w.intensity, 0.0, 1.5),
@@ -152,7 +158,11 @@ impl SceneDirector {
                 // engagement would be exactly the collision the two
                 // commands exist to keep separate.
                 let sanitize = |v: f32, lo: f32, hi: f32| {
-                    if v.is_nan() { lo } else { v.clamp(lo, hi) }
+                    if v.is_nan() {
+                        lo
+                    } else {
+                        v.clamp(lo, hi)
+                    }
                 };
                 self.signals = PresenceSignals {
                     intensity: sanitize(intensity, 0.0, 1.5),
@@ -172,21 +182,21 @@ impl SceneDirector {
             Command::SetQualityTier { tier } => {
                 self.set_quality_tier(tier.into());
             }
-                Command::SetPosition { x, y } => {
-                    // Same one-shot pattern as hittest — the runtime
-                    // owns the window handle. Overwriting a queued
-                    // position is intentional: if the shell sends two
-                    // moves back-to-back only the latest matters.
-                    self.pending_position = Some((x, y));
-                }
-                Command::SetInteractive { interactive } => {
-                    // Same pattern as `SetPalette` — the runtime is the
-                    // side that owns the `winit::Window`, so we just
-                    // record the desired state and let the runtime
-                    // apply it between frames.
-                    self.pending_hittest = Some(interactive);
-                }
-                Command::SetPalette { palette } => {
+            Command::SetPosition { x, y } => {
+                // Same one-shot pattern as hittest — the runtime
+                // owns the window handle. Overwriting a queued
+                // position is intentional: if the shell sends two
+                // moves back-to-back only the latest matters.
+                self.pending_position = Some((x, y));
+            }
+            Command::SetInteractive { interactive } => {
+                // Same pattern as `SetPalette` — the runtime is the
+                // side that owns the `winit::Window`, so we just
+                // record the desired state and let the runtime
+                // apply it between frames.
+                self.pending_hittest = Some(interactive);
+            }
+            Command::SetPalette { palette } => {
                 // The palette is a *render* setting, not a director one —
                 // it lives on `Renderer::palette`. The director records
                 // the wanted id so the runtime can read it back and apply
@@ -292,9 +302,7 @@ mod tests {
     fn set_quality_tier_regenerates_via_the_director() {
         let mut director = SceneDirector::new();
         let before = director.assistant_cloud.particles.len();
-        director.apply_command(Command::SetQualityTier {
-            tier: IpcTier::Low,
-        });
+        director.apply_command(Command::SetQualityTier { tier: IpcTier::Low });
         assert_eq!(director.tier(), QualityTier::Low);
         let after = director.assistant_cloud.particles.len();
         assert_ne!(before, after, "point set should have been regenerated");

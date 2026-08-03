@@ -29,6 +29,8 @@ use presence_ipc::{Command, Envelope};
 #[cfg(feature = "mic")]
 use presence_ipc::PresenceMode;
 #[cfg(feature = "mic")]
+use ralleh_audio_core::{AudioSource, CpalMicSource, VadConfig, VadState, VoiceActivityDetector};
+#[cfg(feature = "mic")]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "mic")]
 use std::sync::Arc;
@@ -36,10 +38,6 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 #[cfg(feature = "mic")]
 use std::time::{Duration, Instant};
-#[cfg(feature = "mic")]
-use ralleh_audio_core::{
-    AudioSource, CpalMicSource, VadConfig, VadState, VoiceActivityDetector,
-};
 
 /// Nominal send cadence. 30 Hz is the same figure the React slider
 /// throttle uses; anything higher is wasted (the runtime ticks the
@@ -115,9 +113,7 @@ impl MicPump {
 
         match open_rx.recv() {
             Ok(Ok(rate_hz)) => {
-                log::info!(
-                    "desktop-edge: presence mic pump started, {rate_hz} Hz"
-                );
+                log::info!("desktop-edge: presence mic pump started, {rate_hz} Hz");
                 Ok(Self {
                     stop,
                     join: Some(join),
@@ -138,9 +134,11 @@ impl MicPump {
 
     #[cfg(not(feature = "mic"))]
     pub fn start(_sender: Sender<Envelope>) -> Result<Self, String> {
-        Err("presence mic: this shell was built without the `mic` feature — \
+        Err(
+            "presence mic: this shell was built without the `mic` feature — \
              rebuild with scripts/tauri-dev.cmd (mic is default there)"
-            .into())
+                .into(),
+        )
     }
 
     /// Requests the pump thread to stop and joins it. Idempotent.
@@ -163,11 +161,7 @@ impl Drop for MicPump {
 }
 
 #[cfg(feature = "mic")]
-fn pump_loop(
-    mut source: CpalMicSource,
-    sender: Sender<Envelope>,
-    stop: Arc<AtomicBool>,
-) {
+fn pump_loop(mut source: CpalMicSource, sender: Sender<Envelope>, stop: Arc<AtomicBool>) {
     // Two-timescale smoother: attack fast (level rises quickly on a
     // spoken syllable), release slow (falls gently so the shell does not
     // strobe on gaps between words). Distinct constants matter — a
@@ -205,7 +199,11 @@ fn pump_loop(
         // picking one and dropping the rest.
         while let Some(frame) = source.next_frame() {
             let raw = (frame.rms_energy() * LEVEL_GAIN).min(1.0);
-            let alpha = if raw > level { LEVEL_ATTACK } else { LEVEL_RELEASE };
+            let alpha = if raw > level {
+                LEVEL_ATTACK
+            } else {
+                LEVEL_RELEASE
+            };
             level += (raw - level) * alpha;
 
             // VAD updates on every frame, but we only fire a mode
@@ -250,9 +248,7 @@ fn pump_loop(
                 progress: 0.0,
             });
             if sender.send(env).is_err() {
-                log::warn!(
-                    "desktop-edge: presence writer disconnected; mic pump exiting"
-                );
+                log::warn!("desktop-edge: presence writer disconnected; mic pump exiting");
                 return;
             }
             last_sent = now;

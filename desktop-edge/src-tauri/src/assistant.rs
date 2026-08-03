@@ -33,9 +33,7 @@ use ralleh_ai_router::{
     HttpCompletionBackend,
 };
 use ralleh_policy_core::{EgressPolicy, PolicyEngine, PolicyRule, RuleEffect};
-use ralleh_tool_gateway::{
-    EchoHandler, ToolDefinition, ToolGateway, ToolRegistry,
-};
+use ralleh_tool_gateway::{EchoHandler, ToolDefinition, ToolGateway, ToolRegistry};
 
 use crate::settings::{CompletionConfig, CompletionKind};
 
@@ -317,8 +315,16 @@ fn select_backend(persisted: Option<&CompletionConfig>) -> Arc<dyn CompletionBac
                 log::info!(
                     "assistant: completion backend from settings = {} ({} @ {})",
                     cfg.kind.label(),
-                    if cfg.model.is_empty() { "-" } else { &cfg.model },
-                    if cfg.base_url.is_empty() { "-" } else { &cfg.base_url },
+                    if cfg.model.is_empty() {
+                        "-"
+                    } else {
+                        &cfg.model
+                    },
+                    if cfg.base_url.is_empty() {
+                        "-"
+                    } else {
+                        &cfg.base_url
+                    },
                 );
                 return arc;
             }
@@ -364,9 +370,7 @@ fn select_backend_from_env() -> Box<dyn CompletionBackend> {
             Box::new(EchoBackend)
         }),
         other => {
-            log::warn!(
-                "assistant: unknown {COMPLETION_KIND_ENV}=`{other}` — falling back to Echo"
-            );
+            log::warn!("assistant: unknown {COMPLETION_KIND_ENV}=`{other}` — falling back to Echo");
             Box::new(EchoBackend)
         }
     }
@@ -379,9 +383,7 @@ fn build_anthropic() -> Result<Box<dyn CompletionBackend>, String> {
     EgressPolicy::from_env()
         .check_url(&base_url)
         .map_err(|d| format!("anthropic backend rejected by egress policy: {d}"))?;
-    log::info!(
-        "assistant: completion backend = Anthropic ({model} @ {base_url})"
-    );
+    log::info!("assistant: completion backend = Anthropic ({model} @ {base_url})");
     Ok(Box::new(AnthropicMessagesBackend::new(
         "anthropic",
         base_url,

@@ -70,9 +70,7 @@ pub fn run_mock_voice_pipeline() -> Result<MockVoicePipelineResult, String> {
     }
 
     let stt = MockStt::new("hello from headless pipeline");
-    let transcript = stt
-        .transcribe(&pcm, 16_000)
-        .map_err(|e| e.to_string())?;
+    let transcript = stt.transcribe(&pcm, 16_000).map_err(|e| e.to_string())?;
     if transcript.no_speech {
         return Err("MockStt marked utterance as no_speech".into());
     }

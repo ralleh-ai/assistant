@@ -29,9 +29,9 @@ pub use pipeline::{
     run_live_mic_smoke, run_mock_voice_pipeline, LiveMicSmokeResult, MockVoicePipelineResult,
 };
 pub use source::{AudioFrame, AudioSource, MockAudioSource};
-pub use stt::{MockStt, SpeechToText, SttError, Transcript, WhisperCliStt};
 #[cfg(feature = "whisper")]
 pub use stt::WhisperStt;
+pub use stt::{MockStt, SpeechToText, SttError, Transcript, WhisperCliStt};
 pub use tts::{MockTts, PiperCliTts, SpeechAudio, TextToSpeech, TtsError};
 pub use vad::{VadConfig, VadState, VoiceActivityDetector};
 pub use wakeword::{
@@ -40,9 +40,7 @@ pub use wakeword::{
 pub use wav::{read_pcm16, write_pcm16_mono, PcmMono, WavError};
 
 #[cfg(feature = "mic")]
-pub use cpal_source::{
-    live_mic_requested, should_skip_live_audio, CpalMicError, CpalMicSource,
-};
+pub use cpal_source::{live_mic_requested, should_skip_live_audio, CpalMicError, CpalMicSource};
 
 #[cfg(feature = "playback")]
 pub use cpal_sink::{

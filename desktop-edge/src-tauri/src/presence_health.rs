@@ -20,10 +20,8 @@ use tauri::{AppHandle, Manager};
 
 use crate::audit::{AuditKind, AuditLog};
 use crate::audit_event_with_identity;
+use crate::presence::{Liveness, LivenessSnapshot, Presence, PresenceHealth, SPAWN_GRACE_MS};
 use crate::presence_log::PresenceLog;
-use crate::presence::{
-    Liveness, LivenessSnapshot, Presence, PresenceHealth, SPAWN_GRACE_MS,
-};
 
 /// How often the monitor polls the liveness snapshot. Small
 /// enough to catch a stall within one heartbeat interval past
@@ -55,9 +53,7 @@ pub fn classify(snap: &LivenessSnapshot, now: Instant) -> PresenceHealth {
             // the grace window counts as "starting"; past it we
             // upgrade to Stalled so a runtime that never emits
             // Ready is caught.
-            if now.duration_since(spawned_at)
-                >= Duration::from_millis(SPAWN_GRACE_MS)
-            {
+            if now.duration_since(spawned_at) >= Duration::from_millis(SPAWN_GRACE_MS) {
                 PresenceHealth::Stalled
             } else {
                 PresenceHealth::Starting
@@ -111,11 +107,7 @@ pub enum MonitorEdge {
 /// Fold one poll tick into the monitor state. Returns the edge
 /// that fired, if any — the caller decides what to do with it
 /// (production: write an audit event; tests: assert against).
-pub fn step(
-    state: &mut MonitorState,
-    snap: &LivenessSnapshot,
-    now: Instant,
-) -> MonitorEdge {
+pub fn step(state: &mut MonitorState, snap: &LivenessSnapshot, now: Instant) -> MonitorEdge {
     let health = classify(snap, now);
     let previous = state.health;
     state.health = health;
@@ -169,15 +161,8 @@ pub fn spawn(app: AppHandle, liveness: Liveness) {
     // immediately exit for a disabled presence. Non-critical
     // (the loop would exit fine on its own), but keeps thread
     // dumps clean during development.
-    if liveness
-        .lock()
-        .ok()
-        .and_then(|s| s.spawned_at)
-        .is_none()
-    {
-        log::info!(
-            "presence-health: presence disabled (no spawn timestamp) — monitor not started"
-        );
+    if liveness.lock().ok().and_then(|s| s.spawned_at).is_none() {
+        log::info!("presence-health: presence disabled (no spawn timestamp) — monitor not started");
         return;
     }
     std::thread::Builder::new()
@@ -212,7 +197,10 @@ fn run(app: AppHandle, liveness: Liveness) {
         let edge = step(&mut state, &snap, Instant::now());
         match edge {
             MonitorEdge::None => continue,
-            MonitorEdge::Stalled { elapsed_ms, snapshot } => {
+            MonitorEdge::Stalled {
+                elapsed_ms,
+                snapshot,
+            } => {
                 log::warn!(
                     "presence-health: STALLED — no events for {}ms (last heartbeat #{:?} at uptime {:?}ms)",
                     elapsed_ms,
@@ -240,7 +228,10 @@ fn run(app: AppHandle, liveness: Liveness) {
                     let _ = audit.write(&event);
                 }
             }
-            MonitorEdge::Recovered { recovery_ms, snapshot } => {
+            MonitorEdge::Recovered {
+                recovery_ms,
+                snapshot,
+            } => {
                 log::info!(
                     "presence-health: RECOVERED — events resumed after {}ms (heartbeat #{:?})",
                     recovery_ms,
@@ -362,19 +353,12 @@ mod tests {
             now,
         );
         let recovered_at = now + Duration::from_millis(2_000);
-        match step(
-            &mut state,
-            &snap_from(recovered_at, Some(50)),
-            recovered_at,
-        ) {
+        match step(&mut state, &snap_from(recovered_at, Some(50)), recovered_at) {
             MonitorEdge::Recovered { recovery_ms, .. } => {
                 // Recovery time is measured from the stall's
                 // detection (which was `now`), not from the
                 // stall's original event boundary.
-                assert!(
-                    recovery_ms >= 1_500,
-                    "recovery_ms too small: {recovery_ms}"
-                );
+                assert!(recovery_ms >= 1_500, "recovery_ms too small: {recovery_ms}");
             }
             other => panic!("expected Recovered edge, got {other:?}"),
         }
@@ -406,10 +390,7 @@ mod tests {
         assert!(matches!(stall_a, MonitorEdge::Stalled { .. }));
         let recover = step(
             &mut state,
-            &snap_from(
-                now + Duration::from_millis(1_000),
-                Some(100),
-            ),
+            &snap_from(now + Duration::from_millis(1_000), Some(100)),
             now + Duration::from_millis(1_000),
         );
         assert!(matches!(recover, MonitorEdge::Recovered { .. }));

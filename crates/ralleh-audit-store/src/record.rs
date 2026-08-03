@@ -9,6 +9,12 @@ use ralleh_tool_gateway::GatewayEvent;
 /// backs this later — can interleave both event kinds in true
 /// chronological order, which matters for reconstructing "what happened,
 /// in what order" during an incident review.
+// Both variants are hot-path event carriers. Boxing `ToolDispatch`
+// to trim the enum's stack size would add an allocation on every
+// tool dispatch (thousands per session in the real product) to
+// save a couple hundred bytes on a rare `Completion`. The
+// asymmetry isn't worth the churn.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuditRecordKind {

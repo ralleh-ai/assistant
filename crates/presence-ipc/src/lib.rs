@@ -312,8 +312,7 @@ mod tests {
         for (mode, wire) in pairs {
             let encoded = serde_json::to_string(mode).expect("serialize");
             assert_eq!(encoded, format!("\"{wire}\""), "wire name for {mode:?}");
-            let decoded: PresenceMode =
-                serde_json::from_str(&encoded).expect("deserialize");
+            let decoded: PresenceMode = serde_json::from_str(&encoded).expect("deserialize");
             assert_eq!(decoded, *mode);
         }
     }
@@ -324,14 +323,8 @@ mod tests {
             serde_json::to_string(&QualityTier::Balanced).unwrap(),
             "\"balanced\""
         );
-        assert_eq!(
-            serde_json::to_string(&QualityTier::Low).unwrap(),
-            "\"low\""
-        );
-        assert_eq!(
-            serde_json::to_string(&PaletteId::Teal).unwrap(),
-            "\"teal\""
-        );
+        assert_eq!(serde_json::to_string(&QualityTier::Low).unwrap(), "\"low\"");
+        assert_eq!(serde_json::to_string(&PaletteId::Teal).unwrap(), "\"teal\"");
         assert_eq!(
             serde_json::to_string(&PaletteId::Ember).unwrap(),
             "\"ember\""
@@ -358,8 +351,7 @@ mod tests {
         let s: Signals = serde_json::from_str("{}").expect("empty object");
         assert_eq!(s, Signals::default());
 
-        let partial: Signals =
-            serde_json::from_str(r#"{"intensity":0.5}"#).expect("partial");
+        let partial: Signals = serde_json::from_str(r#"{"intensity":0.5}"#).expect("partial");
         assert_eq!(partial.intensity, 0.5);
         assert_eq!(partial.audio_level, 0.0);
     }
@@ -397,8 +389,7 @@ mod tests {
             let env = Envelope::wrap(cmd.clone());
             assert!(env.is_current());
             let encoded = serde_json::to_string(&env).expect("serialize");
-            let decoded: Envelope =
-                serde_json::from_str(&encoded).expect("deserialize");
+            let decoded: Envelope = serde_json::from_str(&encoded).expect("deserialize");
             assert_eq!(decoded, env);
         }
     }
@@ -432,8 +423,7 @@ mod tests {
             let env = EventEnvelope::wrap(event.clone());
             assert!(env.is_current());
             let encoded = serde_json::to_string(&env).expect("serialize");
-            let decoded: EventEnvelope =
-                serde_json::from_str(&encoded).expect("deserialize");
+            let decoded: EventEnvelope = serde_json::from_str(&encoded).expect("deserialize");
             assert_eq!(decoded, env);
         }
     }
@@ -458,8 +448,8 @@ mod tests {
         // Sanity pin: the two constants must not drift out of the
         // relationship the module docs describe, or the shell will
         // false-positive stalls on healthy runtimes.
-        assert!(STALL_THRESHOLD_MS >= 2 * HEARTBEAT_INTERVAL_MS);
-        assert!(HEARTBEAT_INTERVAL_MS > 0);
+        const _: () = assert!(STALL_THRESHOLD_MS >= 2 * HEARTBEAT_INTERVAL_MS);
+        const _: () = assert!(HEARTBEAT_INTERVAL_MS > 0);
     }
 
     #[test]

@@ -57,6 +57,7 @@ impl EventSink {
 
     /// A disabled sink for tests. Never emits.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn disabled() -> Self {
         Self { tx: None }
     }
@@ -102,9 +103,7 @@ pub(crate) fn run<W: Write>(mut out: W, rx: Receiver<Event>) {
             }
         };
         if writeln!(out, "{line}").is_err() {
-            log::warn!(
-                "presence-runtime: stdout ipc write failed; writer thread exiting"
-            );
+            log::warn!("presence-runtime: stdout ipc write failed; writer thread exiting");
             return;
         }
         // Flushing explicitly matters: stdout to a pipe is block-buffered
@@ -136,8 +135,16 @@ mod tests {
         // Envelope shape is stable, so pin down the tag rather than
         // round-tripping — anything shifting the wire format has to
         // update this test too.
-        assert!(lines[0].contains(r#""kind":"ready""#), "line 0: {}", lines[0]);
-        assert!(lines[1].contains(r#""kind":"moved""#), "line 1: {}", lines[1]);
+        assert!(
+            lines[0].contains(r#""kind":"ready""#),
+            "line 0: {}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains(r#""kind":"moved""#),
+            "line 1: {}",
+            lines[1]
+        );
         // Version stamp must be present.
         assert!(lines[0].contains(r#""version":"#), "line 0: {}", lines[0]);
     }

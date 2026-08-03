@@ -15,11 +15,11 @@ use presence_core::scene::mode::PresenceMode;
 use presence_core::scene::SceneDirector;
 
 #[cfg(feature = "dev")]
-use presence_core::scene::SceneRegistry;
+use crate::ui::{EguiLayer, PanelState};
 #[cfg(feature = "dev")]
 use egui_wgpu::ScreenDescriptor;
 #[cfg(feature = "dev")]
-use crate::ui::{EguiLayer, PanelState};
+use presence_core::scene::SceneRegistry;
 
 /// Simulation runs on a fixed step so motion timing is identical at any
 /// frame rate — the behaviors are spring integrators, and letting `dt`
@@ -263,13 +263,9 @@ impl App {
             // flip is still visually correct, and yelling louder
             // than the log tells us nothing new.
             if let Err(err) = live.window.set_cursor_hittest(interactive) {
-                log::warn!(
-                    "presence-runtime: set_cursor_hittest({interactive}) failed ({err})"
-                );
+                log::warn!("presence-runtime: set_cursor_hittest({interactive}) failed ({err})");
             } else {
-                log::info!(
-                    "presence-runtime: cursor hittest -> {interactive}"
-                );
+                log::info!("presence-runtime: cursor hittest -> {interactive}");
             }
         }
     }
@@ -620,7 +616,6 @@ impl App {
         }
         self.last_reported_position = Some((x, y));
         self.last_move_emit = now;
-        self.ipc_events
-            .send(presence_ipc::Event::Moved { x, y });
+        self.ipc_events.send(presence_ipc::Event::Moved { x, y });
     }
 }

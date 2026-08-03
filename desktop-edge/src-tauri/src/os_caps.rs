@@ -36,8 +36,7 @@ fn phase1_clipboard_engine() -> PolicyEngine {
         capability_prefix: Some("os.clipboard.".into()),
         sensitivity: None,
         effect: RuleEffect::Allow,
-        reason: "Phase 1 bootstrap: local clipboard smoke until control-plane policy lands"
-            .into(),
+        reason: "Phase 1 bootstrap: local clipboard smoke until control-plane policy lands".into(),
     }])
 }
 

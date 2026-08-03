@@ -926,8 +926,8 @@ impl SurfaceShape for PresenceShell {
             // stop reading as a machine. Held above zero because folds that
             // *actually* stop drawing look like a rendering bug rather than
             // like calm.
-            fold_rest: 0.62 + 0.38 * 0.5
-                * (1.0 + (params.time * (std::f32::consts::TAU / 35.0) - 0.7).sin()),
+            fold_rest: 0.62
+                + 0.38 * 0.5 * (1.0 + (params.time * (std::f32::consts::TAU / 35.0) - 0.7).sin()),
             lobes,
             live_lobes,
             pulse_amp: self.pulse.depth

@@ -69,7 +69,11 @@ fn rms(samples: &[f32]) -> f32 {
 fn level_bar(rms: f32) -> String {
     // Rough visual: ~0.02 quiet room, ~0.2 speech, clip near 1.0
     let filled = ((rms * 40.0).clamp(0.0, 40.0)) as usize;
-    format!("[{}{}] rms={rms:.4}", "#".repeat(filled), "-".repeat(40 - filled))
+    format!(
+        "[{}{}] rms={rms:.4}",
+        "#".repeat(filled),
+        "-".repeat(40 - filled)
+    )
 }
 
 fn main() -> ExitCode {
@@ -96,7 +100,8 @@ fn main() -> ExitCode {
     );
 
     let deadline = Instant::now() + Duration::from_secs_f32(seconds);
-    let mut pcm: Vec<f32> = Vec::with_capacity((sample_rate as f32 * seconds) as usize + sample_rate as usize);
+    let mut pcm: Vec<f32> =
+        Vec::with_capacity((sample_rate as f32 * seconds) as usize + sample_rate as usize);
     let mut last_meter = Instant::now();
     let mut meter_window: Vec<f32> = Vec::new();
 

@@ -103,7 +103,9 @@ impl TokenAuthenticator {
                 ));
             }
             if parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
-                return Err(format!("invalid RALLEH_API_TOKENS entry '{entry}' (empty field)"));
+                return Err(format!(
+                    "invalid RALLEH_API_TOKENS entry '{entry}' (empty field)"
+                ));
             }
             auth.insert(
                 parts[0],

@@ -1060,6 +1060,194 @@ body {
   border-radius: 50%;
   background: var(--teal);
   box-shadow: 0 0 8px rgba(31, 138, 122, 0.6);
+  transition: background var(--motion-duration) var(--motion-ease),
+    box-shadow var(--motion-duration) var(--motion-ease);
+}
+
+.backend-pill-dot-ok {
+  background: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.6);
+}
+
+.backend-pill-dot-bad {
+  background: #f87171;
+  box-shadow: 0 0 10px rgba(248, 113, 113, 0.7);
+  /* A subtle pulse so an operator's peripheral vision picks
+     up the wedged-backend signal even without focus. Runs
+     unconditionally when the tone is `bad`; a
+     prefers-reduced-motion override below stops it. */
+  animation: backend-pill-dot-pulse 2s var(--motion-ease) infinite;
+}
+
+@keyframes backend-pill-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backend-pill-dot-bad {
+    animation: none;
+  }
+}
+
+.backend-pill-dot-muted {
+  background: var(--mist);
+  opacity: 0.55;
+  box-shadow: none;
+}
+
+/* Health section: sits inside the expanded panel, above the
+   diagnostics section. Same neutral surround as the rest of
+   the panel; the dot carries the signal. */
+.backend-health {
+  margin-top: 1.15rem;
+  padding: 0.85rem 1rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.backend-health-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.backend-health-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.backend-health-dot-ok {
+  background: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.55);
+}
+
+.backend-health-dot-warn {
+  background: #fbbf24;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.55);
+}
+
+.backend-health-dot-bad {
+  background: #f87171;
+  box-shadow: 0 0 10px rgba(248, 113, 113, 0.7);
+}
+
+.backend-health-dot-muted {
+  background: var(--mist);
+  opacity: 0.55;
+}
+
+.backend-health-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.backend-health-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.backend-health-label {
+  color: var(--mist);
+  opacity: 0.75;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.68rem;
+}
+
+.backend-health-value {
+  font-weight: 500;
+  font-size: 0.92rem;
+  color: var(--foam);
+}
+
+.backend-health-error {
+  margin-top: 0.3rem;
+  color: #fca5a5;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  /* Cap the width so a stack trace doesn't blow out the panel;
+     the full text is in the `title`. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Diagnostics section: same visual weight as health, sits
+   below it. The "path readout" line is monospace + copyable
+   so an operator can double-click to select. */
+.backend-diagnostics {
+  margin-top: 0.85rem;
+  padding: 0.85rem 1rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.backend-diagnostics-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+}
+
+.backend-diagnostics-header > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.backend-diagnostics-title {
+  font-weight: 500;
+  font-size: 0.92rem;
+  color: var(--foam);
+  margin-bottom: 0.15rem;
+}
+
+.backend-diagnostics-lede {
+  color: var(--mist);
+  opacity: 0.72;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.backend-diagnostics-ready {
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.backend-diagnostics-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--mist);
+  padding: 0.4rem 0.55rem;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+  user-select: text;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.backend-diagnostics-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.55rem;
+}
+
+.backend-diagnostics-error {
+  margin-top: 0.55rem;
+  color: #fca5a5;
+  font-size: 0.82rem;
+  line-height: 1.4;
 }
 
 .backend-pill-label {

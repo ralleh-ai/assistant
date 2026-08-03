@@ -130,7 +130,10 @@ impl ApprovalStore {
     }
 
     pub fn len(&self) -> usize {
-        self.inner.lock().expect("approval store mutex poisoned").len()
+        self.inner
+            .lock()
+            .expect("approval store mutex poisoned")
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -164,12 +167,21 @@ impl ApprovalStore {
         if let Err(e) = self.persist() {
             panic!(
                 "failed to persist approval store to {}: {e}",
-                self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+                self.path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
             );
         }
     }
 
     /// Park a new pending approval for a gated invocation.
+    // Broad signature is intentional: an approval carries the full
+    // identity triple + capability + arguments + policy decision +
+    // human-readable reason. Splitting into a struct would create
+    // a stutter type used exactly once, so the arity is worth the
+    // clippy allowlist.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_pending(
         &self,
         tenant_id: impl Into<String>,
@@ -309,7 +321,10 @@ mod tests {
                 ApprovalStatus::Approved,
             )
             .unwrap_err();
-        assert!(matches!(err, ApprovalError::NotPending(_, ApprovalStatus::Approved)));
+        assert!(matches!(
+            err,
+            ApprovalError::NotPending(_, ApprovalStatus::Approved)
+        ));
     }
 
     #[test]

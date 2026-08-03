@@ -255,10 +255,7 @@ pub fn probe_once(state: &AssistantState) -> (String, ProbeOutcome) {
     let latency_ms = started.elapsed().as_millis() as u64;
     let probe = match outcome {
         CompletionOutcome::Succeeded(_) => ProbeOutcome::Ok { latency_ms },
-        CompletionOutcome::Failed { error, .. } => ProbeOutcome::Failed {
-            latency_ms,
-            error,
-        },
+        CompletionOutcome::Failed { error, .. } => ProbeOutcome::Failed { latency_ms, error },
         CompletionOutcome::Denied => ProbeOutcome::Failed {
             latency_ms,
             error: "policy denied".into(),
@@ -298,9 +295,7 @@ pub fn spawn(app: AppHandle, health: Health) {
     let interval = match interval_from_env() {
         Some(d) => d,
         None => {
-            log::info!(
-                "assistant-health: probing disabled via {PROBE_ENV_DISABLED}"
-            );
+            log::info!("assistant-health: probing disabled via {PROBE_ENV_DISABLED}");
             if let Ok(mut inner) = health.lock() {
                 inner.snapshot.state = HealthState::Skipped;
                 inner.snapshot.skip_reason = Some(SkipReason::Disabled);
@@ -543,8 +538,8 @@ mod tests {
         // process-global and race-prone.
         // We can still assert the constant relationships that
         // interval_from_env relies on.
-        assert!(MIN_INTERVAL_MS >= 1_000);
-        assert!(DEFAULT_INTERVAL_MS >= MIN_INTERVAL_MS);
+        const _: () = assert!(MIN_INTERVAL_MS >= 1_000);
+        const _: () = assert!(DEFAULT_INTERVAL_MS >= MIN_INTERVAL_MS);
     }
 
     #[test]
@@ -567,7 +562,7 @@ mod tests {
 
     #[test]
     fn truncate_appends_ellipsis_past_the_cap() {
-        let s: String = std::iter::repeat('a').take(500).collect();
+        let s = "a".repeat(500);
         let truncated = truncate(s, 100);
         assert_eq!(truncated.chars().count(), 101, "cap plus one ellipsis");
         assert!(truncated.ends_with('…'));

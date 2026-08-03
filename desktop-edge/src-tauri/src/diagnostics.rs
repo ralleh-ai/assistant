@@ -42,9 +42,7 @@ use crate::audit::{AuditEvent, AuditLog, AuditVerifyReport};
 use crate::presence::Presence;
 use crate::presence_log::PresenceLog;
 use crate::secret_store::open_default as open_default_secret_store;
-use crate::settings::{
-    load_settings, RedactedCompletionConfig, CURRENT_SETTINGS_VERSION,
-};
+use crate::settings::{load_settings, RedactedCompletionConfig, CURRENT_SETTINGS_VERSION};
 
 /// Cap on the audit tail included in the bundle. Chosen to
 /// match the `assistant_audit_tail` upper bound so an
@@ -126,8 +124,7 @@ pub struct PresenceSection {
 /// path-handling logic and unit tests can exercise it against
 /// fabricated state.
 pub fn build_bundle(app: &AppHandle) -> Result<DiagnosticsBundle, String> {
-    let captured_at =
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let captured_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let manifest = Manifest {
         captured_at,
         shell_version: env!("CARGO_PKG_VERSION"),
@@ -186,9 +183,9 @@ pub fn build_bundle(app: &AppHandle) -> Result<DiagnosticsBundle, String> {
     // Presence section: liveness snapshot + enabled flag.
     let presence_state: State<'_, Presence> = app.state();
     let liveness = presence_state.liveness_snapshot();
-    let last_event_ms_ago = liveness.last_event_at.map(|t| {
-        std::time::Instant::now().duration_since(t).as_millis() as u64
-    });
+    let last_event_ms_ago = liveness
+        .last_event_at
+        .map(|t| std::time::Instant::now().duration_since(t).as_millis() as u64);
     let presence_section = PresenceSection {
         enabled: presence_state.is_enabled(),
         last_event_ms_ago,
@@ -251,14 +248,10 @@ pub fn write_bundle(
     fs::create_dir_all(&dir).map_err(|e| format!("create bundle dir: {e}"))?;
     // Filename-safe timestamp: colons are illegal on Windows,
     // so use the same shape the audit log uses.
-    let ts = bundle
-        .manifest
-        .captured_at
-        .replace(':', "-")
-        .replace('.', "-");
+    let ts = bundle.manifest.captured_at.replace([':', '.'], "-");
     let path = dir.join(format!("ralleh-diagnostics-{ts}.json"));
-    let raw = serde_json::to_string_pretty(bundle)
-        .map_err(|e| format!("serialize diagnostics: {e}"))?;
+    let raw =
+        serde_json::to_string_pretty(bundle).map_err(|e| format!("serialize diagnostics: {e}"))?;
     fs::write(&path, raw).map_err(|e| format!("write diagnostics: {e}"))?;
     Ok(path)
 }
@@ -266,10 +259,7 @@ pub fn write_bundle(
 /// Convenience: build + write in one call. Returns the file
 /// path so the UI can offer an "Open in file explorer"
 /// affordance.
-pub fn build_and_write(
-    app: &AppHandle,
-    dest_dir: Option<PathBuf>,
-) -> Result<PathBuf, String> {
+pub fn build_and_write(app: &AppHandle, dest_dir: Option<PathBuf>) -> Result<PathBuf, String> {
     let bundle = build_bundle(app)?;
     write_bundle(app, &bundle, dest_dir)
 }
@@ -356,11 +346,7 @@ mod tests {
         // Fake AppHandle isn't possible in a unit test, so
         // exercise the filename-shape logic manually against
         // the same substitution `write_bundle` does.
-        let ts = bundle
-            .manifest
-            .captured_at
-            .replace(':', "-")
-            .replace('.', "-");
+        let ts = bundle.manifest.captured_at.replace([':', '.'], "-");
         let name = format!("ralleh-diagnostics-{ts}.json");
         let out = dir.path().join(&name);
         fs::write(&out, "{}").unwrap();

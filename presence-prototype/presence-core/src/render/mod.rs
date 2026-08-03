@@ -77,7 +77,7 @@ pub struct Renderer {
 /// positional args keeps the runtime's `new(...)` call readable and
 /// leaves room for the next few knobs (custom point budget, vsync
 /// override) without another API break.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct RendererOptions {
     /// Ask for a per-pixel alpha swapchain and drive the composite in
     /// premultiplied-alpha mode. Falls back to the platform default
@@ -85,12 +85,6 @@ pub struct RendererOptions {
     /// compatible alpha mode — no visual difference on that path,
     /// which is what we want on machines that can't do it.
     pub transparent: bool,
-}
-
-impl Default for RendererOptions {
-    fn default() -> Self {
-        Self { transparent: false }
-    }
 }
 
 impl Renderer {
@@ -147,17 +141,13 @@ impl Renderer {
         // adapters that can't do per-pixel alpha — the droplet just shows
         // its brand-ink background there.
         let alpha_mode = if options.transparent {
-            let picked = surface_caps
-                .alpha_modes
-                .iter()
-                .copied()
-                .find(|m| {
-                    matches!(
-                        m,
-                        wgpu::CompositeAlphaMode::PreMultiplied
-                            | wgpu::CompositeAlphaMode::PostMultiplied
-                    )
-                });
+            let picked = surface_caps.alpha_modes.iter().copied().find(|m| {
+                matches!(
+                    m,
+                    wgpu::CompositeAlphaMode::PreMultiplied
+                        | wgpu::CompositeAlphaMode::PostMultiplied
+                )
+            });
             match picked {
                 Some(m) => m,
                 None => {
@@ -180,8 +170,7 @@ impl Renderer {
         let transparent_effective = options.transparent
             && matches!(
                 alpha_mode,
-                wgpu::CompositeAlphaMode::PreMultiplied
-                    | wgpu::CompositeAlphaMode::PostMultiplied
+                wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::PostMultiplied
             );
 
         let surface_config = wgpu::SurfaceConfiguration {

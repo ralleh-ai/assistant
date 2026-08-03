@@ -79,10 +79,7 @@ pub enum ConfigError {
     #[error("unsupported config format for {path} (expected .toml or .json)")]
     UnsupportedFormat { path: PathBuf },
     #[error("failed to initialize handler for capability '{capability}': {message}")]
-    HandlerInit {
-        capability: String,
-        message: String,
-    },
+    HandlerInit { capability: String, message: String },
     #[error("config validation failed: {0}")]
     Validation(String),
 }
@@ -166,9 +163,10 @@ impl ServerConfig {
     /// Resolve the sandbox directory: explicit config value, else a
     /// temp-dir default. Creates the directory if needed.
     pub fn resolve_sandbox_root(&self) -> Result<PathBuf, ConfigError> {
-        let root = self.sandbox_root.clone().unwrap_or_else(|| {
-            std::env::temp_dir().join("ralleh-mcp-server-sandbox")
-        });
+        let root = self
+            .sandbox_root
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("ralleh-mcp-server-sandbox"));
         fs::create_dir_all(&root).map_err(|source| ConfigError::Io {
             path: root.clone(),
             source,
@@ -187,30 +185,30 @@ impl ServerConfig {
                 default_sensitivity: tool.default_sensitivity.clone(),
             };
             let handler: Box<dyn ralleh_tool_gateway::ToolHandler> = match tool.handler {
-                HandlerKind::FsReadText => Box::new(
-                    FsReadTextHandler::new(sandbox_root).map_err(|source| {
+                HandlerKind::FsReadText => {
+                    Box::new(FsReadTextHandler::new(sandbox_root).map_err(|source| {
                         ConfigError::HandlerInit {
                             capability: tool.capability.clone(),
                             message: source.to_string(),
                         }
-                    })?,
-                ),
-                HandlerKind::FsWriteText => Box::new(
-                    FsWriteTextHandler::new(sandbox_root).map_err(|source| {
+                    })?)
+                }
+                HandlerKind::FsWriteText => {
+                    Box::new(FsWriteTextHandler::new(sandbox_root).map_err(|source| {
                         ConfigError::HandlerInit {
                             capability: tool.capability.clone(),
                             message: source.to_string(),
                         }
-                    })?,
-                ),
-                HandlerKind::HttpFetch => Box::new(
-                    HttpFetchHandler::new(tool.allowed_hosts.clone()).map_err(|source| {
-                        ConfigError::HandlerInit {
+                    })?)
+                }
+                HandlerKind::HttpFetch => {
+                    Box::new(HttpFetchHandler::new(tool.allowed_hosts.clone()).map_err(
+                        |source| ConfigError::HandlerInit {
                             capability: tool.capability.clone(),
                             message: source.to_string(),
-                        }
-                    })?,
-                ),
+                        },
+                    )?)
+                }
             };
             registry.register(definition, handler);
         }
@@ -301,7 +299,10 @@ reason = "sandboxed fs writes require approval"
         fs::create_dir_all(&sandbox).unwrap();
 
         let config_path = dir.path().join("server.toml");
-        let body = sample_toml().replace("PLACEHOLDER", &sandbox.display().to_string().replace('\\', "/"));
+        let body = sample_toml().replace(
+            "PLACEHOLDER",
+            &sandbox.display().to_string().replace('\\', "/"),
+        );
         fs::write(&config_path, body).unwrap();
 
         let config = ServerConfig::load_from_path(&config_path).unwrap();
@@ -315,22 +316,10 @@ reason = "sandboxed fs writes require approval"
         assert!(registry.is_registered("tool.fs.write_text"));
 
         let engine = config.build_policy_engine();
-        let read_req = PolicyRequest::new(
-            "t1",
-            "d1",
-            "a1",
-            "tool.fs.read_text",
-            "internal",
-        )
-        .unwrap();
-        let write_req = PolicyRequest::new(
-            "t1",
-            "d1",
-            "a1",
-            "tool.fs.write_text",
-            "internal",
-        )
-        .unwrap();
+        let read_req =
+            PolicyRequest::new("t1", "d1", "a1", "tool.fs.read_text", "internal").unwrap();
+        let write_req =
+            PolicyRequest::new("t1", "d1", "a1", "tool.fs.write_text", "internal").unwrap();
 
         assert_eq!(
             engine.evaluate(&read_req).outcome,

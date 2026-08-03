@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiKeyUpdate,
+  BackendHealthSnapshot,
+  BackendHealthState,
   BackendStatus,
   BackendTestResult,
   COMPLETION_KINDS,
@@ -8,8 +10,11 @@ import {
   CompletionKind,
   SecretStorage,
   assistantBackendStatus,
+  assistantDiagnosticsBundle,
+  assistantProbeBackend,
   assistantSaveBackend,
   assistantTestBackend,
+  revealPathInFileManager,
 } from "./presence";
 
 /**
@@ -64,6 +69,78 @@ type SaveState =
   | { phase: "idle" }
   | { phase: "saving" }
   | { phase: "error"; message: string };
+
+/** Progressive-disclosure state for the "Copy diagnostics for
+ * support" button. The path stays on-screen after a successful
+ * write so an operator has a beat to read it, click Reveal, or
+ * copy it manually before it fades. */
+type DiagnosticsState =
+  | { phase: "idle" }
+  | { phase: "capturing" }
+  | { phase: "ready"; path: string; revealError: string | null }
+  | { phase: "error"; message: string };
+
+/** Format `n` ms as a compact human-readable age
+ * ("just now", "42 s ago", "3 min ago"). Chosen over an
+ * absolute wall-clock so the widget stays informative when
+ * the operator's system clock is skewed. */
+function formatAge(ms: number): string {
+  if (ms < 2_000) return "just now";
+  if (ms < 60_000) return `${Math.round(ms / 1000)} s ago`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min ago`;
+  return `${Math.round(ms / 3_600_000)} h ago`;
+}
+
+/** Map the probe's `HealthState` onto the pill dot color +
+ * label + tooltip. Deliberately narrow so a future health
+ * state (`degraded`?) forces a visual choice rather than
+ * silently falling into "unknown". */
+function healthPresentation(h: BackendHealthSnapshot): {
+  tone: "ok" | "warn" | "bad" | "muted";
+  label: string;
+  tooltip: string;
+} {
+  const age =
+    h.lastProbeMsAgo != null ? ` · last probe ${formatAge(h.lastProbeMsAgo)}` : "";
+  switch (h.state) {
+    case "healthy":
+      return {
+        tone: "ok",
+        label:
+          h.lastLatencyMs != null ? `healthy · ${h.lastLatencyMs} ms` : "healthy",
+        tooltip: `${h.backendName} reachable${age}`,
+      };
+    case "unhealthy":
+      return {
+        tone: "bad",
+        label: "unreachable",
+        tooltip: `${h.backendName} unreachable${age}${
+          h.lastError ? ` — ${h.lastError}` : ""
+        } · ${h.consecutiveFailures} consecutive failure${
+          h.consecutiveFailures === 1 ? "" : "s"
+        }`,
+      };
+    case "skipped":
+      return {
+        tone: "muted",
+        label:
+          h.skipReason === "echo-backend"
+            ? "echo · no probe"
+            : "probe disabled",
+        tooltip:
+          h.skipReason === "echo-backend"
+            ? "Echo runs entirely in-process; there's nothing to probe."
+            : "The health probe is disabled on this backend.",
+      };
+    case "unknown":
+    default:
+      return {
+        tone: "muted",
+        label: "probing…",
+        tooltip: "No probe has completed yet.",
+      };
+  }
+}
 
 function initialApiKeyMode(
   kind: CompletionKind,
@@ -143,6 +220,8 @@ export function BackendSettings() {
   const [test, setTest] = useState<TestState>({ phase: "idle" });
   const [save, setSave] = useState<SaveState>({ phase: "idle" });
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [diag, setDiag] = useState<DiagnosticsState>({ phase: "idle" });
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -157,6 +236,18 @@ export function BackendSettings() {
 
   useEffect(() => {
     void refreshStatus();
+  }, [refreshStatus]);
+
+  // Poll the backend status on a slow cadence so the health
+  // badge age ticks up ("just now" → "3 min ago") without the
+  // operator having to press "Check now". The interval is well
+  // above the probe cadence itself; we're re-reading the shell's
+  // cached snapshot, not driving new probes.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void refreshStatus();
+    }, 15_000);
+    return () => window.clearInterval(id);
   }, [refreshStatus]);
 
   // Reset form to persisted state whenever the panel opens, so an
@@ -209,6 +300,54 @@ export function BackendSettings() {
       setSave({ phase: "error", message: String(err) });
     }
   }, [currentUpdate]);
+
+  const runProbe = useCallback(async () => {
+    setProbing(true);
+    try {
+      const health = await assistantProbeBackend();
+      // Splice the fresh health snapshot into the existing
+      // status rather than re-fetching the whole record; the
+      // rest of the status (config, active backend name) is
+      // unchanged by a probe.
+      setStatus((prev) =>
+        prev ? { ...prev, health } : prev,
+      );
+    } catch (err) {
+      setLoadError(String(err));
+    } finally {
+      setProbing(false);
+    }
+  }, []);
+
+  const runDiagnostics = useCallback(async () => {
+    setDiag({ phase: "capturing" });
+    try {
+      const path = await assistantDiagnosticsBundle(null);
+      setDiag({ phase: "ready", path, revealError: null });
+    } catch (err) {
+      setDiag({ phase: "error", message: String(err) });
+    }
+  }, []);
+
+  const revealDiagnostics = useCallback(async () => {
+    if (diag.phase !== "ready") return;
+    try {
+      await revealPathInFileManager(diag.path);
+      setDiag({ ...diag, revealError: null });
+    } catch (err) {
+      setDiag({ ...diag, revealError: String(err) });
+    }
+  }, [diag]);
+
+  const copyDiagnosticsPath = useCallback(async () => {
+    if (diag.phase !== "ready") return;
+    try {
+      await navigator.clipboard.writeText(diag.path);
+    } catch {
+      // Clipboard denials are silent -- the path is still on
+      // screen, so the operator can copy manually.
+    }
+  }, [diag]);
 
   const runClear = useCallback(async () => {
     setSave({ phase: "saving" });
@@ -334,9 +473,144 @@ export function BackendSettings() {
               {save.message}
             </p>
           )}
+
+          {status && (
+            <HealthSection
+              health={status.health}
+              probing={probing}
+              onProbe={runProbe}
+            />
+          )}
+
+          <DiagnosticsSection
+            state={diag}
+            onCapture={runDiagnostics}
+            onReveal={revealDiagnostics}
+            onCopy={copyDiagnosticsPath}
+          />
         </div>
       )}
     </section>
+  );
+}
+
+function HealthSection({
+  health,
+  probing,
+  onProbe,
+}: {
+  health: BackendHealthSnapshot;
+  probing: boolean;
+  onProbe: () => void;
+}) {
+  const p = healthPresentation(health);
+  return (
+    <div className="backend-health" role="region" aria-label="Backend reachability">
+      <div className="backend-health-row">
+        <span
+          className={`backend-health-dot backend-health-dot-${p.tone}`}
+          aria-hidden="true"
+        />
+        <div className="backend-health-copy">
+          <div className="backend-health-headline">
+            <span className="backend-health-label">Reachability</span>
+            <span className="backend-health-value" title={p.tooltip}>
+              {p.label}
+            </span>
+          </div>
+          {health.lastError && health.state === "unhealthy" && (
+            <div className="backend-health-error" title={health.lastError}>
+              {health.lastError}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          className="backend-btn backend-btn-inline"
+          onClick={onProbe}
+          disabled={probing || health.state === "skipped"}
+          title={
+            health.state === "skipped"
+              ? "This backend is not probed."
+              : "Run a probe against this backend right now."
+          }
+        >
+          {probing ? "Probing…" : "Check now"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DiagnosticsSection({
+  state,
+  onCapture,
+  onReveal,
+  onCopy,
+}: {
+  state: DiagnosticsState;
+  onCapture: () => void;
+  onReveal: () => void;
+  onCopy: () => void;
+}) {
+  return (
+    <div
+      className="backend-diagnostics"
+      role="region"
+      aria-label="Diagnostics bundle"
+    >
+      <div className="backend-diagnostics-header">
+        <div>
+          <div className="backend-diagnostics-title">Diagnostics for support</div>
+          <div className="backend-diagnostics-lede">
+            Package redacted settings, health, audit tail, and presence
+            log into a single JSON file. Attach it to a support ticket
+            instead of sharing raw config.
+          </div>
+        </div>
+        <button
+          type="button"
+          className="backend-btn backend-btn-secondary"
+          onClick={onCapture}
+          disabled={state.phase === "capturing"}
+        >
+          {state.phase === "capturing" ? "Capturing…" : "Copy diagnostics"}
+        </button>
+      </div>
+      {state.phase === "ready" && (
+        <div className="backend-diagnostics-ready" role="status">
+          <div className="backend-diagnostics-path" title={state.path}>
+            {state.path}
+          </div>
+          <div className="backend-diagnostics-actions">
+            <button
+              type="button"
+              className="backend-btn backend-btn-inline"
+              onClick={onReveal}
+            >
+              Show in file manager
+            </button>
+            <button
+              type="button"
+              className="backend-btn backend-btn-inline"
+              onClick={onCopy}
+            >
+              Copy path
+            </button>
+          </div>
+          {state.revealError && (
+            <div className="backend-diagnostics-error" role="alert">
+              {state.revealError}
+            </div>
+          )}
+        </div>
+      )}
+      {state.phase === "error" && (
+        <div className="backend-diagnostics-error" role="alert">
+          {state.message}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -353,6 +627,23 @@ function BackendPill({
 }) {
   const summary = status ? pillSummary(status) : error ? "unavailable" : "loading…";
   const active = status?.activeBackend ?? "";
+  // Dot tone tracks backend reachability so an operator sees a
+  // red dot on a wedged provider even with the panel closed.
+  // Falls back to "ok" so the historical always-teal look is
+  // preserved when there's no status yet.
+  const tone: BackendHealthState | "loading" = status ? status.health.state : "loading";
+  const dotClass =
+    tone === "unhealthy"
+      ? "backend-pill-dot-bad"
+      : tone === "healthy"
+      ? "backend-pill-dot-ok"
+      : "backend-pill-dot-muted";
+  const dotTitle =
+    status && status.health.state === "unhealthy"
+      ? `Backend unreachable: ${status.health.lastError ?? "no detail"}`
+      : active
+      ? `Currently routing through ${active}`
+      : summary;
   return (
     <button
       type="button"
@@ -360,9 +651,9 @@ function BackendPill({
       onClick={onToggle}
       aria-expanded={open}
       aria-controls="backend-panel"
-      title={active ? `Currently routing through ${active}` : summary}
+      title={dotTitle}
     >
-      <span className="backend-pill-dot" aria-hidden="true" />
+      <span className={`backend-pill-dot ${dotClass}`} aria-hidden="true" />
       <span className="backend-pill-label">Backend</span>
       <span className="backend-pill-value">{summary}</span>
       <span className="backend-pill-chevron" aria-hidden="true">

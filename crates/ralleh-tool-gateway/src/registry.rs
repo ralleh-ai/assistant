@@ -40,11 +40,7 @@ impl ToolRegistry {
         }
     }
 
-    pub fn register(
-        &mut self,
-        definition: ToolDefinition,
-        handler: Box<dyn ToolHandler>,
-    ) {
+    pub fn register(&mut self, definition: ToolDefinition, handler: Box<dyn ToolHandler>) {
         let capability = definition.capability.clone();
         self.definitions.insert(capability.clone(), definition);
         self.handlers.insert(capability, handler);

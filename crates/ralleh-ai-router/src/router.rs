@@ -468,7 +468,10 @@ mod tests {
         assert_eq!(first, CompletionStreamEvent::Denied);
         // Channel must close after the terminal event so callers
         // can loop to None without special handling.
-        assert!(rx.recv().await.is_none(), "channel must close after terminal event");
+        assert!(
+            rx.recv().await.is_none(),
+            "channel must close after terminal event"
+        );
     }
 
     #[tokio::test]

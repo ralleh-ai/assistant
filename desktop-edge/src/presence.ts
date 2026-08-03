@@ -446,6 +446,14 @@ export function assistantAuditVerify(): Promise<AuditVerifyReport> {
   return invoke<AuditVerifyReport>("assistant_audit_verify");
 }
 
+/** Reveal `path` in the OS file manager (Explorer / Finder /
+ * xdg-open on the parent). The Rust side refuses paths that
+ * aren't under the app config dir so an arbitrary reveal
+ * isn't reachable from the webview. */
+export function revealPathInFileManager(path: string): Promise<void> {
+  return invoke<void>("reveal_path_in_file_manager", { path });
+}
+
 /** Build a diagnostics bundle (redacted settings + backend
  * status + audit tail + presence log tail + liveness
  * snapshot) and write it to a JSON file the operator can

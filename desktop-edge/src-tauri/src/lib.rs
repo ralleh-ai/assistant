@@ -23,31 +23,28 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
+use assistant::{build_backend_from_config, completion_request, AssistantState, ECHO_CAPABILITY};
+use audit::{record as audit_record, AuditEvent, AuditKind, AuditLog, SecretKind};
 use mic::{mic_feature_enabled, run_mic_smoke, MicSmokeResult};
 use os_caps::{run_clipboard_smoke, ClipboardSmokeResult};
-use assistant::{
-    build_backend_from_config, completion_request, AssistantState, ECHO_CAPABILITY,
-};
 use presence::{EventListener, Presence};
-use presence_ipc::{Command as PresenceCommand, Event as PresenceEvent, PaletteId, PresenceMode, QualityTier};
-use settings::PresencePosition;
+use presence_ipc::{
+    Command as PresenceCommand, Event as PresenceEvent, PaletteId, PresenceMode, QualityTier,
+};
 use presence_mic::MicPump;
 use ralleh_ai_router::{CompletionOutcome, CompletionResponse, CompletionStreamEvent};
-use tauri::ipc::Channel;
-use ralleh_tool_gateway::ToolCallOutcome;
-use ralleh_audio_core::{
-    run_mock_voice_pipeline, MockTts, MockVoicePipelineResult, TextToSpeech,
-};
 #[cfg(feature = "playback")]
 use ralleh_audio_core::CpalPlaybackSink;
-use audit::{record as audit_record, AuditEvent, AuditKind, AuditLog, SecretKind};
+use ralleh_audio_core::{run_mock_voice_pipeline, MockTts, MockVoicePipelineResult, TextToSpeech};
+use ralleh_tool_gateway::ToolCallOutcome;
 use secret_store::open_default as open_default_secret_store;
+use settings::PresencePosition;
 use settings::{
     load_settings, migrate_completion_secret, migrate_settings_file, save_settings,
-    settings_path_display, SettingsMigrationOutcome,
-    write_completion_config, ApiKeyUpdate, CompletionConfigUpdate, EdgeSettings,
-    RedactedCompletionConfig,
+    settings_path_display, write_completion_config, ApiKeyUpdate, CompletionConfigUpdate,
+    EdgeSettings, RedactedCompletionConfig, SettingsMigrationOutcome,
 };
+use tauri::ipc::Channel;
 
 const EDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -157,11 +154,7 @@ fn run_voice_smoke(
             // tapping a shared ringbuffer instead of holding copies.
             if let Ok(audio) = MockTts::new().synthesize(&r.transcript) {
                 if let Some(tx) = presence.sender_clone() {
-                    presence_speaking::spawn(
-                        audio.samples.clone(),
-                        audio.sample_rate_hz,
-                        tx,
-                    );
+                    presence_speaking::spawn(audio.samples.clone(), audio.sample_rate_hz, tx);
                 }
                 #[cfg(feature = "playback")]
                 if let Some(state) = playback {
@@ -190,10 +183,7 @@ fn clipboard_smoke(
 }
 
 #[tauri::command]
-fn mic_smoke(
-    app: AppHandle,
-    presence: State<'_, Presence>,
-) -> Result<MicSmokeResult, String> {
+fn mic_smoke(app: AppHandle, presence: State<'_, Presence>) -> Result<MicSmokeResult, String> {
     // ~1s is enough to prove device open + frames without freezing the UI long.
     let result = load_settings(&app).and_then(|s| run_mic_smoke(&s, 1.0));
     pulse_on_err(&result, &presence);
@@ -365,10 +355,7 @@ fn presence_set_palette(
 }
 
 #[tauri::command]
-fn presence_set_ring_wanted(
-    wanted: bool,
-    presence: State<'_, Presence>,
-) -> Result<(), String> {
+fn presence_set_ring_wanted(wanted: bool, presence: State<'_, Presence>) -> Result<(), String> {
     presence.send(PresenceCommand::SetRingWanted { wanted });
     Ok(())
 }
@@ -697,7 +684,6 @@ fn assistant_backend_status(
     })
 }
 
-
 /// Force an immediate health probe against the router's active
 /// backend. Useful for the settings UI's "check now" button so
 /// operators don't wait a full interval to see the impact of a
@@ -711,9 +697,14 @@ async fn assistant_probe_backend(
     // reference; grab a fresh one and release the state guard
     // before we do any awaits so a slow probe doesn't pin the
     // managed-state map.
-    let state: State<'_, AssistantState> = app.state();
-    let (backend_name, outcome) = assistant_health::probe_once(state.inner());
-    drop(state);
+    let (backend_name, outcome) = {
+        // Scope the state guard so it's released before we lock
+        // the health mutex below. A `tauri::State` doesn't need
+        // an explicit drop -- it isn't `Drop` -- but scoping is
+        // clearer than a `let _ = state;` pin.
+        let state: State<'_, AssistantState> = app.state();
+        assistant_health::probe_once(state.inner())
+    };
     let health: State<'_, assistant_health::Health> = app.state();
     let now = std::time::Instant::now();
     let edge = {
@@ -941,7 +932,9 @@ fn assistant_save_backend(
     // Capture what the config *asked* for so audit events can
     // record the intent even when write_completion_config errors
     // out before persisting anything. `None` means "clear".
-    let intent = config.as_ref().map(|c| (c.kind, c.base_url.clone(), c.api_key.clone()));
+    let intent = config
+        .as_ref()
+        .map(|c| (c.kind, c.base_url.clone(), c.api_key.clone()));
     let previous_backend = state.current_backend_name();
     let settings = match write_completion_config(&app, store.as_ref(), config) {
         Ok(s) => s,
@@ -1067,9 +1060,7 @@ fn assistant_audit_tail(
 /// `audit::AuditVerifyReport` for the caveat that this is
 /// tamper-evident, not tamper-proof.
 #[tauri::command]
-fn assistant_audit_verify(
-    audit: State<'_, AuditLog>,
-) -> Result<audit::AuditVerifyReport, String> {
+fn assistant_audit_verify(audit: State<'_, AuditLog>) -> Result<audit::AuditVerifyReport, String> {
     audit.verify()
 }
 
@@ -1088,6 +1079,73 @@ fn assistant_diagnostics_bundle(
     let dest = dest_dir.map(std::path::PathBuf::from);
     let path = diagnostics::build_and_write(&app, dest)?;
     Ok(path.display().to_string())
+}
+
+/// Reveal `path` in the operator's OS file manager (Explorer,
+/// Finder, or the freedesktop `xdg-open` on the parent
+/// directory). Used by the "Show in file manager" affordance
+/// on the diagnostics bundle button so the operator can drag
+/// the file into a support ticket without hunting for the
+/// path.
+///
+/// The path MUST be one this shell just produced (a
+/// diagnostics bundle path or the app config dir). We validate
+/// this by requiring `path` to be canonicalized and to sit
+/// under the app config dir -- refusing arbitrary paths from
+/// the webview closes the "webview asks the shell to reveal
+/// /etc/shadow" trivial escalation. In production this is a
+/// belt-and-braces check on top of the fact that the webview
+/// only ever passes back paths *we* handed it, but the guard
+/// is cheap and the failure mode is worth pre-empting.
+#[tauri::command]
+fn reveal_path_in_file_manager(app: AppHandle, path: String) -> Result<(), String> {
+    use std::path::PathBuf;
+    let target = PathBuf::from(&path)
+        .canonicalize()
+        .map_err(|e| format!("canonicalize {path}: {e}"))?;
+    let allowed_root = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("app config dir: {e}"))?
+        .canonicalize()
+        .map_err(|e| format!("canonicalize config dir: {e}"))?;
+    if !target.starts_with(&allowed_root) {
+        return Err(format!(
+            "reveal refused: {} is not under {}",
+            target.display(),
+            allowed_root.display()
+        ));
+    }
+    // Platform-specific reveal. On Windows `explorer /select,`
+    // opens the containing folder with the target highlighted;
+    // on macOS `open -R` does the same via Finder; on Linux
+    // we fall back to opening the parent directory with
+    // `xdg-open` because there's no portable "select this file"
+    // affordance across desktop environments.
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", target.display()))
+            .spawn()
+            .map_err(|e| format!("explorer: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("open: {e}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let parent = target.parent().unwrap_or(&target);
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("xdg-open: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Tail the presence-runtime stderr capture. Useful for triage
@@ -1292,9 +1350,7 @@ where
     let mut settings = match load_settings(app) {
         Ok(s) => s,
         Err(err) => {
-            log::warn!(
-                "desktop-edge: presence preference not persisted (load: {err})"
-            );
+            log::warn!("desktop-edge: presence preference not persisted (load: {err})");
             return;
         }
     };
@@ -1348,10 +1404,7 @@ pub fn run() {
             // an operator can spot it in the log.
             let audit_log = match AuditLog::open(&handle) {
                 Ok(log) => {
-                    log::info!(
-                        "audit: recording to {}",
-                        log.active_path().display()
-                    );
+                    log::info!("audit: recording to {}", log.active_path().display());
                     log
                 }
                 Err(e) => {
@@ -1368,10 +1421,12 @@ pub fn run() {
             // profile last.
             let migration_state: tauri::State<'_, AuditLog> = app.state();
             match migrate_settings_file(&handle) {
-                SettingsMigrationOutcome::Migrated { from, to, backup_path } => {
-                    log::info!(
-                        "settings: migrated edge-settings.json from v{from} to v{to}"
-                    );
+                SettingsMigrationOutcome::Migrated {
+                    from,
+                    to,
+                    backup_path,
+                } => {
+                    log::info!("settings: migrated edge-settings.json from v{from} to v{to}");
                     audit_record(
                         &migration_state,
                         audit_event_with_identity(&handle, AuditKind::SettingsMigrate)
@@ -1385,8 +1440,7 @@ pub fn run() {
                             })),
                     );
                 }
-                SettingsMigrationOutcome::AlreadyCurrent
-                | SettingsMigrationOutcome::NoFile => {}
+                SettingsMigrationOutcome::AlreadyCurrent | SettingsMigrationOutcome::NoFile => {}
                 SettingsMigrationOutcome::FutureVersion { on_disk } => {
                     log::warn!(
                         "settings: on-disk version {on_disk} newer than this build; \
@@ -1394,16 +1448,13 @@ pub fn run() {
                     );
                     audit_record(
                         &migration_state,
-                        audit_event_with_identity(
-                            &handle,
-                            AuditKind::SettingsMigrateFailed,
-                        )
-                        .with_subject("edge-settings.json")
-                        .with_detail(serde_json::json!({
-                            "reason": "future-version",
-                            "on_disk": on_disk,
-                            "supported_up_to": settings::CURRENT_SETTINGS_VERSION,
-                        })),
+                        audit_event_with_identity(&handle, AuditKind::SettingsMigrateFailed)
+                            .with_subject("edge-settings.json")
+                            .with_detail(serde_json::json!({
+                                "reason": "future-version",
+                                "on_disk": on_disk,
+                                "supported_up_to": settings::CURRENT_SETTINGS_VERSION,
+                            })),
                     );
                 }
                 SettingsMigrationOutcome::RewriteFailed { from, reason } => {
@@ -1414,16 +1465,13 @@ pub fn run() {
                     );
                     audit_record(
                         &migration_state,
-                        audit_event_with_identity(
-                            &handle,
-                            AuditKind::SettingsMigrateFailed,
-                        )
-                        .with_subject("edge-settings.json")
-                        .with_detail(serde_json::json!({
-                            "reason": reason,
-                            "from": from,
-                            "stage": "rewrite",
-                        })),
+                        audit_event_with_identity(&handle, AuditKind::SettingsMigrateFailed)
+                            .with_subject("edge-settings.json")
+                            .with_detail(serde_json::json!({
+                                "reason": reason,
+                                "from": from,
+                                "stage": "rewrite",
+                            })),
                     );
                 }
                 SettingsMigrationOutcome::Unreadable { reason } => {
@@ -1433,15 +1481,12 @@ pub fn run() {
                     );
                     audit_record(
                         &migration_state,
-                        audit_event_with_identity(
-                            &handle,
-                            AuditKind::SettingsMigrateFailed,
-                        )
-                        .with_subject("edge-settings.json")
-                        .with_detail(serde_json::json!({
-                            "reason": reason,
-                            "stage": "load",
-                        })),
+                        audit_event_with_identity(&handle, AuditKind::SettingsMigrateFailed)
+                            .with_subject("edge-settings.json")
+                            .with_detail(serde_json::json!({
+                                "reason": reason,
+                                "stage": "load",
+                            })),
                     );
                 }
             }
@@ -1452,11 +1497,10 @@ pub fn run() {
             // every tick so a mid-session backend swap is picked
             // up automatically. Skipped entirely (state stays
             // Unknown -> Skipped) when disabled by env var.
-            let health: assistant_health::Health = std::sync::Arc::new(std::sync::Mutex::new(
-                assistant_health::HealthInner::new(
+            let health: assistant_health::Health =
+                std::sync::Arc::new(std::sync::Mutex::new(assistant_health::HealthInner::new(
                     app.state::<AssistantState>().current_backend_name(),
-                ),
-            ));
+                )));
             app.manage(health.clone());
             assistant_health::spawn(handle.clone(), health);
             // Capture the runtime's stderr into a rotated file so
@@ -1465,7 +1509,10 @@ pub fn run() {
             // the runtime writes.
             let presence_log = std::sync::Arc::new(presence_log::PresenceLog::open(&handle));
             if let Some(path) = presence_log.active_path() {
-                log::info!("presence-log: capturing runtime stderr to {}", path.display());
+                log::info!(
+                    "presence-log: capturing runtime stderr to {}",
+                    path.display()
+                );
             }
             let log_sink = presence_log.clone();
             let stderr_sink: presence::StderrSink = std::sync::Arc::new(move |line: &str| {
@@ -1513,9 +1560,7 @@ pub fn run() {
                 let audit_state: tauri::State<'_, AuditLog> = app.state();
                 match migrate_completion_secret(&handle, store.as_ref(), &mut settings) {
                     Ok(true) => {
-                        log::info!(
-                            "assistant: migrated cleartext API key to OS keychain"
-                        );
+                        log::info!("assistant: migrated cleartext API key to OS keychain");
                         audit_record(
                             &audit_state,
                             audit_event_with_identity(&handle, AuditKind::SecretMigrate)
@@ -1533,14 +1578,11 @@ pub fn run() {
                         );
                         audit_record(
                             &audit_state,
-                            audit_event_with_identity(
-                                &handle,
-                                AuditKind::SecretMigrateFailed,
-                            )
-                            .with_subject("completion-api-key")
-                            .with_detail(serde_json::json!({
-                                "reason": e.to_string(),
-                            })),
+                            audit_event_with_identity(&handle, AuditKind::SecretMigrateFailed)
+                                .with_subject("completion-api-key")
+                                .with_detail(serde_json::json!({
+                                    "reason": e.to_string(),
+                                })),
                         );
                     }
                 }
@@ -1600,6 +1642,7 @@ pub fn run() {
             assistant_diagnostics_bundle,
             assistant_probe_backend,
             presence_log_tail,
+            reveal_path_in_file_manager,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

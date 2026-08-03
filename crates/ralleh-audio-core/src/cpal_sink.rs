@@ -117,8 +117,7 @@ impl CpalPlaybackSink {
         // stream and returns (rate, channels) or reports an error
         // synchronously so callers see the same failure they'd get
         // from a direct `Stream::build_output_stream` call.
-        let (ready_tx, ready_rx) =
-            mpsc::sync_channel::<Result<(u32, u16), CpalPlaybackError>>(1);
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(u32, u16), CpalPlaybackError>>(1);
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
         let queue: Arc<Mutex<VecDeque<Vec<f32>>>> = Arc::new(Mutex::new(VecDeque::new()));
         let queue_thread = queue.clone();
@@ -502,7 +501,8 @@ mod tests {
             live_playback_requested(),
             "set RALLEH_LIVE_PLAYBACK=1 to run this smoke"
         );
-        let sink = CpalPlaybackSink::open_default().expect("output should open when live requested");
+        let sink =
+            CpalPlaybackSink::open_default().expect("output should open when live requested");
         // ~500 ms of a quiet 440 Hz tone.
         let rate = 16_000u32;
         let samples: Vec<f32> = (0..(rate as usize / 2))

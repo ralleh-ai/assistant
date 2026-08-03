@@ -337,11 +337,7 @@ impl CompletionBackend for HttpCompletionBackend {
 }
 
 impl HttpCompletionBackend {
-    async fn stream_complete_inner(
-        &self,
-        request: &CompletionRequest,
-        tx: StreamChunkSender,
-    ) {
+    async fn stream_complete_inner(&self, request: &CompletionRequest, tx: StreamChunkSender) {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         let body = ChatCompletionRequestBody {
@@ -590,13 +586,13 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/chat/completions"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "choices": [
                         { "message": { "role": "assistant", "content": "hello back" } }
                     ]
-                }),
-            ))
+                })),
+            )
             .mount(&server)
             .await;
 
@@ -614,11 +610,11 @@ mod tests {
             .and(wiremock::matchers::body_partial_json(serde_json::json!({
                 "model": "hinted-model"
             })))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "choices": [ { "message": { "role": "assistant", "content": "ok" } } ]
-                }),
-            ))
+                })),
+            )
             .mount(&server)
             .await;
 
@@ -640,11 +636,11 @@ mod tests {
                 "authorization",
                 "Bearer secret-key",
             ))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "choices": [ { "message": { "role": "assistant", "content": "authed" } } ]
-                }),
-            ))
+                })),
+            )
             .mount(&server)
             .await;
 
@@ -670,7 +666,10 @@ mod tests {
             .await;
 
         let backend = HttpCompletionBackend::new("test-backend", server.uri(), "test-model", None);
-        let err = backend.complete(&test_request("hi", None)).await.unwrap_err();
+        let err = backend
+            .complete(&test_request("hi", None))
+            .await
+            .unwrap_err();
         assert!(err.contains("500"));
         assert!(err.contains("internal error upstream"));
     }
@@ -685,7 +684,10 @@ mod tests {
             .await;
 
         let backend = HttpCompletionBackend::new("test-backend", server.uri(), "test-model", None);
-        let err = backend.complete(&test_request("hi", None)).await.unwrap_err();
+        let err = backend
+            .complete(&test_request("hi", None))
+            .await
+            .unwrap_err();
         assert!(err.contains("failed to parse"));
     }
 
@@ -702,7 +704,10 @@ mod tests {
             .await;
 
         let backend = HttpCompletionBackend::new("test-backend", server.uri(), "test-model", None);
-        let err = backend.complete(&test_request("hi", None)).await.unwrap_err();
+        let err = backend
+            .complete(&test_request("hi", None))
+            .await
+            .unwrap_err();
         assert!(err.contains("no completion choices"));
     }
 
@@ -881,9 +886,7 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/chat/completions"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(429).set_body_string("rate limited"),
-            )
+            .respond_with(wiremock::ResponseTemplate::new(429).set_body_string("rate limited"))
             .mount(&server)
             .await;
 

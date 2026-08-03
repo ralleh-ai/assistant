@@ -16,7 +16,11 @@ pub enum WavError {
 }
 
 /// Write 16-bit little-endian mono PCM as a RIFF WAVE file.
-pub fn write_pcm16_mono(path: impl AsRef<Path>, samples: &[f32], sample_rate_hz: u32) -> Result<(), WavError> {
+pub fn write_pcm16_mono(
+    path: impl AsRef<Path>,
+    samples: &[f32],
+    sample_rate_hz: u32,
+) -> Result<(), WavError> {
     let mut file = File::create(path)?;
     let n = samples.len() as u32;
     let data_bytes = n.saturating_mul(2);

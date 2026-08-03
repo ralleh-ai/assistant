@@ -4,10 +4,10 @@ use ralleh_ai_router::{
     AiRouter, AnthropicMessagesBackend, CompletionBackend, EchoBackend, HttpCompletionBackend,
 };
 use ralleh_audit_store::JsonlFileAuditSink;
-use ralleh_tool_gateway::{ApprovalStore, ToolGateway};
 use ralleh_mcp_server::{
     build_router, resolve_config_path, AppState, ServerConfig, TokenAuthenticator,
 };
+use ralleh_tool_gateway::{ApprovalStore, ToolGateway};
 
 /// Binary entrypoint for the Rust MCP/tool-gateway HTTP surface.
 ///
@@ -27,7 +27,10 @@ async fn main() {
     });
     tracing::info!(path = %config_path.display(), "loading server config");
     let config = ServerConfig::load_from_path(&config_path).unwrap_or_else(|e| {
-        panic!("failed to load server config from {}: {e}", config_path.display());
+        panic!(
+            "failed to load server config from {}: {e}",
+            config_path.display()
+        );
     });
 
     let sandbox_dir = config.resolve_sandbox_root().unwrap_or_else(|e| {
@@ -38,8 +41,12 @@ async fn main() {
     });
     let policy = config.build_policy_engine();
 
-    let audit_log_path = std::env::var("RALLEH_AUDIT_LOG_PATH")
-        .unwrap_or_else(|_| std::env::temp_dir().join("ralleh-audit.jsonl").display().to_string());
+    let audit_log_path = std::env::var("RALLEH_AUDIT_LOG_PATH").unwrap_or_else(|_| {
+        std::env::temp_dir()
+            .join("ralleh-audit.jsonl")
+            .display()
+            .to_string()
+    });
     let audit_sink = Arc::new(
         JsonlFileAuditSink::open(&audit_log_path).expect("failed to open audit log for writing"),
     );
@@ -56,12 +63,8 @@ async fn main() {
     );
     tracing::info!(path = %approval_store_path, "approval store ready");
 
-    let gateway = ToolGateway::with_audit_sink_and_approvals(
-        registry,
-        policy,
-        audit_sink.clone(),
-        approvals,
-    );
+    let gateway =
+        ToolGateway::with_audit_sink_and_approvals(registry, policy, audit_sink.clone(), approvals);
 
     let ai_backend: Box<dyn CompletionBackend> = match std::env::var("RALLEH_AI_BASE_URL") {
         Ok(base_url) => {
@@ -86,8 +89,8 @@ async fn main() {
                     ))
                 }
                 _ => {
-                    let model =
-                        std::env::var("RALLEH_AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+                    let model = std::env::var("RALLEH_AI_MODEL")
+                        .unwrap_or_else(|_| "gpt-4o-mini".to_string());
                     let api_key = std::env::var("RALLEH_AI_API_KEY").ok();
                     tracing::info!(base_url = %base_url, model = %model, "configuring HttpCompletionBackend");
                     Box::new(HttpCompletionBackend::new(

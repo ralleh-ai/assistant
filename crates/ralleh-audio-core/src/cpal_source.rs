@@ -85,30 +85,19 @@ impl CpalMicSource {
         let err_flag_cb = err_flag.clone();
 
         let stream = match sample_format {
-            SampleFormat::F32 => build_input_stream::<f32, _>(
-                &device,
-                &config,
-                channels,
-                tx,
-                err_flag_cb,
-                |s| *s,
-            )?,
-            SampleFormat::I16 => build_input_stream::<i16, _>(
-                &device,
-                &config,
-                channels,
-                tx,
-                err_flag_cb,
-                |s| (*s).to_sample::<f32>(),
-            )?,
-            SampleFormat::U16 => build_input_stream::<u16, _>(
-                &device,
-                &config,
-                channels,
-                tx,
-                err_flag_cb,
-                |s| (*s).to_sample::<f32>(),
-            )?,
+            SampleFormat::F32 => {
+                build_input_stream::<f32, _>(&device, &config, channels, tx, err_flag_cb, |s| *s)?
+            }
+            SampleFormat::I16 => {
+                build_input_stream::<i16, _>(&device, &config, channels, tx, err_flag_cb, |s| {
+                    (*s).to_sample::<f32>()
+                })?
+            }
+            SampleFormat::U16 => {
+                build_input_stream::<u16, _>(&device, &config, channels, tx, err_flag_cb, |s| {
+                    (*s).to_sample::<f32>()
+                })?
+            }
             other => return Err(CpalMicError::UnsupportedFormat(other)),
         };
 

@@ -268,8 +268,12 @@ impl SceneDirector {
             .generate(tier.plate_budget(), &self.loading_ring.params);
         self.assistant_cloud.point_budget = tier.shell_budget();
         self.loading_ring.point_budget = tier.plate_budget();
-        self.assistant_cloud.behavior.set_deform_stride(tier.deform_stride());
-        self.loading_ring.behavior.set_deform_stride(tier.deform_stride());
+        self.assistant_cloud
+            .behavior
+            .set_deform_stride(tier.deform_stride());
+        self.loading_ring
+            .behavior
+            .set_deform_stride(tier.deform_stride());
     }
 
     /// The current activity dampening factor. `1.0` at rest, easing toward
@@ -660,7 +664,10 @@ mod tests {
             with_loading.drive.lobes,
             solo.drive.lobes,
         );
-        assert!(with_loading.drive.lobes > 0.3, "thinking was fully quenched by loading");
+        assert!(
+            with_loading.drive.lobes > 0.3,
+            "thinking was fully quenched by loading"
+        );
         assert!(
             with_loading.intensity < solo.intensity,
             "intensity did not subdue when Loading came up",

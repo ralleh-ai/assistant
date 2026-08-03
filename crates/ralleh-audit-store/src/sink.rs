@@ -5,8 +5,8 @@ use std::sync::Mutex;
 
 use crate::record::AuditRecord;
 
-use ralleh_tool_gateway::GatewayEvent;
 use ralleh_tool_gateway::gateway::AuditSink as GatewayAuditSink;
+use ralleh_tool_gateway::GatewayEvent;
 
 /// Errors a sink can produce while persisting an audit record. Kept
 /// separate from the record types themselves — persistence failures are an
@@ -78,7 +78,10 @@ impl InMemoryAuditSink {
     }
 
     pub fn len(&self) -> usize {
-        self.records.lock().expect("audit sink mutex poisoned").len()
+        self.records
+            .lock()
+            .expect("audit sink mutex poisoned")
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {

@@ -378,10 +378,7 @@ impl Presence {
     /// Cheap: locks the mutex, clones a small `Copy`-ish struct,
     /// releases.
     pub fn liveness_snapshot(&self) -> LivenessSnapshot {
-        self.liveness
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.liveness.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// Fire-and-forget send. Never blocks the caller: enqueues the
@@ -402,9 +399,7 @@ impl Presence {
             self.record_mode(*mode, *engaged);
         }
         if tx.send(Envelope::wrap(command)).is_err() {
-            log::warn!(
-                "desktop-edge: presence writer thread has exited; dropping command"
-            );
+            log::warn!("desktop-edge: presence writer thread has exited; dropping command");
         }
     }
 
@@ -625,11 +620,7 @@ impl Drop for Presence {
     }
 }
 
-fn reader_loop(
-    stdout: std::process::ChildStdout,
-    listener: EventListener,
-    liveness: Liveness,
-) {
+fn reader_loop(stdout: std::process::ChildStdout, listener: EventListener, liveness: Liveness) {
     // Line-buffered read of NDJSON `EventEnvelope` payloads. Malformed
     // lines are logged and skipped (same policy the forward path
     // uses); an EOF on stdout is the normal terminate signal, either
@@ -651,9 +642,7 @@ fn reader_loop(
         let env: EventEnvelope = match serde_json::from_str(&line) {
             Ok(e) => e,
             Err(err) => {
-                log::warn!(
-                    "desktop-edge: dropping malformed presence event envelope: {err}"
-                );
+                log::warn!("desktop-edge: dropping malformed presence event envelope: {err}");
                 continue;
             }
         };
@@ -672,7 +661,11 @@ fn reader_loop(
         // arrival, not completion of the shell's downstream work.
         if let Ok(mut snap) = liveness.lock() {
             snap.last_event_at = Some(Instant::now());
-            if let Event::Heartbeat { sequence, uptime_ms } = &env.payload {
+            if let Event::Heartbeat {
+                sequence,
+                uptime_ms,
+            } = &env.payload
+            {
                 if let Some(prev) = snap.last_heartbeat_sequence {
                     if *sequence < prev {
                         log::warn!(
@@ -735,9 +728,7 @@ fn writer_loop(mut stdin: std::process::ChildStdin, rx: Receiver<Envelope>) {
             }
         };
         if let Err(err) = writeln!(stdin, "{line}") {
-            log::warn!(
-                "desktop-edge: presence stdin write failed ({err}); writer thread exiting"
-            );
+            log::warn!("desktop-edge: presence stdin write failed ({err}); writer thread exiting");
             return;
         }
     }
@@ -926,12 +917,12 @@ mod tests {
         let sink: StderrSink = Arc::new(move |line| {
             sink_captured.lock().unwrap().push(line.to_string());
         });
-        drive(
-            Cursor::new("first line\n\nsecond line\n"),
-            sink,
-        );
+        drive(Cursor::new("first line\n\nsecond line\n"), sink);
         let got = captured.lock().unwrap();
-        assert_eq!(&*got, &["first line".to_string(), "second line".to_string()]);
+        assert_eq!(
+            &*got,
+            &["first line".to_string(), "second line".to_string()]
+        );
     }
 
     #[test]

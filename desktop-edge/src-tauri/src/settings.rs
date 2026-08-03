@@ -75,8 +75,12 @@ impl LoadOutcome {
         match self {
             LoadOutcome::Loaded { settings, .. }
             | LoadOutcome::FreshDefault(settings)
-            | LoadOutcome::FutureVersion { default: settings, .. }
-            | LoadOutcome::Unreadable { default: settings, .. } => settings,
+            | LoadOutcome::FutureVersion {
+                default: settings, ..
+            }
+            | LoadOutcome::Unreadable {
+                default: settings, ..
+            } => settings,
         }
     }
 
@@ -86,8 +90,12 @@ impl LoadOutcome {
         match self {
             LoadOutcome::Loaded { settings, .. }
             | LoadOutcome::FreshDefault(settings)
-            | LoadOutcome::FutureVersion { default: settings, .. }
-            | LoadOutcome::Unreadable { default: settings, .. } => settings,
+            | LoadOutcome::FutureVersion {
+                default: settings, ..
+            }
+            | LoadOutcome::Unreadable {
+                default: settings, ..
+            } => settings,
         }
     }
 }
@@ -486,7 +494,10 @@ pub fn migrate_settings_file(app: &AppHandle) -> SettingsMigrationOutcome {
         Err(reason) => return SettingsMigrationOutcome::Unreadable { reason },
     };
     match outcome {
-        LoadOutcome::Loaded { settings, migrated_from } => {
+        LoadOutcome::Loaded {
+            settings,
+            migrated_from,
+        } => {
             if migrated_from == CURRENT_SETTINGS_VERSION {
                 return SettingsMigrationOutcome::AlreadyCurrent;
             }
@@ -500,9 +511,8 @@ pub fn migrate_settings_file(app: &AppHandle) -> SettingsMigrationOutcome {
             // and the on-disk copy is still intact until we
             // succeed at the rewrite below. Log the miss and
             // proceed.
-            let candidate_backup = path.with_file_name(format!(
-                "edge-settings.v{migrated_from}.bak"
-            ));
+            let candidate_backup =
+                path.with_file_name(format!("edge-settings.v{migrated_from}.bak"));
             let backup_path = match fs::copy(&path, &candidate_backup) {
                 Ok(_) => {
                     log::info!(
@@ -545,12 +555,12 @@ pub fn migrate_settings_file(app: &AppHandle) -> SettingsMigrationOutcome {
             }
         }
         LoadOutcome::FreshDefault(_) => SettingsMigrationOutcome::NoFile,
-        LoadOutcome::FutureVersion { on_disk_version, .. } => {
-            SettingsMigrationOutcome::FutureVersion { on_disk: on_disk_version }
-        }
-        LoadOutcome::Unreadable { reason, .. } => {
-            SettingsMigrationOutcome::Unreadable { reason }
-        }
+        LoadOutcome::FutureVersion {
+            on_disk_version, ..
+        } => SettingsMigrationOutcome::FutureVersion {
+            on_disk: on_disk_version,
+        },
+        LoadOutcome::Unreadable { reason, .. } => SettingsMigrationOutcome::Unreadable { reason },
     }
 }
 
@@ -578,8 +588,7 @@ pub fn save_settings(app: &AppHandle, settings: &EdgeSettings) -> Result<EdgeSet
         // resending it (see `ApiKeyUpdate::Keep`).
         completion: settings.completion.clone(),
     };
-    if cleaned.tenant_id.is_empty() || cleaned.device_id.is_empty() || cleaned.actor_id.is_empty()
-    {
+    if cleaned.tenant_id.is_empty() || cleaned.device_id.is_empty() || cleaned.actor_id.is_empty() {
         return Err("tenant, device, and actor labels cannot be empty".into());
     }
     if !(cleaned.mcp_base_url.starts_with("http://")
@@ -744,10 +753,7 @@ impl CompletionConfigUpdate {
         let model = self.model.trim().to_string();
         if !matches!(self.kind, CompletionKind::Echo) {
             if base_url.is_empty() {
-                return Err(format!(
-                    "{} backend requires a base URL",
-                    self.kind.label()
-                ));
+                return Err(format!("{} backend requires a base URL", self.kind.label()));
             }
             if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
                 return Err(format!(
@@ -933,8 +939,7 @@ pub fn migrate_completion_secret(
                     // on `cfg`. Persist the cleared form so no one
                     // else ever sees the cleartext again.
                     let path = settings_file(app)?;
-                    let raw =
-                        serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+                    let raw = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
                     fs::write(&path, raw).map_err(|e| format!("write settings: {e}"))?;
                     Ok(true)
                 }
@@ -1056,8 +1061,7 @@ mod tests {
             model: "claude-3-5-sonnet-latest".into(),
             api_key: None,
         };
-        let store =
-            InMemorySecretStore::with_entry(CompletionKind::Anthropic, "sk-ant-secret-123");
+        let store = InMemorySecretStore::with_entry(CompletionKind::Anthropic, "sk-ant-secret-123");
         let redacted = RedactedCompletionConfig::from_config_and_store(&full, &store);
         let serialized = serde_json::to_string(&redacted).unwrap();
         assert!(
@@ -1372,8 +1376,7 @@ mod tests {
             "version": CURRENT_SETTINGS_VERSION,
             "tenantId": "acme"
         });
-        let (out, final_v) =
-            run_migrations(already.clone(), CURRENT_SETTINGS_VERSION).unwrap();
+        let (out, final_v) = run_migrations(already.clone(), CURRENT_SETTINGS_VERSION).unwrap();
         assert_eq!(final_v, CURRENT_SETTINGS_VERSION);
         assert_eq!(out, already);
     }

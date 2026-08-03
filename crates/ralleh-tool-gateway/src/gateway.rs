@@ -172,13 +172,7 @@ impl ToolGateway {
                 (ToolCallOutcome::ApprovalRequired, Some(pending.id))
             }
             PolicyOutcome::Allowed => (
-                self.invoke_handler(
-                    &capability,
-                    &tenant_id,
-                    &device_id,
-                    &actor_id,
-                    arguments,
-                ),
+                self.invoke_handler(&capability, &tenant_id, &device_id, &actor_id, arguments),
                 None,
             ),
         };

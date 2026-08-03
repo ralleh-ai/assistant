@@ -442,10 +442,7 @@ impl AuditLog {
                 issues.push(AuditVerifyIssue {
                     line: idx + 1,
                     kind: AuditVerifyIssueKind::PrevHashMismatch,
-                    detail: format!(
-                        "expected prev_hash={:?}, found {:?}",
-                        prev, event.prev_hash
-                    ),
+                    detail: format!("expected prev_hash={:?}, found {:?}", prev, event.prev_hash),
                 });
             }
             // Content check: recompute the hash from the event
@@ -631,8 +628,7 @@ fn rotate(inner: &mut AuditLogInner) -> Result<(), String> {
     // future writes.
     let _ = fs::remove_file(&inner.rollover);
     if inner.active.exists() {
-        fs::rename(&inner.active, &inner.rollover)
-            .map_err(|e| format!("audit: rotate: {e}"))?;
+        fs::rename(&inner.active, &inner.rollover).map_err(|e| format!("audit: rotate: {e}"))?;
     }
     Ok(())
 }
@@ -661,10 +657,7 @@ mod tests {
     fn event_kind_maps_to_outcome() {
         assert_eq!(AuditKind::EgressAllow.outcome(), AuditOutcome::Allow);
         assert_eq!(AuditKind::EgressDeny.outcome(), AuditOutcome::Deny);
-        assert_eq!(
-            AuditKind::SecretMigrateFailed.outcome(),
-            AuditOutcome::Deny
-        );
+        assert_eq!(AuditKind::SecretMigrateFailed.outcome(), AuditOutcome::Deny);
     }
 
     #[test]

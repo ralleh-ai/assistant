@@ -151,19 +151,26 @@ mod tests {
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/v1/messages"))
             .and(wiremock::matchers::header("x-api-key", "test-key"))
-            .and(wiremock::matchers::header("anthropic-version", "2023-06-01"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({
+            .and(wiremock::matchers::header(
+                "anthropic-version",
+                "2023-06-01",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "content": [
                         { "type": "text", "text": "bonjour" }
                     ]
-                }),
-            ))
+                })),
+            )
             .mount(&server)
             .await;
 
-        let backend =
-            AnthropicMessagesBackend::new("anthropic-test", server.uri(), "claude-test", "test-key");
+        let backend = AnthropicMessagesBackend::new(
+            "anthropic-test",
+            server.uri(),
+            "claude-test",
+            "test-key",
+        );
         let response = backend.complete(&test_request("hi", None)).await.unwrap();
         assert_eq!(response.text, "bonjour");
         assert_eq!(response.backend, "anthropic-test");
@@ -177,16 +184,15 @@ mod tests {
             .and(wiremock::matchers::body_partial_json(serde_json::json!({
                 "model": "claude-hint"
             })))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "content": [ { "type": "text", "text": "ok" } ]
-                }),
-            ))
+                })),
+            )
             .mount(&server)
             .await;
 
-        let backend =
-            AnthropicMessagesBackend::new("anthropic-test", server.uri(), "default", "k");
+        let backend = AnthropicMessagesBackend::new("anthropic-test", server.uri(), "default", "k");
         let response = backend
             .complete(&test_request("hi", Some("claude-hint")))
             .await
@@ -204,7 +210,10 @@ mod tests {
             .await;
 
         let backend = AnthropicMessagesBackend::new("anthropic-test", server.uri(), "m", "k");
-        let err = backend.complete(&test_request("hi", None)).await.unwrap_err();
+        let err = backend
+            .complete(&test_request("hi", None))
+            .await
+            .unwrap_err();
         assert!(err.contains("401"));
     }
 
@@ -213,14 +222,18 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/v1/messages"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({ "content": [ { "type": "tool_use" } ] }),
-            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "content": [ { "type": "tool_use" } ] })),
+            )
             .mount(&server)
             .await;
 
         let backend = AnthropicMessagesBackend::new("anthropic-test", server.uri(), "m", "k");
-        let err = backend.complete(&test_request("hi", None)).await.unwrap_err();
+        let err = backend
+            .complete(&test_request("hi", None))
+            .await
+            .unwrap_err();
         assert!(err.contains("no text content"));
     }
 }

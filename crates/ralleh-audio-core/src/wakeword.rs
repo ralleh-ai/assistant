@@ -249,7 +249,10 @@ mod tests {
             trigger = detector.process_frame(f).or(trigger);
         }
 
-        assert!(trigger.is_none(), "utterance below min length must not trigger");
+        assert!(
+            trigger.is_none(),
+            "utterance below min length must not trigger"
+        );
     }
 
     #[test]
@@ -271,7 +274,10 @@ mod tests {
             trigger = detector.process_frame(f).or(trigger);
         }
 
-        assert!(trigger.is_none(), "utterance above max length must not trigger");
+        assert!(
+            trigger.is_none(),
+            "utterance above max length must not trigger"
+        );
     }
 
     #[test]
@@ -328,7 +334,11 @@ mod tests {
         }
         seq += 3;
 
-        assert_eq!(triggers.len(), 1, "first utterance should trigger exactly once");
+        assert_eq!(
+            triggers.len(),
+            1,
+            "first utterance should trigger exactly once"
+        );
 
         // Immediately followed by another speech utterance, while still
         // within cooldown -- must NOT trigger again yet.

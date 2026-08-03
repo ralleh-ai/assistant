@@ -146,10 +146,7 @@ mod tests {
             .map(|i| if i % 2 == 0 { 0.2 } else { -0.2 })
             .collect();
         let level = rms_scaled(&chunk);
-        assert!(
-            (level - 0.6).abs() < 1e-3,
-            "expected ~0.6, got {level}"
-        );
+        assert!((level - 0.6).abs() < 1e-3, "expected ~0.6, got {level}");
     }
 
     #[test]

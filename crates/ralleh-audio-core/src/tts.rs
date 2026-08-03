@@ -5,9 +5,9 @@
 //! Piper CLI the same way `WhisperCliStt` covers ggml on Windows.
 
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::io::Write;
 
 /// PCM mono speech produced by a TTS engine.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -105,15 +105,9 @@ impl TextToSpeech for PiperCliTts {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let out_wav = std::env::temp_dir().join(format!(
-            "ralleh-piper-{}-{}.wav",
-            std::process::id(),
-            uniq
-        ));
-        let work_dir = self
-            .cli_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."));
+        let out_wav =
+            std::env::temp_dir().join(format!("ralleh-piper-{}-{}.wav", std::process::id(), uniq));
+        let work_dir = self.cli_path.parent().unwrap_or_else(|| Path::new("."));
         let mut child = Command::new(&self.cli_path)
             .current_dir(work_dir)
             .arg("--model")
@@ -187,12 +181,11 @@ mod tests {
     #[ignore = "requires PIPER_CLI_PATH + PIPER_MODEL_PATH"]
     fn piper_cli_e2e_synthesizes_non_empty_pcm() {
         let tts = PiperCliTts::from_env().expect("from_env");
-        let audio = tts
-            .synthesize("Hello from Ralleh.")
-            .expect("synthesize");
+        let audio = tts.synthesize("Hello from Ralleh.").expect("synthesize");
         assert!(!audio.samples.is_empty());
         assert!(audio.sample_rate_hz >= 16_000);
-        let energy: f32 = audio.samples.iter().map(|s| s * s).sum::<f32>() / audio.samples.len() as f32;
+        let energy: f32 =
+            audio.samples.iter().map(|s| s * s).sum::<f32>() / audio.samples.len() as f32;
         assert!(energy.sqrt() > 1e-4, "expected non-silent speech");
     }
 }
