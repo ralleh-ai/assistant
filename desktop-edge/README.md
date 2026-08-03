@@ -75,6 +75,21 @@ CLI/tests — not on the core home screen.
   migrated into the keychain on first startup (best-effort;
   leaves the cleartext copy in place only if the keychain is
   unavailable).
+- **Settings schema versioning** — `edge-settings.json` now
+  carries a `version` field (`CURRENT_SETTINGS_VERSION = 1` at
+  time of writing). Loads route through an ordered migration
+  chain so a shape-changing bump can rename or reshape fields
+  without silent data loss. Missing `version` on legacy files
+  defaults to 0 and triggers the v0→v1 no-op migration on first
+  successful load, rewriting the file at the new version. A
+  file at a version this build doesn't understand
+  (`on_disk > CURRENT`) is *never* overwritten — the shell
+  logs a warning, runs on in-memory defaults for the session,
+  and emits a `settings-migrate-failed` audit event so an
+  operator sees the mismatch. Successful migrations emit
+  `settings-migrate` with `detail.from` / `detail.to`.
+  Migrations must be idempotent (rerun after crash-mid-write
+  is safe) — enforced by unit tests.
 - **Router health probe** — a background thread pings the
   active completion backend every 60 s (overridable with
   `RALLEH_HEALTH_PROBE_INTERVAL_MS`, floor 5 s; disabled with

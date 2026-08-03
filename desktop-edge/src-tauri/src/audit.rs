@@ -124,6 +124,17 @@ pub enum AuditKind {
     /// with a preceding `RouterUnhealthy`; `detail.latency_ms`
     /// names the recovery response time.
     RouterHealthy,
+    /// The `edge-settings.json` file was migrated from an older
+    /// schema version. `detail.from` / `detail.to` name the
+    /// version transition; the file has been rewritten at the
+    /// new version by the time this event fires.
+    SettingsMigrate,
+    /// A settings migration attempt failed. Either the file
+    /// sits at a version this build doesn't understand
+    /// (`detail.reason` = "future-version") or the rewrite
+    /// I/O errored. The original file is untouched — the
+    /// shell runs on in-memory defaults for the session.
+    SettingsMigrateFailed,
 }
 
 impl AuditKind {
@@ -135,11 +146,13 @@ impl AuditKind {
             | Self::SecretClear
             | Self::SecretMigrate
             | Self::PresenceRecovered
-            | Self::RouterHealthy => AuditOutcome::Allow,
+            | Self::RouterHealthy
+            | Self::SettingsMigrate => AuditOutcome::Allow,
             Self::EgressDeny
             | Self::SecretMigrateFailed
             | Self::PresenceStalled
-            | Self::RouterUnhealthy => AuditOutcome::Deny,
+            | Self::RouterUnhealthy
+            | Self::SettingsMigrateFailed => AuditOutcome::Deny,
         }
     }
 }

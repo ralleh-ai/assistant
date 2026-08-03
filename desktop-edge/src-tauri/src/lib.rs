@@ -42,7 +42,8 @@ use ralleh_audio_core::CpalPlaybackSink;
 use audit::{record as audit_record, AuditEvent, AuditKind, AuditLog, SecretKind};
 use secret_store::open_default as open_default_secret_store;
 use settings::{
-    load_settings, migrate_completion_secret, save_settings, settings_path_display,
+    load_settings, migrate_completion_secret, migrate_settings_file, save_settings,
+    settings_path_display, SettingsMigrationOutcome,
     write_completion_config, ApiKeyUpdate, CompletionConfigUpdate, EdgeSettings,
     RedactedCompletionConfig,
 };
@@ -1328,6 +1329,88 @@ pub fn run() {
                 }
             };
             app.manage(audit_log);
+            // Settings schema migration: run once, before any
+            // load path reads the file. `AlreadyCurrent` /
+            // `NoFile` are silent (no audit spam on the happy
+            // path); every other outcome writes an audit event
+            // so an operator can prove which shell touched this
+            // profile last.
+            let migration_state: tauri::State<'_, AuditLog> = app.state();
+            match migrate_settings_file(&handle) {
+                SettingsMigrationOutcome::Migrated { from, to } => {
+                    log::info!(
+                        "settings: migrated edge-settings.json from v{from} to v{to}"
+                    );
+                    audit_record(
+                        &migration_state,
+                        audit_event_with_identity(&handle, AuditKind::SettingsMigrate)
+                            .with_subject("edge-settings.json")
+                            .with_detail(serde_json::json!({
+                                "from": from,
+                                "to": to,
+                            })),
+                    );
+                }
+                SettingsMigrationOutcome::AlreadyCurrent
+                | SettingsMigrationOutcome::NoFile => {}
+                SettingsMigrationOutcome::FutureVersion { on_disk } => {
+                    log::warn!(
+                        "settings: on-disk version {on_disk} newer than this build; \
+                         running from defaults, file untouched"
+                    );
+                    audit_record(
+                        &migration_state,
+                        audit_event_with_identity(
+                            &handle,
+                            AuditKind::SettingsMigrateFailed,
+                        )
+                        .with_subject("edge-settings.json")
+                        .with_detail(serde_json::json!({
+                            "reason": "future-version",
+                            "on_disk": on_disk,
+                            "supported_up_to": settings::CURRENT_SETTINGS_VERSION,
+                        })),
+                    );
+                }
+                SettingsMigrationOutcome::RewriteFailed { from, reason } => {
+                    log::warn!(
+                        "settings: migrated v{from} -> \
+                         v{cur} in memory but rewrite failed: {reason}",
+                        cur = settings::CURRENT_SETTINGS_VERSION
+                    );
+                    audit_record(
+                        &migration_state,
+                        audit_event_with_identity(
+                            &handle,
+                            AuditKind::SettingsMigrateFailed,
+                        )
+                        .with_subject("edge-settings.json")
+                        .with_detail(serde_json::json!({
+                            "reason": reason,
+                            "from": from,
+                            "stage": "rewrite",
+                        })),
+                    );
+                }
+                SettingsMigrationOutcome::Unreadable { reason } => {
+                    log::warn!(
+                        "settings: cannot read edge-settings.json ({reason}); \
+                         running from defaults"
+                    );
+                    audit_record(
+                        &migration_state,
+                        audit_event_with_identity(
+                            &handle,
+                            AuditKind::SettingsMigrateFailed,
+                        )
+                        .with_subject("edge-settings.json")
+                        .with_detail(serde_json::json!({
+                            "reason": reason,
+                            "stage": "load",
+                        })),
+                    );
+                }
+            }
             // Router health probe. Starts in the Unknown state
             // until the first probe returns; edge transitions
             // (Healthy <-> Unhealthy) emit audit events. The
