@@ -508,13 +508,38 @@ pub fn migrate_completion_secret(
     };
     match store.write(cfg.kind, &cleartext) {
         Ok(()) => {
-            // Successfully in the store; the taken `api_key` is
-            // already None on `cfg`. Persist the cleared form so
-            // no one else ever sees the cleartext again.
-            let path = settings_file(app)?;
-            let raw = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-            fs::write(&path, raw).map_err(|e| format!("write settings: {e}"))?;
-            Ok(true)
+            // Verify roundtrip before clearing the on-disk copy.
+            // A silently-corrupting keychain (rare, but seen in the
+            // wild on old Linux distros with a broken libsecret) would
+            // otherwise let us drop the only usable copy of the key.
+            // If verification fails we restore the cleartext and
+            // report the mismatch so the operator can retry.
+            match store.read(cfg.kind) {
+                Ok(Some(back)) if back == cleartext => {
+                    // Verified: the taken `api_key` is already None
+                    // on `cfg`. Persist the cleared form so no one
+                    // else ever sees the cleartext again.
+                    let path = settings_file(app)?;
+                    let raw =
+                        serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+                    fs::write(&path, raw).map_err(|e| format!("write settings: {e}"))?;
+                    Ok(true)
+                }
+                Ok(_) => {
+                    cfg.api_key = Some(cleartext);
+                    Err(
+                        "keychain roundtrip verification failed (stored value did not \
+                         match the source); keeping cleartext key on disk"
+                            .into(),
+                    )
+                }
+                Err(e) => {
+                    cfg.api_key = Some(cleartext);
+                    Err(format!(
+                        "keychain roundtrip verification failed ({e}); keeping cleartext key on disk"
+                    ))
+                }
+            }
         }
         Err(e) => {
             // Store rejected the write (no keychain available).

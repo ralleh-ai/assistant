@@ -226,6 +226,30 @@ impl InMemorySecretStore {
     }
 }
 
+/// Test-only adversary that accepts writes but returns *different*
+/// bytes on read. Simulates a silently-corrupting keychain and lets
+/// us verify the migration roundtrip check refuses to clear the
+/// cleartext copy in that failure mode.
+#[cfg(test)]
+#[allow(dead_code)]
+pub struct CorruptingSecretStore;
+
+#[cfg(test)]
+impl SecretStore for CorruptingSecretStore {
+    fn read(&self, _kind: CompletionKind) -> Result<Option<String>, String> {
+        Ok(Some("not-what-we-wrote".into()))
+    }
+    fn write(&self, _kind: CompletionKind, _secret: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn clear(&self, _kind: CompletionKind) -> Result<(), String> {
+        Ok(())
+    }
+    fn kind(&self) -> SecretStorage {
+        SecretStorage::Keychain
+    }
+}
+
 impl SecretStore for InMemorySecretStore {
     fn read(&self, kind: CompletionKind) -> Result<Option<String>, String> {
         Ok(self

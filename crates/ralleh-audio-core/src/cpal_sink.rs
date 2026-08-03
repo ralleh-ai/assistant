@@ -97,6 +97,14 @@ pub fn should_skip_live_playback() -> bool {
 pub struct CpalPlaybackSink {
     queue: Arc<Mutex<VecDeque<Vec<f32>>>>,
     shutdown: Option<Sender<()>>,
+    /// Handle to the dedicated cpal-owning thread. Held in `Option`
+    /// so `Drop` can `take()` and `join()` it — without the join, on
+    /// Windows WASAPI the parent process can exit before the stream
+    /// is fully torn down, occasionally leaving the audio device in
+    /// a wedged state for other apps. Joining is bounded by the
+    /// audio thread's own shutdown path (drop the stream, return),
+    /// which completes in milliseconds.
+    audio_thread: Option<std::thread::JoinHandle<()>>,
     device_sample_rate_hz: u32,
     device_channels: u16,
 }
@@ -115,7 +123,7 @@ impl CpalPlaybackSink {
         let queue: Arc<Mutex<VecDeque<Vec<f32>>>> = Arc::new(Mutex::new(VecDeque::new()));
         let queue_thread = queue.clone();
 
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("ralleh-audio-playback".into())
             .spawn(move || match open_stream(queue_thread) {
                 Ok((stream, rate, channels)) => {
@@ -138,6 +146,7 @@ impl CpalPlaybackSink {
         Ok(Self {
             queue,
             shutdown: Some(shutdown_tx),
+            audio_thread: Some(handle),
             device_sample_rate_hz,
             device_channels,
         })
@@ -202,8 +211,21 @@ impl CpalPlaybackSink {
 
 impl Drop for CpalPlaybackSink {
     fn drop(&mut self) {
+        // Signal, then wait. Dropping the sender without a join
+        // works in the happy case but the audio thread does I/O on
+        // exit (dropping `cpal::Stream` closes the WASAPI / Core
+        // Audio / ALSA handle), and on process teardown that I/O
+        // can race with runtime shutdown. Joining bounds the delay
+        // to whatever the platform takes to close the stream, which
+        // is milliseconds in practice, and guarantees a clean exit.
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
+        }
+        if let Some(handle) = self.audio_thread.take() {
+            // A panicking audio thread is a real failure but not one
+            // we can recover from here; log via debug-only path and
+            // let the process teardown continue.
+            let _ = handle.join();
         }
     }
 }

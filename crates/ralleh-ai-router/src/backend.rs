@@ -166,13 +166,39 @@ impl HttpCompletionBackend {
             base_url: base_url.into(),
             model: model.into(),
             api_key,
+            // Timeout tuning notes:
+            // - `connect_timeout` bounds TCP + TLS handshake only.
+            //   A slow DNS or a black-holed IP shouldn't hang the
+            //   router; 10s is generous but finite.
+            // - `read_timeout` bounds per-read idle. Applies to
+            //   both the non-streaming JSON body read and each SSE
+            //   chunk pull. A stuck provider that stops emitting
+            //   tokens for 60s is dead to us; we surface a
+            //   `stream ... interrupted` error and the presence UI
+            //   flips out of Speaking.
+            // - We deliberately do NOT set the total-request
+            //   `.timeout(...)` here: legitimate completions can
+            //   run for many minutes, and the streaming path
+            //   applies its own wall-clock budget via
+            //   `tokio::time::timeout` in `stream_complete`. The
+            //   non-streaming path relies on `read_timeout` and
+            //   the caller's own budget (the router / test
+            //   harness).
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .read_timeout(std::time::Duration::from_secs(60))
                 .build()
                 .expect("failed to build reqwest client"),
         }
     }
 }
+
+/// Wall-clock budget for a single streaming completion. Real
+/// completions rarely exceed a couple of minutes even on the
+/// slowest hosted models; anything past this is either a stuck
+/// provider or a runaway prompt, and we'd rather cut it here than
+/// keep the router in-flight indefinitely.
+const STREAM_WALL_CLOCK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 #[derive(serde::Serialize)]
 struct ChatCompletionRequestBody<'a> {
@@ -292,6 +318,30 @@ impl CompletionBackend for HttpCompletionBackend {
     /// abort the stream. We only treat transport-level failures and
     /// non-2xx HTTP responses as `Err`.
     async fn stream_complete(&self, request: &CompletionRequest, tx: StreamChunkSender) {
+        // Whole-request wall-clock budget. See STREAM_WALL_CLOCK_BUDGET
+        // for rationale. `tokio::time::timeout` cancels the awaited
+        // future on expiry, which propagates as `response.chunk()`
+        // never completing → we drop the response, tearing down the
+        // TCP connection.
+        let fut = self.stream_complete_inner(request, tx.clone());
+        match tokio::time::timeout(STREAM_WALL_CLOCK_BUDGET, fut).await {
+            Ok(()) => {}
+            Err(_) => {
+                let _ = tx.send(Err(format!(
+                    "stream exceeded {}s wall-clock budget; aborting",
+                    STREAM_WALL_CLOCK_BUDGET.as_secs()
+                )));
+            }
+        }
+    }
+}
+
+impl HttpCompletionBackend {
+    async fn stream_complete_inner(
+        &self,
+        request: &CompletionRequest,
+        tx: StreamChunkSender,
+    ) {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         let body = ChatCompletionRequestBody {
@@ -335,7 +385,19 @@ impl CompletionBackend for HttpCompletionBackend {
         loop {
             match response.chunk().await {
                 Ok(Some(bytes)) => {
-                    for frame in parser.push_bytes(&bytes) {
+                    let frames = match parser.push_bytes(&bytes) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            // Parser aborted itself (buffer cap
+                            // exceeded); tell the router this stream
+                            // is dead and stop pulling from the
+                            // socket. Dropping `response` closes the
+                            // connection.
+                            let _ = tx.send(Err(e));
+                            return;
+                        }
+                    };
+                    for frame in frames {
                         match frame {
                             SseFrame::Data(text) => {
                                 if tx.send(Ok(text)).is_err() {
@@ -391,9 +453,27 @@ enum SseFrame {
 ///   succeeds and there's a non-empty `delta.content`, it yields a
 ///   `SseFrame::Data(text)`. Otherwise (parse error, empty delta) the
 ///   frame is silently skipped.
+///
+/// ## Bounded buffer
+///
+/// The internal buffer is capped at [`SSE_MAX_BUFFER_BYTES`] to
+/// keep a malicious or malfunctioning server from OOMing the shell
+/// with an unterminated stream (imagine a proxy that sends 1 GiB
+/// of `data:` bytes without a `\n\n` delimiter). Exceeding the cap
+/// is a hard error the calling backend surfaces to the router,
+/// which then closes out the stream as a normal HTTP-style failure.
 struct SseParser {
     buffer: String,
 }
+
+/// Max bytes we'll hold buffered without seeing a frame delimiter.
+/// A well-behaved OpenAI-compatible provider emits chunks of a few
+/// hundred bytes and delimits every one; anything past ~1 MiB is
+/// almost certainly either a hostile server or a broken proxy. This
+/// is deliberately larger than any legitimate chunk so we don't
+/// false-positive on latency-induced batching, but small enough to
+/// bound worst-case memory pressure on a stalled connection.
+const SSE_MAX_BUFFER_BYTES: usize = 1 << 20; // 1 MiB
 
 impl SseParser {
     fn new() -> Self {
@@ -404,8 +484,10 @@ impl SseParser {
 
     /// Ingest a byte chunk and return any complete frames that fell
     /// out. Bytes that aren't yet part of a complete event stay
-    /// buffered until the next call (or `flush`).
-    fn push_bytes(&mut self, bytes: &[u8]) -> Vec<SseFrame> {
+    /// buffered until the next call (or `flush`). Returns an error
+    /// when the pending buffer exceeds [`SSE_MAX_BUFFER_BYTES`] —
+    /// see the type-level doc for the DoS-defence rationale.
+    fn push_bytes(&mut self, bytes: &[u8]) -> Result<Vec<SseFrame>, String> {
         // Providers only ever emit UTF-8 here in practice, but split
         // multi-byte codepoints across TCP chunks are possible. We
         // tolerate them by using `from_utf8_lossy` (replacement chars
@@ -419,7 +501,14 @@ impl SseParser {
                 out.push(frame);
             }
         }
-        out
+        if self.buffer.len() > SSE_MAX_BUFFER_BYTES {
+            let len = self.buffer.len();
+            self.buffer.clear();
+            return Err(format!(
+                "SSE frame exceeded {SSE_MAX_BUFFER_BYTES}-byte cap ({len} bytes buffered without a delimiter); aborting stream"
+            ));
+        }
+        Ok(out)
     }
 
     /// Drain any trailing event still in the buffer that wasn't
@@ -629,7 +718,9 @@ mod tests {
     #[test]
     fn sse_parser_yields_content_from_a_single_frame() {
         let mut parser = SseParser::new();
-        let frames = parser.push_bytes(make_data_frame("Hello").as_bytes());
+        let frames = parser
+            .push_bytes(make_data_frame("Hello").as_bytes())
+            .expect("well-formed frame parses");
         assert_eq!(frames, vec![SseFrame::Data("Hello".to_string())]);
     }
 
@@ -642,16 +733,16 @@ mod tests {
         let full = make_data_frame("Hello");
         let (a, rest) = full.split_at(5);
         let (b, c) = rest.split_at(10);
-        assert!(parser.push_bytes(a.as_bytes()).is_empty());
-        assert!(parser.push_bytes(b.as_bytes()).is_empty());
-        let frames = parser.push_bytes(c.as_bytes());
+        assert!(parser.push_bytes(a.as_bytes()).unwrap().is_empty());
+        assert!(parser.push_bytes(b.as_bytes()).unwrap().is_empty());
+        let frames = parser.push_bytes(c.as_bytes()).unwrap();
         assert_eq!(frames, vec![SseFrame::Data("Hello".to_string())]);
     }
 
     #[test]
     fn sse_parser_yields_done_on_done_sentinel() {
         let mut parser = SseParser::new();
-        let frames = parser.push_bytes(b"data: [DONE]\n\n");
+        let frames = parser.push_bytes(b"data: [DONE]\n\n").unwrap();
         assert_eq!(frames, vec![SseFrame::Done]);
     }
 
@@ -670,7 +761,7 @@ mod tests {
         input.push_str(empty_content);
         input.push_str("\n\n");
         input.push_str(&real);
-        let frames = parser.push_bytes(input.as_bytes());
+        let frames = parser.push_bytes(input.as_bytes()).unwrap();
         assert_eq!(frames, vec![SseFrame::Data("Hi".to_string())]);
     }
 
@@ -683,7 +774,7 @@ mod tests {
         let mut input = String::new();
         input.push_str("data: {not valid json\n\n");
         input.push_str(&make_data_frame("still here"));
-        let frames = parser.push_bytes(input.as_bytes());
+        let frames = parser.push_bytes(input.as_bytes()).unwrap();
         assert_eq!(frames, vec![SseFrame::Data("still here".to_string())]);
     }
 
@@ -691,8 +782,58 @@ mod tests {
     fn sse_parser_ignores_comment_and_non_data_lines() {
         let mut parser = SseParser::new();
         let event = ": ping\nid: 42\nevent: message\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n";
-        let frames = parser.push_bytes(event.as_bytes());
+        let frames = parser.push_bytes(event.as_bytes()).unwrap();
         assert_eq!(frames, vec![SseFrame::Data("ok".to_string())]);
+    }
+
+    #[test]
+    fn sse_parser_aborts_when_a_single_frame_exceeds_the_buffer_cap() {
+        // A malicious server (or broken proxy) could pin memory by
+        // sending an unbounded stream of `data:` bytes without a
+        // `\n\n` delimiter. Confirm the parser refuses to grow past
+        // the cap and surfaces an error instead of silently OOMing
+        // the caller. We reach the cap by streaming a partial frame
+        // in chunks so the tail never contains the delimiter.
+        let mut parser = SseParser::new();
+        // 32 KiB chunks; enough of them to blow past 1 MiB.
+        let chunk = vec![b'x'; 32 * 1024];
+        let mut hit_cap = false;
+        for _ in 0..64 {
+            match parser.push_bytes(&chunk) {
+                Ok(_) => continue,
+                Err(msg) => {
+                    assert!(
+                        msg.contains("cap") || msg.contains("byte"),
+                        "unexpected error text: {msg}"
+                    );
+                    hit_cap = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            hit_cap,
+            "parser accepted >2 MiB without a delimiter — cap not enforced"
+        );
+    }
+
+    #[test]
+    fn sse_parser_recovers_after_hitting_the_cap() {
+        // Post-abort the parser clears its buffer so a subsequent
+        // (well-formed) chunk can still be parsed. The caller is
+        // expected to have torn down the offending stream, but the
+        // parser type itself must not become permanently poisoned.
+        let mut parser = SseParser::new();
+        let chunk = vec![b'x'; 32 * 1024];
+        for _ in 0..64 {
+            if parser.push_bytes(&chunk).is_err() {
+                break;
+            }
+        }
+        let frames = parser
+            .push_bytes(make_data_frame("recovered").as_bytes())
+            .expect("parser should have cleared its buffer");
+        assert_eq!(frames, vec![SseFrame::Data("recovered".to_string())]);
     }
 
     // ---- HTTP streaming end-to-end -------------------------------
