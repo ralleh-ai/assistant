@@ -7,6 +7,7 @@
 mod assistant;
 mod assistant_health;
 mod audit;
+mod diagnostics;
 mod mic;
 mod os_caps;
 mod presence;
@@ -1059,6 +1060,23 @@ fn assistant_audit_tail(
     audit_log.tail(n)
 }
 
+/// Assemble a diagnostics bundle (settings redacted, backend
+/// status, health snapshot, audit tail, presence log tail)
+/// and write it to a JSON file the operator can attach to a
+/// support ticket. `dest_dir` overrides the default location
+/// (the app config dir); the frontend passes `null` to accept
+/// the default. Returns the absolute path of the file
+/// written.
+#[tauri::command]
+fn assistant_diagnostics_bundle(
+    app: AppHandle,
+    dest_dir: Option<String>,
+) -> Result<String, String> {
+    let dest = dest_dir.map(std::path::PathBuf::from);
+    let path = diagnostics::build_and_write(&app, dest)?;
+    Ok(path.display().to_string())
+}
+
 /// Tail the presence-runtime stderr capture. Useful for triage
 /// after the audit log shows a `presence-stalled` event —
 /// callers pass the same `limit` shape (default 100, clamped
@@ -1337,7 +1355,7 @@ pub fn run() {
             // profile last.
             let migration_state: tauri::State<'_, AuditLog> = app.state();
             match migrate_settings_file(&handle) {
-                SettingsMigrationOutcome::Migrated { from, to } => {
+                SettingsMigrationOutcome::Migrated { from, to, backup_path } => {
                     log::info!(
                         "settings: migrated edge-settings.json from v{from} to v{to}"
                     );
@@ -1348,6 +1366,9 @@ pub fn run() {
                             .with_detail(serde_json::json!({
                                 "from": from,
                                 "to": to,
+                                "backup_path": backup_path
+                                    .as_ref()
+                                    .map(|p| p.display().to_string()),
                             })),
                     );
                 }
@@ -1562,6 +1583,7 @@ pub fn run() {
             assistant_test_backend,
             assistant_save_backend,
             assistant_audit_tail,
+            assistant_diagnostics_bundle,
             assistant_probe_backend,
             presence_log_tail,
         ])

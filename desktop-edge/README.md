@@ -87,9 +87,24 @@ CLI/tests — not on the core home screen.
   logs a warning, runs on in-memory defaults for the session,
   and emits a `settings-migrate-failed` audit event so an
   operator sees the mismatch. Successful migrations emit
-  `settings-migrate` with `detail.from` / `detail.to`.
-  Migrations must be idempotent (rerun after crash-mid-write
-  is safe) — enforced by unit tests.
+  `settings-migrate` with `detail.from` / `detail.to` /
+  `detail.backup_path`. Every migration writes a versioned
+  snapshot of the pre-migration file at
+  `edge-settings.v{from}.bak` next to the live file, so an
+  operator has a one-step rollback path (delete the migrated
+  file and rename the backup). Migrations must be idempotent
+  (rerun after crash-mid-write is safe) — enforced by unit
+  tests.
+- **Diagnostics bundle** — the `assistant_diagnostics_bundle`
+  Tauri command packages the redacted settings, active
+  backend + health snapshot, presence liveness snapshot, last
+  500 audit events, and last 500 lines of the presence log
+  into a single JSON file (`ralleh-diagnostics-<ts>.json`)
+  under the app config dir. The bundle re-uses the existing
+  redactions so raw API keys never appear regardless of
+  which storage the shell is running under; a unit test
+  pins that invariant. Attach the file to a support ticket
+  instead of asking users to hunt down five paths.
 - **Router health probe** — a background thread pings the
   active completion backend every 60 s (overridable with
   `RALLEH_HEALTH_PROBE_INTERVAL_MS`, floor 5 s; disabled with

@@ -433,7 +433,16 @@ pub enum SettingsMigrationOutcome {
     /// File was at `from` and has been rewritten at
     /// [`CURRENT_SETTINGS_VERSION`]. `from == 0` for
     /// pre-versioning files; any other value is a real bump.
-    Migrated { from: u32, to: u32 },
+    /// `backup_path` names the pre-migration snapshot written
+    /// alongside the live file (`edge-settings.v{from}.bak`).
+    /// `None` when the backup step failed — the migration
+    /// still ran, but a rollback would have to reconstruct
+    /// the old shape from the audit event details.
+    Migrated {
+        from: u32,
+        to: u32,
+        backup_path: Option<PathBuf>,
+    },
     /// File already at `CURRENT_SETTINGS_VERSION` — nothing to
     /// do. Common case after the first migration lands.
     AlreadyCurrent,
@@ -481,6 +490,35 @@ pub fn migrate_settings_file(app: &AppHandle) -> SettingsMigrationOutcome {
             if migrated_from == CURRENT_SETTINGS_VERSION {
                 return SettingsMigrationOutcome::AlreadyCurrent;
             }
+            // Snapshot the pre-migration file to a versioned
+            // backup before overwriting. Naming is
+            // `edge-settings.v{from}.bak` so a fleet that has
+            // migrated through several versions preserves every
+            // intermediate on-disk shape rather than clobbering
+            // them. Backup failure is *not* fatal — the migration
+            // is idempotent (re-running yields the same result)
+            // and the on-disk copy is still intact until we
+            // succeed at the rewrite below. Log the miss and
+            // proceed.
+            let candidate_backup = path.with_file_name(format!(
+                "edge-settings.v{migrated_from}.bak"
+            ));
+            let backup_path = match fs::copy(&path, &candidate_backup) {
+                Ok(_) => {
+                    log::info!(
+                        "settings: backed up pre-migration snapshot to {}",
+                        candidate_backup.display()
+                    );
+                    Some(candidate_backup)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "settings: backup {} failed ({e}); proceeding with migration",
+                        candidate_backup.display()
+                    );
+                    None
+                }
+            };
             // Rewrite at CURRENT so subsequent loads skip the
             // migration path entirely.
             let mut to_write = settings;
@@ -503,6 +541,7 @@ pub fn migrate_settings_file(app: &AppHandle) -> SettingsMigrationOutcome {
             SettingsMigrationOutcome::Migrated {
                 from: migrated_from,
                 to: CURRENT_SETTINGS_VERSION,
+                backup_path,
             }
         }
         LoadOutcome::FreshDefault(_) => SettingsMigrationOutcome::NoFile,

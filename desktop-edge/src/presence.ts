@@ -419,6 +419,18 @@ export function assistantAuditTail(limit = 50): Promise<AuditEvent[]> {
   return invoke<AuditEvent[]>("assistant_audit_tail", { limit });
 }
 
+/** Build a diagnostics bundle (redacted settings + backend
+ * status + audit tail + presence log tail + liveness
+ * snapshot) and write it to a JSON file the operator can
+ * attach to a ticket. `destDir` overrides the default
+ * location (the app config dir); pass `null` to accept the
+ * default. Returns the absolute path of the file written. */
+export function assistantDiagnosticsBundle(
+  destDir: string | null = null,
+): Promise<string> {
+  return invoke<string>("assistant_diagnostics_bundle", { destDir });
+}
+
 /** Tail the presence-runtime stderr capture (rotated
  * `presence.log` under the app config dir). Use to triage a
  * `presence-stalled` audit event — the last few hundred lines
