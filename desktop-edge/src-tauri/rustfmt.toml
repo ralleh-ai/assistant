@@ -1,0 +1,4 @@
+# See `../../rustfmt.toml` for the rationale. Duplicated
+# here because rustfmt does not walk parent directories to
+# find a config -- each cargo root needs its own copy.
+newline_style = "Unix"

@@ -1,0 +1,116 @@
+# Line-ending and text/binary policy.
+#
+# Goal: every checkout on every OS -- Windows dev machines,
+# macOS dev machines, and the Linux CI runner -- sees the
+# exact same bytes for every source file. No `core.autocrlf`
+# surprises, no rustfmt/prettier "your local run says clean,
+# CI says not clean" flap, no line-ending noise in diffs.
+#
+# Policy in one sentence: **everything git decides is text is
+# stored AND checked out as LF**, everywhere. The handful of
+# formats that MUST be CRLF on disk (Windows batch, PowerShell,
+# Visual Studio .sln) are called out explicitly; genuine
+# binaries are called out to defeat the auto-detection.
+#
+# When adding a new file type here, prefer being explicit over
+# letting `text=auto` decide -- the auto heuristic is fine but
+# a bad guess on a large asset is expensive to unwind later.
+#
+# ## Rolling out a change
+#
+# After editing this file, run `git add --renormalize .` at the
+# repo root and commit the result. That rewrites every tracked
+# file into the canonical form so a subsequent `git diff` is
+# clean on every checkout.
+
+# --- Default: git auto-detects text vs binary, forces LF -----
+* text=auto eol=lf
+
+# --- Source code (explicit for clarity, not required) --------
+*.rs           text eol=lf
+*.toml         text eol=lf
+*.ts           text eol=lf
+*.tsx          text eol=lf
+*.js           text eol=lf
+*.jsx          text eol=lf
+*.mjs          text eol=lf
+*.cjs          text eol=lf
+*.json         text eol=lf
+*.yml          text eol=lf
+*.yaml         text eol=lf
+*.md           text eol=lf
+*.css          text eol=lf
+*.scss         text eol=lf
+*.html         text eol=lf
+*.svg          text eol=lf
+*.wgsl         text eol=lf
+*.glsl         text eol=lf
+*.txt          text eol=lf
+*.plan.md      text eol=lf
+
+# --- Lockfiles: text but never auto-merge --------------------
+# Merge conflicts in these are almost always resolved by
+# regenerating, not by hand-editing. Marking `-diff` keeps
+# review UIs from choking on huge lock diffs.
+Cargo.lock          text eol=lf -diff
+package-lock.json   text eol=lf -diff
+yarn.lock           text eol=lf -diff
+pnpm-lock.yaml      text eol=lf -diff
+
+# --- Shell / config: LF is load-bearing on Unix --------------
+# A `#!/bin/sh` script with CRLF fails cryptically with
+# "bad interpreter: No such file or directory". Pinning LF
+# closes that trap for anyone who edits a script on Windows.
+*.sh           text eol=lf
+*.bash         text eol=lf
+*.zsh          text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+.editorconfig  text eol=lf
+Dockerfile     text eol=lf
+*.dockerfile   text eol=lf
+
+# --- Windows-native formats: CRLF is required ----------------
+# These files are consumed by tools that assume CRLF (cmd.exe,
+# PowerShell in Windows contexts, Visual Studio project files).
+# Forcing LF here would break them.
+*.bat          text eol=crlf
+*.cmd          text eol=crlf
+*.ps1          text eol=crlf
+*.psm1         text eol=crlf
+*.sln          text eol=crlf
+*.vcxproj      text eol=crlf
+
+# --- Binaries: never touch -----------------------------------
+# Explicit list so `text=auto` never misdetects and corrupts.
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.webp         binary
+*.ico          binary
+*.icns         binary
+*.pdf          binary
+*.zip          binary
+*.gz           binary
+*.tar          binary
+*.7z           binary
+*.mp3          binary
+*.mp4          binary
+*.mov          binary
+*.wav          binary
+*.ogg          binary
+*.woff         binary
+*.woff2        binary
+*.ttf          binary
+*.otf          binary
+*.dll          binary
+*.exe          binary
+*.so           binary
+*.dylib        binary
+*.a            binary
+*.lib          binary
+*.bin          binary
+*.wasm         binary
+*.onnx         binary
+*.safetensors  binary

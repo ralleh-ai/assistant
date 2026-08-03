@@ -15,6 +15,25 @@ next module is layered on top. See `DEVELOPMENT.md` §15 (roadmap) and §22
 importantly: policy-gated tool execution, no raw secrets, tenant isolation,
 and audit events for privileged actions.
 
+## Line endings and formatting
+
+This repo enforces a strict text-file policy so a checkout on Windows,
+macOS, and the Linux CI runner produces byte-identical files:
+
+- `.gitattributes` stores every text file as LF (except Windows-native
+  formats — `.bat`, `.cmd`, `.ps1`, `.sln` — which are CRLF).
+- `.editorconfig` tells editors to write LF on new files with matching
+  indent conventions per language.
+- `rustfmt.toml` in each cargo root pins `newline_style = "Unix"`, so
+  `cargo fmt --check` fails loudly on any CRLF drift in `.rs` files.
+- CI runs a `git ls-files --eol` guard that fails the build with a
+  precise diagnostic if any tracked text file drifts to CRLF.
+
+If you clone this repo with a legacy `core.autocrlf=true` git config,
+run `git config core.autocrlf false` and then `git checkout -- .` to
+pick up the canonical LF form. `cargo fmt --check` locally reproduces
+what CI enforces.
+
 ## Requirements
 
 - Rust (stable) via [rustup](https://rustup.rs) — this repo pins a toolchain

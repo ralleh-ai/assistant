@@ -1,0 +1,51 @@
+# EditorConfig -- https://editorconfig.org
+#
+# Companion to `.gitattributes`. `.gitattributes` controls what
+# git *stores*; `.editorconfig` tells every mainstream editor
+# (VS Code / Cursor, IntelliJ / RustRover, Vim, Emacs, Sublime,
+# Zed, ...) how to *write* new lines so files don't drift out
+# of the shape `.gitattributes` will normalize them into.
+#
+# Without this, a Windows editor with default settings will
+# emit CRLF into a fresh file, git will store it as LF thanks
+# to `.gitattributes`, and every save round-trip through the
+# editor will re-dirty the file. Not broken, but noisy.
+#
+# The rule of thumb: any setting here that contradicts a
+# rustfmt.toml / prettier config is a bug in this file, not
+# in the formatter -- keep them aligned.
+
+root = true
+
+# --- All files ------------------------------------------------
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# --- Rust: 4-space indent, matches rustfmt default ------------
+[*.rs]
+indent_size = 4
+max_line_length = 100
+
+# --- TOML: 4-space to match Cargo.toml convention -------------
+[*.toml]
+indent_size = 4
+
+# --- Makefiles: hard tabs (Make requires it) ------------------
+[Makefile]
+indent_style = tab
+
+# --- Windows-native formats: CRLF is load-bearing -------------
+# Match `.gitattributes` so editors don't fight the checkout.
+[*.{bat,cmd,ps1,psm1,sln}]
+end_of_line = crlf
+
+# --- Markdown: don't strip trailing whitespace ----------------
+# Two trailing spaces in Markdown mean "hard line break".
+# Stripping them silently reflows the document.
+[*.md]
+trim_trailing_whitespace = false

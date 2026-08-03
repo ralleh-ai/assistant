@@ -1,0 +1,20 @@
+# rustfmt policy for the headless Rust workspace.
+#
+# The only value we set is `newline_style = "Unix"`. Reason:
+# `.gitattributes` already forces every `.rs` file to be
+# stored + checked out as LF, and `.editorconfig` tells the
+# editor to write LF. This setting closes the loop: rustfmt
+# itself will *emit* LF and, critically, `cargo fmt --check`
+# will now fail loudly if any file drifts to CRLF for any
+# reason (a paste from a Windows tool, a merge from a fork
+# with different settings, etc.). Without this setting,
+# rustfmt's default is `Auto`, which happily preserves CRLF
+# on Windows and lets the drift slip past CI.
+#
+# Every other rustfmt option is left at the toolchain default
+# on purpose -- pinning them would tie the codebase to a
+# specific stable rustfmt release and cause churn every time
+# defaults evolve. `edition = 2021` is the one exception if
+# we ever migrate; today the workspace is uniformly 2021 so
+# the default matches.
+newline_style = "Unix"
