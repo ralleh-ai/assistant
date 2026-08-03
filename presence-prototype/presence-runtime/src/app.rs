@@ -424,15 +424,6 @@ impl App {
         }
         match &key_event.logical_key {
             Key::Character(c) if c.eq_ignore_ascii_case("l") => self.director.toggle_ring(),
-            Key::Character(c) if c.eq_ignore_ascii_case("p") => {
-                use presence_core::scene::specs::PRECIPITATION_ID;
-                use presence_core::scene::{Anchor, Disposition, Placement};
-                self.director.toggle_scene(
-                    PRECIPITATION_ID,
-                    Disposition::Overlay,
-                    Placement::anchored(Anchor::Center, 0.7),
-                );
-            }
             Key::Character(c) if c.eq_ignore_ascii_case("r") => {
                 self.director.reduced_motion = !self.director.reduced_motion;
             }

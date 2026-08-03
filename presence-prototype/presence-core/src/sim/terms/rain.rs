@@ -63,7 +63,11 @@ pub fn generate(count: usize, density: f32, ctx: &TermCtx, out: &mut Vec<Particl
                 local: Vec3::new(streak_dim, 0.0, 0.0),
                 layer: Layer::Core,
                 shell_offset: phase,
-                crease: head,
+                // Crease on the bright head pulls each drop toward the accent
+                // hue, so rain shares the shell's fold-filament color language
+                // instead of being a flat teal spray. Kept subtle so heads read
+                // as lit, not recolored.
+                crease: head * 0.6,
                 size: size * (0.55 + 0.45 * head),
                 brightness: BRIGHT,
                 color_bias: bias,
@@ -103,6 +107,8 @@ mod tests {
             time: 0.0,
             presence: 1.0,
             color_bias: 0.82,
+            seeds: &[],
+            surface_affinity: 0.0,
         };
         // Huge allocation saturates at the cap.
         let mut big = Vec::new();
@@ -126,6 +132,8 @@ mod tests {
             time: 0.0,
             presence: 1.0,
             color_bias: 0.82,
+            seeds: &[],
+            surface_affinity: 0.0,
         };
         let mut out = Vec::new();
         generate(20_000, 1.0, &ctx, &mut out);

@@ -20,6 +20,11 @@ pub struct SceneSpec {
     pub terms: &'static [SceneTerm],
     pub motion: MotionProfile,
     pub palette_role: PaletteRole,
+    /// Fraction `0..1` of surface-eligible points that are born from the shell
+    /// skin snapshot (`crate::scene::surface_seed`) rather than procedurally.
+    /// Only terms that participate in surface seeding (mist, filament) read it;
+    /// pure emitters (cloud, rain) ignore it.
+    pub surface_affinity: f32,
 }
 
 impl SceneSpec {
@@ -60,6 +65,12 @@ pub enum SceneTerm {
     CloudBand { coverage: f32, wind: f32 },
     /// Falling rain streaks (sharp `Core` trails).
     Rain { density: f32, wind: f32 },
+    /// Soft mist born from the shell skin, clinging to folds and slowly rising
+    /// off the surface (diffuse `Halo` points; surface-seeded).
+    SurfaceMist { coverage: f32, rise: f32 },
+    /// Bright filaments born from high-crease shell spots, lifting slightly off
+    /// the skin and reabsorbing (sharp `Core` points; surface-seeded).
+    CreaseFilament { density: f32, lift: f32 },
 }
 
 impl SceneTerm {
@@ -69,6 +80,10 @@ impl SceneTerm {
         match self {
             SceneTerm::CloudBand { coverage, .. } => 0.30 + 0.30 * coverage.clamp(0.0, 1.0),
             SceneTerm::Rain { density, .. } => 0.30 + 0.40 * density.clamp(0.0, 1.0),
+            SceneTerm::SurfaceMist { coverage, .. } => 0.30 + 0.40 * coverage.clamp(0.0, 1.0),
+            // Filaments are sparse by nature: a little goes a long way, so they
+            // take a smaller slice than the diffuse mist they accompany.
+            SceneTerm::CreaseFilament { density, .. } => 0.15 + 0.25 * density.clamp(0.0, 1.0),
         }
     }
 
@@ -88,6 +103,14 @@ impl SceneTerm {
             SceneTerm::Rain { density, wind } => SceneTerm::Rain {
                 density: p0.unwrap_or(density),
                 wind: p1.unwrap_or(wind),
+            },
+            SceneTerm::SurfaceMist { coverage, rise } => SceneTerm::SurfaceMist {
+                coverage: p0.unwrap_or(coverage),
+                rise: p1.unwrap_or(rise),
+            },
+            SceneTerm::CreaseFilament { density, lift } => SceneTerm::CreaseFilament {
+                density: p0.unwrap_or(density),
+                lift: p1.unwrap_or(lift),
             },
         }
     }
@@ -141,6 +164,7 @@ mod tests {
             terms: &[],
             motion: MotionProfile::default(),
             palette_role: PaletteRole::Cool,
+            surface_affinity: 0.0,
         };
         assert!(spec.total_weight() > 0.0);
     }

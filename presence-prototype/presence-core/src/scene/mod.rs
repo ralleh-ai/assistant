@@ -9,7 +9,7 @@ pub mod quality;
 pub mod realize;
 pub mod registry;
 pub mod spec;
-pub mod specs;
+pub mod surface_seed;
 pub mod templates;
 
 pub use director::{SceneDirector, MAX_LIVE_SCENES};
@@ -30,3 +30,5 @@ pub use quality::QualityTier;
 pub use registry::{SceneDescriptor, SceneId, SceneRegistry, SceneTemplate};
 #[allow(unused_imports)]
 pub use spec::{MotionProfile, PaletteRole, SceneBase, SceneSpec, SceneTerm};
+#[allow(unused_imports)]
+pub use surface_seed::{SurfaceSeed, MAX_SEEDS};

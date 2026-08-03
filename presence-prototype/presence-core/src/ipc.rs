@@ -451,12 +451,12 @@ mod tests {
 
     #[test]
     fn present_and_dismiss_scene_round_trip_via_apply_command() {
-        use crate::scene::specs::PRECIPITATION_ID;
+        use crate::scene::registry::TEST_SCENE_ID;
         use presence_ipc::{Command, IpcAnchor, IpcDisposition, IpcPlacement, SceneParamsWire};
 
         let mut director = SceneDirector::new();
         director.apply_command(Command::PresentScene {
-            id: PRECIPITATION_ID.to_string(),
+            id: TEST_SCENE_ID.to_string(),
             params: SceneParamsWire {
                 density: 0.9,
                 wind: 0.2,
@@ -472,7 +472,7 @@ mod tests {
         });
         assert_eq!(director.live_scenes.len(), 1);
         director.apply_command(Command::DismissScene {
-            id: PRECIPITATION_ID.to_string(),
+            id: TEST_SCENE_ID.to_string(),
         });
         assert!(director.live_scenes[0].dismiss_pending);
     }

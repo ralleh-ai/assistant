@@ -54,16 +54,25 @@ pub fn generate(count: usize, coverage: f32, ctx: &TermCtx, out: &mut Vec<Partic
     for _ in 0..count {
         let puff = puffs[rng.gen_range(0..PUFFS)];
         // Flattened ellipsoid: wide, shallow, soft belly.
-        let local = puff
-            + Vec3::new(
-                bell(&mut rng) * 0.42,
-                bell(&mut rng) * 0.15,
-                bell(&mut rng) * 0.26,
-            );
+        let offset = Vec3::new(
+            bell(&mut rng) * 0.42,
+            bell(&mut rng) * 0.15,
+            bell(&mut rng) * 0.26,
+        );
+        let local = puff + offset;
         let jitter = rng.gen_range(0.6..1.15);
+        // Grazing rim: points on the puff's limb face away from the camera and
+        // catch the silhouette lift, so a soft mass reads with the same scanned
+        // rim as the shell instead of as a flat spray. Small crease near each
+        // puff core pulls the densest fragments toward the accent hue.
+        let normal = offset.normalize_or_zero();
+        let density = 1.0 - (offset.length() / 0.5).clamp(0.0, 1.0);
+        let crease = density * 0.12;
         out.push(Particle {
             position: ctx.center + local * ctx.scale,
             base_offset: local,
+            normal,
+            crease,
             local: Vec3::new(jitter, 0.0, 0.0),
             layer: Layer::Halo,
             shell_offset: rng.gen::<f32>() * TAU,

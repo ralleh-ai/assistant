@@ -2,7 +2,8 @@
 
 pub const MAX_SCENE_PARAMS: usize = 8;
 
-/// Precipitation template param indices (Phase 0 rain).
+/// Generic spec-scene param indices: primary knob (density/coverage) and
+/// secondary knob (wind), mapped to the two wire params.
 pub const PARAM_DENSITY: usize = 0;
 pub const PARAM_WIND: usize = 1;
 

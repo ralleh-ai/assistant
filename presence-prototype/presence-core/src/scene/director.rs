@@ -51,11 +51,11 @@ impl SceneDirector {
         let cloud_budget = tier.shell_budget().min(ceiling);
 
         let idle = registry.get(IDLE_ID).expect("idle template");
-        let assistant_cloud = idle.build(SceneParams::default(), cloud_budget, tier);
+        let assistant_cloud = idle.build(SceneParams::default(), cloud_budget, tier, &[]);
         let cloud_resting = assistant_cloud.params;
 
         let loading = registry.get(LOADING_ID).expect("loading template");
-        let loading_ring = loading.build(SceneParams::default(), tier.plate_budget(), tier);
+        let loading_ring = loading.build(SceneParams::default(), tier.plate_budget(), tier, &[]);
 
         Self {
             registry,
@@ -181,7 +181,15 @@ impl SceneDirector {
         let (_, _, scene_budgets) = self.compute_budgets_with_extra(1);
         let budget = scene_budgets.first().copied().unwrap_or(2000);
 
-        let mut entity = template.build(params, budget.max(500), self.tier);
+        // Snapshot the live shell skin so surface-native terms can be born from
+        // it (`crate::scene::surface_seed`). Taken before build so the scene
+        // inherits the shell's current folds; emitter scenes ignore it.
+        let seeds = crate::scene::surface_seed::snapshot(
+            &self.assistant_cloud.particles,
+            self.assistant_cloud.params.center,
+            self.assistant_cloud.params.scale,
+        );
+        let mut entity = template.build(params, budget.max(500), self.tier, &seeds);
         entity.disposition = disposition;
         entity.placement = placement.clamped();
         entity.provenance = provenance;
@@ -455,7 +463,7 @@ mod tests {
     use crate::scene::mode::TRANSITION_WINDOW_SECONDS;
     use crate::scene::placement::Anchor;
     use crate::scene::provenance::ProvenanceSource;
-    use crate::scene::specs::PRECIPITATION_ID;
+    use crate::scene::registry::TEST_SCENE_ID;
 
     #[test]
     fn ring_starts_hidden() {
@@ -737,10 +745,10 @@ mod tests {
     }
 
     #[test]
-    fn present_scene_adds_precipitation_and_dismiss_removes_it() {
+    fn present_scene_adds_a_scene_and_dismiss_removes_it() {
         let mut director = SceneDirector::new();
         assert!(director.present_scene(
-            PRECIPITATION_ID,
+            TEST_SCENE_ID,
             SceneParams::default(),
             Disposition::Overlay,
             Placement::default(),
@@ -755,7 +763,7 @@ mod tests {
         }
         assert!(director.live_scenes[0].presence > 0.9);
 
-        director.dismiss_scene(PRECIPITATION_ID);
+        director.dismiss_scene(TEST_SCENE_ID);
         for _ in 0..120 {
             director.tick(1.0 / 60.0);
         }
@@ -766,7 +774,7 @@ mod tests {
     fn ttl_auto_dismisses_a_scene() {
         let mut director = SceneDirector::new();
         director.present_scene(
-            PRECIPITATION_ID,
+            TEST_SCENE_ID,
             SceneParams::default(),
             Disposition::Overlay,
             Placement::default(),
@@ -786,9 +794,10 @@ mod tests {
         let mut director = SceneDirector::new();
         let mut entities = Vec::new();
         let registry = SceneRegistry::with_builtin_scenes();
-        let template = registry.get(PRECIPITATION_ID).unwrap();
+        let template = registry.get(TEST_SCENE_ID).unwrap();
         for i in 0..MAX_LIVE_SCENES {
-            let mut entity = template.build(SceneParams::default(), 500, QualityTier::Balanced);
+            let mut entity =
+                template.build(SceneParams::default(), 500, QualityTier::Balanced, &[]);
             entity.scene_id = Some(match i {
                 0 => "slot_a",
                 1 => "slot_b",
@@ -802,7 +811,7 @@ mod tests {
         }
         assert_eq!(director.live_scenes.len(), MAX_LIVE_SCENES);
         assert!(!director.present_scene(
-            PRECIPITATION_ID,
+            TEST_SCENE_ID,
             SceneParams::default(),
             Disposition::Overlay,
             Placement::default(),
@@ -817,7 +826,7 @@ mod tests {
     fn global_budget_sum_stays_within_tier_ceiling_with_scenes() {
         let mut director = SceneDirector::new();
         director.present_scene(
-            PRECIPITATION_ID,
+            TEST_SCENE_ID,
             SceneParams::default(),
             Disposition::Overlay,
             Placement::default(),
@@ -841,7 +850,7 @@ mod tests {
     fn replace_scene_crossfades_cloud_presence_down() {
         let mut director = SceneDirector::new();
         director.present_scene(
-            PRECIPITATION_ID,
+            TEST_SCENE_ID,
             SceneParams::default(),
             Disposition::Replace,
             Placement::default(),
@@ -858,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn corner_placement_offsets_precipitation_center() {
+    fn corner_placement_offsets_scene_center() {
         let mut director = SceneDirector::new();
         director.set_viewport_extent(ViewportExtent::from_pixels(800, 600));
         let placement = Placement {
@@ -867,7 +876,7 @@ mod tests {
             scale: 0.5,
         };
         director.present_scene(
-            PRECIPITATION_ID,
+            TEST_SCENE_ID,
             SceneParams::default(),
             Disposition::Overlay,
             placement,

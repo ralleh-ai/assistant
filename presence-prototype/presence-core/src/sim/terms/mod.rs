@@ -8,15 +8,19 @@
 //! reuse it.
 
 pub mod cloud;
+pub mod filament;
+pub mod mist;
 pub mod rain;
 
 use glam::Vec3;
+
+use crate::scene::surface_seed::SurfaceSeed;
 
 /// Per-frame context shared by every term. Positions are always derived as
 /// `center + local * scale`, so a term's particles follow their entity's
 /// `Placement` for free.
 #[derive(Clone, Copy, Debug)]
-pub struct TermCtx {
+pub struct TermCtx<'a> {
     pub center: Vec3,
     pub scale: f32,
     /// Entity clock (already advanced at `time_scale`, so reduced motion slows
@@ -26,6 +30,12 @@ pub struct TermCtx {
     pub presence: f32,
     /// Baseline `color_bias` from the spec's `PaletteRole`.
     pub color_bias: f32,
+    /// Shell-skin samples captured when the scene was presented
+    /// (`crate::scene::surface_seed`). Surface-native terms birth points from
+    /// these; emitter terms ignore them. Empty when no shell was available.
+    pub seeds: &'a [SurfaceSeed],
+    /// Fraction `0..1` of surface-eligible points to birth from `seeds`.
+    pub surface_affinity: f32,
 }
 
 /// Split `count` points across term `weights`, proportionally, with any

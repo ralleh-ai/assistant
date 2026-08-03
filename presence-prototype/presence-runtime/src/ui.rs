@@ -33,7 +33,10 @@ pub struct SceneSelector {
 impl Default for SceneSelector {
     fn default() -> Self {
         Self {
-            scene: presence_core::scene::specs::PRECIPITATION_ID.to_string(),
+            // No scene presets ship right now (only idle + loading). The
+            // selector below stays wired so a registered spec scene can still
+            // be picked and presented — it's just empty until one exists.
+            scene: String::new(),
             anchor: Anchor::Center,
             replace: false,
             scale: 0.7,
@@ -282,13 +285,22 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
             }
 
             // Dynamic scene selector: pick any registered (non-builtin) scene,
-            // an anchor, disposition, and scale, then present/dismiss it. This
-            // replaces the old rain-only controls — the whole point is that
-            // scenes are data, driven through one generic path.
+            // an anchor, disposition, and scale, then present/dismiss it. The
+            // path is generic — scenes are data. No presets ship today, so the
+            // list is empty until a spec scene is registered.
+            let preset_count = registry
+                .all()
+                .filter(|t| t.id != IDLE_ID && t.id != LOADING_ID)
+                .count();
             ui.horizontal(|ui| {
                 ui.label("scene:");
+                let selected_text = if selector.scene.is_empty() {
+                    "(no presets)".to_string()
+                } else {
+                    selector.scene.clone()
+                };
                 egui::ComboBox::from_id_salt("scene_select")
-                    .selected_text(selector.scene.clone())
+                    .selected_text(selected_text)
                     .show_ui(ui, |ui| {
                         for t in registry.all() {
                             if t.id == IDLE_ID || t.id == LOADING_ID {
@@ -315,7 +327,11 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
             });
             ui.add(egui::Slider::new(&mut selector.scale, 0.25..=1.0).text("scale"));
             ui.horizontal(|ui| {
-                if ui.button("present — [P]").clicked() {
+                let can_present = !selector.scene.is_empty();
+                if ui
+                    .add_enabled(can_present, egui::Button::new("present"))
+                    .clicked()
+                {
                     let disposition = if selector.replace {
                         Disposition::Replace
                     } else {
@@ -332,10 +348,16 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
                         },
                     );
                 }
-                if ui.button("dismiss").clicked() {
+                if ui
+                    .add_enabled(can_present, egui::Button::new("dismiss"))
+                    .clicked()
+                {
                     director.dismiss_scene(&selector.scene);
                 }
             });
+            if preset_count == 0 {
+                ui.label("no scene presets registered");
+            }
             ui.separator();
 
             // Checkboxes rather than a radio group, because the modes are
@@ -463,7 +485,7 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
                 });
             ui.separator();
             ui.label(
-                "Keys: [L] loading · [P] rain · [T] thinking · [S] speaking · [U] tool_use \
+                "Keys: [L] loading · [T] thinking · [S] speaking · [U] tool_use \
                  · [N] listening · [A] attention · [E] error · [R] reduced motion \
                  · [Q] cycle quality · [Esc] quit",
             );

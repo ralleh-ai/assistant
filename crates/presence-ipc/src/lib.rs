@@ -219,7 +219,8 @@ impl Default for IpcPlacement {
     }
 }
 
-/// Precipitation template params on the wire (Phase 0: rain only).
+/// Generic spec-scene params on the wire: a primary knob (density/coverage)
+/// and a secondary knob (wind), mapped by the realizer's schema.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SceneParamsWire {
     #[serde(default = "default_density")]
@@ -568,7 +569,7 @@ mod tests {
             Command::SetInteractive { interactive: true },
             Command::SetPosition { x: 100, y: 200 },
             Command::PresentScene {
-                id: "precipitation".to_string(),
+                id: "test_scene".to_string(),
                 params: SceneParamsWire {
                     density: 0.8,
                     wind: 0.05,
@@ -583,7 +584,7 @@ mod tests {
                 ttl_ms: Some(30_000),
             },
             Command::DismissScene {
-                id: "precipitation".to_string(),
+                id: "test_scene".to_string(),
             },
         ];
         for cmd in commands {

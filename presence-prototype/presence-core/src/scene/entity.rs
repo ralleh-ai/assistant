@@ -9,7 +9,7 @@ use crate::sim::{EntityParams, Particle, PointBehavior, PointGenerator, Presence
 pub enum EntityKind {
     AssistantCloud,
     LoadingRing,
-    /// Any data-defined scene realized from a `SceneSpec` (rain, fog, …).
+    /// Any data-defined scene realized from a `SceneSpec`.
     Scene,
 }
 

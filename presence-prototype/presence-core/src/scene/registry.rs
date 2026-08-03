@@ -9,9 +9,7 @@ use crate::scene::placement::Placement;
 use crate::scene::quality::QualityTier;
 use crate::scene::realize;
 use crate::scene::spec::SceneSpec;
-use crate::scene::specs::{
-    EMITTER_PARAM_SCHEMA, FOG_ID, FOG_SPEC, PRECIPITATION_ID, PRECIPITATION_SPEC,
-};
+use crate::scene::surface_seed::SurfaceSeed;
 use crate::scene::templates::builtins::{build_idle, build_loading, IDLE_ID, LOADING_ID};
 
 pub type SceneId = &'static str;
@@ -42,15 +40,28 @@ pub struct SceneTemplate {
 }
 
 impl SceneTemplate {
-    pub fn build(&self, params: SceneParams, budget: usize, tier: QualityTier) -> EntityInstance {
+    pub fn build(
+        &self,
+        params: SceneParams,
+        budget: usize,
+        tier: QualityTier,
+        seeds: &[SurfaceSeed],
+    ) -> EntityInstance {
         match self.source {
             SceneSource::Builtin(build_fn) => build_fn(params, budget, tier),
             SceneSource::Spec(spec) => {
                 let mut params = params;
                 params.clamp_to(&self.param_schema);
                 let terms = spec.resolved_terms(&params, &self.param_schema);
-                let mut entity =
-                    realize::realize(spec, terms, budget, tier, self.priority, self.base_scale);
+                let mut entity = realize::realize(
+                    spec,
+                    terms,
+                    budget,
+                    tier,
+                    self.priority,
+                    self.base_scale,
+                    seeds.to_vec(),
+                );
                 entity.scene_id = Some(self.id);
                 entity.disposition = self.default_disposition;
                 entity.placement = self.default_placement;
@@ -102,34 +113,13 @@ impl SceneRegistry {
             base_scale: 1.5,
             source: SceneSource::Builtin(build_loading),
         });
-        registry.register(SceneTemplate {
-            id: PRECIPITATION_ID,
-            label: "Precipitation — Rain",
-            summary: "Drifting cloud band with rain falling beneath it \
-                      (CloudBand + Rain terms).",
-            entity_kind: EntityKind::Scene,
-            priority: 2,
-            default_active: false,
-            param_schema: EMITTER_PARAM_SCHEMA,
-            default_disposition: Disposition::Overlay,
-            default_placement: Placement::default(),
-            base_scale: 0.85,
-            source: SceneSource::Spec(&PRECIPITATION_SPEC),
-        });
-        registry.register(SceneTemplate {
-            id: FOG_ID,
-            label: "Fog — Cloud Band",
-            summary: "A soft drifting cloud mass alone (CloudBand term) — \
-                      shows term reuse across scenes.",
-            entity_kind: EntityKind::Scene,
-            priority: 2,
-            default_active: false,
-            param_schema: EMITTER_PARAM_SCHEMA,
-            default_disposition: Disposition::Overlay,
-            default_placement: Placement::default(),
-            base_scale: 0.9,
-            source: SceneSource::Spec(&FOG_SPEC),
-        });
+        // Data-defined scene *presets* (precipitation, fog, aura, aurora, …) are
+        // intentionally not registered: only the idle shell and loading plate
+        // ship for now. The spec/term realizer above stays wired so scenes can
+        // still be selected/created at runtime — a preset is data, not code.
+        // Tests register a single generic spec scene to exercise that path.
+        #[cfg(test)]
+        registry.register(test_scene_template());
         registry
     }
 
@@ -161,14 +151,68 @@ impl SceneRegistry {
 /// Alias for transitional readers.
 pub type SceneDescriptor = SceneTemplate;
 
+/// A single generic spec scene used only by tests to exercise the data-driven
+/// realizer + director present/dismiss/budget/placement machinery. No preset
+/// scenes ship in the running app; this keeps that path under test.
+#[cfg(test)]
+pub const TEST_SCENE_ID: &str = "test_scene";
+
+#[cfg(test)]
+const TEST_PARAM_SCHEMA: ParamSchema = ParamSchema {
+    defs: &[
+        crate::scene::params::ParamDef {
+            name: "density",
+            default: 0.7,
+            min: 0.3,
+            max: 1.0,
+        },
+        crate::scene::params::ParamDef {
+            name: "wind",
+            default: 0.1,
+            min: -0.5,
+            max: 0.5,
+        },
+    ],
+};
+
+#[cfg(test)]
+const TEST_SCENE_SPEC: SceneSpec = SceneSpec {
+    base: crate::scene::spec::SceneBase::Emitter,
+    terms: &[crate::scene::spec::SceneTerm::CloudBand {
+        coverage: 0.85,
+        wind: 0.1,
+    }],
+    motion: crate::scene::spec::MotionProfile { time_scale: 1.0 },
+    palette_role: crate::scene::spec::PaletteRole::Cool,
+    surface_affinity: 0.0,
+};
+
+#[cfg(test)]
+fn test_scene_template() -> SceneTemplate {
+    SceneTemplate {
+        id: TEST_SCENE_ID,
+        label: "Test Scene",
+        summary: "Generic spec scene for tests only.",
+        entity_kind: EntityKind::Scene,
+        priority: 2,
+        default_active: false,
+        param_schema: TEST_PARAM_SCHEMA,
+        default_disposition: Disposition::Overlay,
+        default_placement: Placement::default(),
+        base_scale: 0.85,
+        source: SceneSource::Spec(&TEST_SCENE_SPEC),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn builtins_expose_the_expected_ids_and_kinds() {
+    fn builtins_expose_only_idle_and_loading() {
         let registry = SceneRegistry::with_builtin_scenes();
-        assert_eq!(registry.len(), 4);
+        // idle + loading + the cfg(test) generic scene.
+        assert_eq!(registry.len(), 3);
         let idle = registry.get(IDLE_ID).expect("idle scene missing");
         assert_eq!(idle.entity_kind, EntityKind::AssistantCloud);
         assert!(idle.default_active);
@@ -176,23 +220,20 @@ mod tests {
         assert_eq!(loading.entity_kind, EntityKind::LoadingRing);
         assert!(!loading.default_active);
         assert!(loading.priority > idle.priority);
-        let rain = registry
-            .get(PRECIPITATION_ID)
-            .expect("precipitation missing");
-        assert_eq!(rain.entity_kind, EntityKind::Scene);
-        assert!(!rain.default_active);
-        let fog = registry.get(FOG_ID).expect("fog missing");
-        assert_eq!(fog.entity_kind, EntityKind::Scene);
-        assert!(!fog.default_active);
+        // No preset ambient scenes ship.
+        assert!(registry.get("precipitation").is_none());
+        assert!(registry.get("fog").is_none());
+        assert!(registry.get("aura_mist").is_none());
+        assert!(registry.get("aurora").is_none());
     }
 
     #[test]
-    fn precipitation_template_builds_deterministically() {
+    fn spec_template_builds_deterministically() {
         let registry = SceneRegistry::with_builtin_scenes();
-        let template = registry.get(PRECIPITATION_ID).unwrap();
+        let template = registry.get(TEST_SCENE_ID).unwrap();
         let params = SceneParams::from_schema(&template.param_schema);
-        let a = template.build(params, 400, QualityTier::Balanced);
-        let b = template.build(params, 400, QualityTier::Balanced);
+        let a = template.build(params, 400, QualityTier::Balanced, &[]);
+        let b = template.build(params, 400, QualityTier::Balanced, &[]);
         assert_eq!(a.particles.len(), b.particles.len());
         assert_eq!(
             a.particles.first().map(|p| p.position),
