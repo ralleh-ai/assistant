@@ -5,6 +5,7 @@
 //! go through policy + traits (T13), never raw clipboard/mic APIs from JS.
 
 mod assistant;
+mod audit;
 mod mic;
 mod os_caps;
 mod presence;
@@ -35,10 +36,12 @@ use ralleh_audio_core::{
 };
 #[cfg(feature = "playback")]
 use ralleh_audio_core::CpalPlaybackSink;
+use audit::{record as audit_record, AuditEvent, AuditKind, AuditLog, SecretKind};
 use secret_store::open_default as open_default_secret_store;
 use settings::{
     load_settings, migrate_completion_secret, save_settings, settings_path_display,
-    write_completion_config, CompletionConfigUpdate, EdgeSettings, RedactedCompletionConfig,
+    write_completion_config, ApiKeyUpdate, CompletionConfigUpdate, EdgeSettings,
+    RedactedCompletionConfig,
 };
 
 const EDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -620,6 +623,28 @@ pub struct BackendStatus {
     pub configured: Option<RedactedCompletionConfig>,
 }
 
+/// Build an [`AuditEvent`] pre-populated with the shell's current
+/// identity triple. Loading settings on every audit emit adds a
+/// couple of ms but keeps the tenant/device/actor fields honest —
+/// if the operator changed identity mid-session the audit trail
+/// reflects that immediately instead of a cached value.
+fn audit_event_with_identity(app: &AppHandle, kind: AuditKind) -> AuditEvent {
+    let (tenant, device, actor) = match load_settings(app) {
+        Ok(s) => (s.tenant_id, s.device_id, s.actor_id),
+        Err(_) => (String::new(), String::new(), String::new()),
+    };
+    AuditEvent::new(kind, &tenant).with_identity(tenant, device, actor)
+}
+
+/// Heuristic: does an error message look like an egress denial?
+/// The three enforcement layers all format their errors with the
+/// literal string `"egress policy"`, so this is stable — but kept
+/// small so a rename in one place doesn't silently break the
+/// audit signal.
+fn looks_like_egress_denial(err: &str) -> bool {
+    err.to_lowercase().contains("egress policy")
+}
+
 #[tauri::command]
 fn assistant_backend_status(
     app: AppHandle,
@@ -659,6 +684,7 @@ pub struct BackendTestResult {
 #[tauri::command]
 async fn assistant_test_backend(
     app: AppHandle,
+    audit_log: State<'_, AuditLog>,
     config: CompletionConfigUpdate,
 ) -> Result<BackendTestResult, String> {
     // Fold the update against whatever secret is currently stored
@@ -675,12 +701,28 @@ async fn assistant_test_backend(
             .filter(|s| !s.is_empty())
     });
     let kind_label = config.kind.label().to_string();
+    let requested_kind = config.kind;
+    let requested_url = config.base_url.clone();
     let cfg = match config.into_config_with_secret(existing_secret) {
         Ok(c) => c,
         Err(reason) => {
             // Surface validation errors as a "test failed" result
             // rather than a Tauri command error so the UI can render
             // them in the same status area as network failures.
+            // Egress denials produce their own audit line so a
+            // security review can spot the "user tried to point us
+            // at attacker.example" attempt without spelunking logs.
+            if looks_like_egress_denial(&reason) {
+                audit_record(
+                    &audit_log,
+                    audit_event_with_identity(&app, AuditKind::EgressDeny)
+                        .with_subject(format!("{}@{}", requested_kind.label(), requested_url))
+                        .with_detail(serde_json::json!({
+                            "stage": "test",
+                            "reason": reason,
+                        })),
+                );
+            }
             return Ok(BackendTestResult {
                 ok: false,
                 backend: kind_label,
@@ -694,6 +736,17 @@ async fn assistant_test_backend(
     let backend = match build_backend_from_config(&cfg) {
         Ok(b) => b,
         Err(reason) => {
+            if looks_like_egress_denial(&reason) {
+                audit_record(
+                    &audit_log,
+                    audit_event_with_identity(&app, AuditKind::EgressDeny)
+                        .with_subject(format!("{}@{}", cfg.kind.label(), cfg.base_url))
+                        .with_detail(serde_json::json!({
+                            "stage": "test-build",
+                            "reason": reason,
+                        })),
+                );
+            }
             return Ok(BackendTestResult {
                 ok: false,
                 backend: cfg.kind.label().to_string(),
@@ -703,6 +756,15 @@ async fn assistant_test_backend(
             });
         }
     };
+    // URL passed every enforcement layer -- record the allow so a
+    // review can prove "no covert routing" instead of just
+    // "no visible failures".
+    audit_record(
+        &audit_log,
+        audit_event_with_identity(&app, AuditKind::EgressAllow)
+            .with_subject(format!("{}@{}", cfg.kind.label(), cfg.base_url))
+            .with_detail(serde_json::json!({ "stage": "test" })),
+    );
 
     let router = ralleh_ai_router::AiRouter::with_backend_arc(backend);
     let request = completion_request("local", "desktop-1", "operator", "ping");
@@ -770,10 +832,66 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
 fn assistant_save_backend(
     app: AppHandle,
     state: State<'_, AssistantState>,
+    audit_log: State<'_, AuditLog>,
     config: Option<CompletionConfigUpdate>,
 ) -> Result<BackendStatus, String> {
     let store = open_default_secret_store();
-    let settings = write_completion_config(&app, store.as_ref(), config)?;
+    // Capture what the config *asked* for so audit events can
+    // record the intent even when write_completion_config errors
+    // out before persisting anything. `None` means "clear".
+    let intent = config.as_ref().map(|c| (c.kind, c.base_url.clone(), c.api_key.clone()));
+    let previous_backend = state.current_backend_name();
+    let settings = match write_completion_config(&app, store.as_ref(), config) {
+        Ok(s) => s,
+        Err(err) => {
+            if looks_like_egress_denial(&err) {
+                let (subject_kind, subject_url) = intent
+                    .as_ref()
+                    .map(|(k, u, _)| (k.label().to_string(), u.clone()))
+                    .unwrap_or_default();
+                audit_record(
+                    &audit_log,
+                    audit_event_with_identity(&app, AuditKind::EgressDeny)
+                        .with_subject(format!("{subject_kind}@{subject_url}"))
+                        .with_detail(serde_json::json!({
+                            "stage": "save",
+                            "reason": err,
+                        })),
+                );
+            }
+            return Err(err);
+        }
+    };
+    // Save succeeded -- emit the appropriate secret-mutation
+    // events. `Set` writes a new key, `Clear` removes one, `Keep`
+    // is a no-op on the store and doesn't need an audit line.
+    if let Some((kind, _url, key_update)) = intent.as_ref() {
+        match key_update {
+            ApiKeyUpdate::Set { value } if !value.is_empty() => {
+                audit_record(
+                    &audit_log,
+                    audit_event_with_identity(&app, AuditKind::SecretWrite)
+                        .with_subject("completion-api-key")
+                        .with_detail(serde_json::json!({
+                            "kind": SecretKind::CompletionApiKey,
+                            "backend": kind.label(),
+                        })),
+                );
+            }
+            ApiKeyUpdate::Clear => {
+                audit_record(
+                    &audit_log,
+                    audit_event_with_identity(&app, AuditKind::SecretClear)
+                        .with_subject("completion-api-key")
+                        .with_detail(serde_json::json!({
+                            "kind": SecretKind::CompletionApiKey,
+                            "backend": kind.label(),
+                        })),
+                );
+            }
+            _ => {}
+        }
+    }
     let active_backend = match settings.completion.as_ref() {
         Some(cfg) => {
             // Backend construction needs the raw key -- resolve it
@@ -795,6 +913,19 @@ fn assistant_save_backend(
             state.reconfigure(&fallback_cfg)
         }
     };
+    // Router swap: record the transition so a review can prove
+    // which backend was actually active at any given moment.
+    if active_backend != previous_backend {
+        audit_record(
+            &audit_log,
+            audit_event_with_identity(&app, AuditKind::BackendSwap)
+                .with_subject("router")
+                .with_detail(serde_json::json!({
+                    "from": previous_backend,
+                    "to": active_backend,
+                })),
+        );
+    }
     Ok(BackendStatus {
         active_backend,
         configured: settings
@@ -802,6 +933,19 @@ fn assistant_save_backend(
             .as_ref()
             .map(|c| RedactedCompletionConfig::from_config_and_store(c, store.as_ref())),
     })
+}
+
+/// Return the last `limit` audit events. Clamped to `[1, 500]` so
+/// the settings-UI diagnostic panel can't ask for so much data
+/// it stalls the IPC bridge. `500` is generous — the panel
+/// typically wants "the last dozen" — but bounded.
+#[tauri::command]
+fn assistant_audit_tail(
+    audit_log: State<'_, AuditLog>,
+    limit: Option<usize>,
+) -> Result<Vec<AuditEvent>, String> {
+    let n = limit.unwrap_or(50).clamp(1, 500);
+    audit_log.tail(n)
 }
 
 #[tauri::command]
@@ -1041,6 +1185,26 @@ pub fn run() {
         // kills the child (see `presence::Presence::drop`).
         .setup(move |app| {
             let handle = app.handle().clone();
+            // Audit log opens against the OS app config dir. On
+            // failure we fall back to the no-op sink so a broken
+            // audit surface never blocks the shell from starting —
+            // fail-open is the intended posture (see audit.rs
+            // module docs). The warning line names the reason so
+            // an operator can spot it in the log.
+            let audit_log = match AuditLog::open(&handle) {
+                Ok(log) => {
+                    log::info!(
+                        "audit: recording to {}",
+                        log.active_path().display()
+                    );
+                    log
+                }
+                Err(e) => {
+                    log::warn!("audit: opening log failed: {e}; using no-op sink");
+                    AuditLog::no_op()
+                }
+            };
+            app.manage(audit_log);
             let presence = Presence::spawn_from_env(presence_event_listener(handle.clone()));
             restore_presence_state(&handle, &presence);
             // Scan sweep (§3.4). Opt-in via env var so a normal
@@ -1062,21 +1226,58 @@ pub fn run() {
                 // keychain the fallback path keeps working with the
                 // cleartext copy, and the UI surfaces the insecure
                 // storage via the `storage` field.
+                let audit_state: tauri::State<'_, AuditLog> = app.state();
                 match migrate_completion_secret(&handle, store.as_ref(), &mut settings) {
-                    Ok(true) => log::info!(
-                        "assistant: migrated cleartext API key to OS keychain"
-                    ),
+                    Ok(true) => {
+                        log::info!(
+                            "assistant: migrated cleartext API key to OS keychain"
+                        );
+                        audit_record(
+                            &audit_state,
+                            audit_event_with_identity(&handle, AuditKind::SecretMigrate)
+                                .with_subject("completion-api-key")
+                                .with_detail(serde_json::json!({
+                                    "kind": SecretKind::CompletionApiKey,
+                                })),
+                        );
+                    }
                     Ok(false) => {}
-                    Err(e) => log::warn!(
-                        "assistant: keychain migration deferred ({e}); \
-                         continuing with cleartext key on disk"
-                    ),
+                    Err(e) => {
+                        log::warn!(
+                            "assistant: keychain migration deferred ({e}); \
+                             continuing with cleartext key on disk"
+                        );
+                        audit_record(
+                            &audit_state,
+                            audit_event_with_identity(
+                                &handle,
+                                AuditKind::SecretMigrateFailed,
+                            )
+                            .with_subject("completion-api-key")
+                            .with_detail(serde_json::json!({
+                                "reason": e.to_string(),
+                            })),
+                        );
+                    }
                 }
                 if let Some(cfg) = settings.completion.as_ref() {
                     let resolved = cfg.resolve_with_store(store.as_ref());
                     let state: tauri::State<'_, AssistantState> = app.state();
+                    let before = state.current_backend_name();
                     let name = state.reconfigure(&resolved);
                     log::info!("assistant: startup reconfigure → {name}");
+                    if name != before {
+                        audit_record(
+                            &audit_state,
+                            audit_event_with_identity(&handle, AuditKind::BackendSwap)
+                                .with_subject("router")
+                                .with_detail(serde_json::json!({
+                                    "from": before,
+                                    "to": name,
+                                    "trigger": "startup",
+                                })),
+                        );
+                    }
                 }
             }
             app.manage(presence);
@@ -1110,6 +1311,7 @@ pub fn run() {
             assistant_backend_status,
             assistant_test_backend,
             assistant_save_backend,
+            assistant_audit_tail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

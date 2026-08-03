@@ -75,6 +75,18 @@ CLI/tests — not on the core home screen.
   migrated into the keychain on first startup (best-effort;
   leaves the cleartext copy in place only if the keychain is
   unavailable).
+- **Audit log** — every policy-relevant event (egress
+  allow/deny, backend swap, secret write/clear, keychain
+  migration) is appended as JSON-Lines to `audit.jsonl` under the
+  Tauri app config dir (the same directory as
+  `edge-settings.json`). Size-based rotation kicks in at 4 MiB;
+  one rollover file (`audit.jsonl.1`) is retained. Read the tail
+  from the settings-UI diagnostic panel via the
+  `assistant_audit_tail` Tauri command, or open the file
+  directly. Never contains raw API keys — only labels and
+  storage-provenance strings. Failed audit writes never block the
+  action being recorded (fail-open on evidence, fail-closed on
+  authorization).
 - `RALLEH_COMPLETION_ALLOWED_HOSTS` — comma-separated allowlist
   of hostnames the shell is willing to send completion traffic
   to. Enforced at three layers (settings save, "Test connection"

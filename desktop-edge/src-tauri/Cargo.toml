@@ -17,6 +17,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# RFC-3339 timestamps for the audit log. `default-features = false`
+# drops the chrono clock backend on unusual targets; we only need
+# `now()` + `to_rfc3339()`, both provided by `now` + `serde`.
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 ralleh-audio-core = { path = "../../crates/ralleh-audio-core" }
 ralleh-os-capabilities = { path = "../../crates/ralleh-os-capabilities" }
 ralleh-policy-core = { path = "../../crates/ralleh-policy-core" }
@@ -43,6 +47,11 @@ log = "0.4"
 # pinned to the 3.x line — 4.x is a breaking API rework, revisit
 # when the ecosystem catches up.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+[dev-dependencies]
+# Sandboxed working directories for the audit-log tests so we
+# never touch the operator's real config dir.
+tempfile = "3"
 
 [features]
 default = ["mic", "playback"]

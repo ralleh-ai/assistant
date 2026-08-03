@@ -331,6 +331,34 @@ export function assistantSaveBackend(
   return invoke<BackendStatus>("assistant_save_backend", { config });
 }
 
+/** One event line from the audit log. Mirrors the Rust
+ * `AuditEvent` shape exactly. Field names stay stable across
+ * versions -- external tooling (SIEM ingestion, jq filters) parses
+ * these directly. */
+export type AuditEvent = {
+  timestamp: string;
+  kind:
+    | "egress-allow"
+    | "egress-deny"
+    | "backend-swap"
+    | "secret-write"
+    | "secret-clear"
+    | "secret-migrate"
+    | "secret-migrate-failed";
+  outcome: "allow" | "deny";
+  tenant: string;
+  device: string;
+  actor: string;
+  subject: string;
+  detail: unknown;
+};
+
+/** Read the last `limit` audit events. Bounded on the Rust side to
+ * `[1, 500]` so a runaway UI can't stall the IPC bridge. */
+export function assistantAuditTail(limit = 50): Promise<AuditEvent[]> {
+  return invoke<AuditEvent[]>("assistant_audit_tail", { limit });
+}
+
 /** UI helper: the list of supported providers with their labels
  * and a short human-readable hint. Kept next to the wire type so a
  * new provider is a two-file change (this + Rust). */
