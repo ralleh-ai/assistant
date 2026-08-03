@@ -20,6 +20,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::audit::{AuditKind, AuditLog};
 use crate::audit_event_with_identity;
+use crate::presence_log::PresenceLog;
 use crate::presence::{
     Liveness, LivenessSnapshot, Presence, PresenceHealth, SPAWN_GRACE_MS,
 };
@@ -219,12 +220,22 @@ fn run(app: AppHandle, liveness: Liveness) {
                     snapshot.last_heartbeat_uptime_ms
                 );
                 if let Some(audit) = audit_state.as_ref() {
+                    // Attach the presence.log path (when
+                    // enabled) so an operator reading the audit
+                    // trail has a direct pointer to the
+                    // correlated stderr. Empty when the log
+                    // sink failed to open.
+                    let log_path = app
+                        .try_state::<std::sync::Arc<PresenceLog>>()
+                        .and_then(|s| s.active_path())
+                        .map(|p| p.display().to_string());
                     let event = audit_event_with_identity(&app, AuditKind::PresenceStalled)
                         .with_subject("presence-runtime")
                         .with_detail(serde_json::json!({
                             "elapsed_ms": elapsed_ms,
                             "last_heartbeat_sequence": snapshot.last_heartbeat_sequence,
                             "last_heartbeat_uptime_ms": snapshot.last_heartbeat_uptime_ms,
+                            "log_path": log_path,
                         }));
                     let _ = audit.write(&event);
                 }

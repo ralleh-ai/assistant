@@ -384,6 +384,15 @@ export function assistantAuditTail(limit = 50): Promise<AuditEvent[]> {
   return invoke<AuditEvent[]>("assistant_audit_tail", { limit });
 }
 
+/** Tail the presence-runtime stderr capture (rotated
+ * `presence.log` under the app config dir). Use to triage a
+ * `presence-stalled` audit event — the last few hundred lines
+ * usually contain the panic trace or driver warning that
+ * preceded the stall. Bounded on the Rust side to `[1, 1000]`. */
+export function presenceLogTail(limit = 100): Promise<string[]> {
+  return invoke<string[]>("presence_log_tail", { limit });
+}
+
 /** UI helper: the list of supported providers with their labels
  * and a short human-readable hint. Kept next to the wire type so a
  * new provider is a two-file change (this + Rust). */

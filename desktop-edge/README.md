@@ -75,6 +75,16 @@ CLI/tests — not on the core home screen.
   migrated into the keychain on first startup (best-effort;
   leaves the cleartext copy in place only if the keychain is
   unavailable).
+- **Presence stderr capture** — the runtime's stderr (its own
+  `log::info!` output, wgpu validation errors, panic traces) is
+  piped to a rotated text log `presence.log` under the Tauri app
+  config dir. Same 4 MiB / one rollover policy as the audit log,
+  so operators only learn one retention story. When a
+  `presence-stalled` event fires, its `detail.log_path` names
+  this file directly. Tail from the UI via the
+  `presence_log_tail` Tauri command (default 100 lines, clamped
+  1..=1000). Falls back to `log::debug!` when the file cannot be
+  opened — a broken sink never drops a line silently.
 - **Presence liveness monitor** — the shell spawns a background
   watcher that reads a heartbeat stream from the `presence-runtime`
   child (every 2 s over its stdout NDJSON channel) and flags a

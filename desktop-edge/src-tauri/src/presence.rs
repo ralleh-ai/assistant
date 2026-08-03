@@ -186,6 +186,13 @@ impl Drop for ModeHold {
 /// Unset means "presence disabled" — see the module docs.
 pub const BIN_ENV: &str = "RALLEH_PRESENCE_BIN";
 
+/// Optional sink for the runtime's stderr. When present, every
+/// line the child writes is copied to it (rotated file under the
+/// app config dir); when absent, stderr is inherited so a
+/// developer's console still sees the output. The shell wires
+/// this up in `setup()` via `Presence::spawn_from_env_with_log`.
+pub type StderrSink = Arc<dyn Fn(&str) + Send + Sync + 'static>;
+
 /// Handle installed as Tauri managed state. `send` from anywhere; the
 /// writer thread handles serialization and pipe I/O.
 pub struct Presence {
@@ -220,7 +227,21 @@ impl Presence {
     /// on the reader thread — do not block or acquire long-lived locks
     /// inside it. In this build the listener persists window geometry
     /// to `EdgeSettings`, which is a small `fs::write` and safe here.
+    #[allow(dead_code)] // kept as the "no-capture" convenience for future callers / tests
     pub fn spawn_from_env(listener: EventListener) -> Self {
+        Self::spawn_from_env_with_log(listener, None)
+    }
+
+    /// Same as [`spawn_from_env`] but with an optional stderr
+    /// sink. When `Some`, the child's stderr is piped into a
+    /// dedicated reader thread that forwards each line to the
+    /// sink (typically the rotated `presence.log` file). When
+    /// `None`, stderr is inherited so a dev harness still sees
+    /// the runtime's output on the console.
+    pub fn spawn_from_env_with_log(
+        listener: EventListener,
+        stderr_sink: Option<StderrSink>,
+    ) -> Self {
         let Some(bin) = std::env::var_os(BIN_ENV).map(PathBuf::from) else {
             log::info!(
                 "desktop-edge: {BIN_ENV} unset — presence renderer disabled \
@@ -228,7 +249,7 @@ impl Presence {
             );
             return Self::disabled();
         };
-        match Self::spawn(bin, listener) {
+        match Self::spawn(bin, listener, stderr_sink) {
             Ok(p) => p,
             Err(err) => {
                 log::warn!(
@@ -249,13 +270,29 @@ impl Presence {
         }
     }
 
-    fn spawn(bin: PathBuf, listener: EventListener) -> Result<Self, String> {
+    fn spawn(
+        bin: PathBuf,
+        listener: EventListener,
+        stderr_sink: Option<StderrSink>,
+    ) -> Result<Self, String> {
         // `PRESENCE_STDIN_IPC=1` and `PRESENCE_STDOUT_IPC=1` opt the
         // runtime into the forward and reverse transports respectively
         // (see the ipc_stdin / ipc_stdout modules in presence-runtime).
         // Without stdout ipc the child would keep writing logs to the
         // parent terminal, which is fine for a dev harness but useless
         // for the shell that wants to parse `Event` NDJSON.
+        // stderr: piped when the shell has provided a sink (so
+        // panic traces + wgpu validation errors end up in the
+        // rotated presence.log for postmortem correlation with
+        // audit stall events); inherited otherwise (dev harness).
+        // Never merged with stdout — the reverse-channel NDJSON
+        // parser on stdout must not have to skip past
+        // `env_logger` prefixes.
+        let stderr_cfg = if stderr_sink.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        };
         let mut child = ProcessCommand::new(&bin)
             .env("PRESENCE_STDIN_IPC", "1")
             .env("PRESENCE_STDOUT_IPC", "1")
@@ -270,10 +307,7 @@ impl Presence {
             .env("PRESENCE_TRANSPARENT", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // stderr still inherited: `log::info!` from the runtime
-            // (env_logger) writes there by default, and mixing it into
-            // stdout would garble the NDJSON we now parse from stdout.
-            .stderr(Stdio::inherit())
+            .stderr(stderr_cfg)
             .spawn()
             .map_err(|e| format!("spawn {bin:?}: {e}"))?;
 
@@ -302,6 +336,25 @@ impl Presence {
             .name("presence-reader".to_string())
             .spawn(move || reader_loop(stdout, listener, reader_liveness))
             .map_err(|e| format!("reader thread: {e}"))?;
+
+        // If the caller asked us to capture stderr, take the
+        // pipe and spawn a dedicated reader that forwards each
+        // line to the sink. `child.stderr` is `Some` iff we
+        // configured `Stdio::piped()` above; the branches must
+        // stay in sync (both hinge on `stderr_sink.is_some()`).
+        if let Some(sink) = stderr_sink {
+            if let Some(stderr) = child.stderr.take() {
+                thread::Builder::new()
+                    .name("presence-stderr".to_string())
+                    .spawn(move || stderr_reader_loop(stderr, sink))
+                    .map_err(|e| format!("stderr thread: {e}"))?;
+            } else {
+                log::warn!(
+                    "desktop-edge: stderr sink was provided but child stderr is None — \
+                     runtime output will not be captured"
+                );
+            }
+        }
 
         log::info!("desktop-edge: presence renderer spawned from {bin:?}");
         Ok(Self {
@@ -642,6 +695,32 @@ fn reader_loop(
     }
 }
 
+fn stderr_reader_loop(stderr: std::process::ChildStderr, sink: StderrSink) {
+    // Line-buffered read of the runtime's stderr. Each line is
+    // handed to the sink verbatim — the sink decides whether to
+    // add a timestamp, prefix, or route it into structured
+    // logging. Non-UTF-8 bytes are lossily decoded rather than
+    // dropped so a rogue write from a native library (e.g. wgpu
+    // validation on some drivers) is still recorded.
+    let reader = BufReader::new(stderr);
+    for line in reader.lines() {
+        match line {
+            Ok(l) => {
+                if l.trim().is_empty() {
+                    continue;
+                }
+                sink(&l);
+            }
+            Err(err) => {
+                log::warn!(
+                    "desktop-edge: presence stderr read error ({err}); stderr thread exiting"
+                );
+                return;
+            }
+        }
+    }
+}
+
 fn writer_loop(mut stdin: std::process::ChildStdin, rx: Receiver<Envelope>) {
     while let Ok(env) = rx.recv() {
         // One envelope per line. Errors here are terminal — either the
@@ -823,6 +902,36 @@ mod tests {
         p.pulse_error();
         p.pulse_speaking(500);
         // The line-reaching-this-point is the assertion.
+    }
+
+    #[test]
+    fn stderr_reader_loop_forwards_each_non_empty_line_to_the_sink() {
+        // We can't fabricate a real `ChildStderr`, so drive the
+        // parsing rules against a `BufReader<Cursor>` — same
+        // logic modulo the concrete type. If the loop grows a
+        // real behavior (retry, filter, timestamp), the test
+        // must move with it.
+        use std::io::Cursor;
+        fn drive<R: BufRead>(reader: R, sink: StderrSink) {
+            for line in reader.lines() {
+                let Ok(l) = line else { return };
+                if l.trim().is_empty() {
+                    continue;
+                }
+                sink(&l);
+            }
+        }
+        let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_captured = captured.clone();
+        let sink: StderrSink = Arc::new(move |line| {
+            sink_captured.lock().unwrap().push(line.to_string());
+        });
+        drive(
+            Cursor::new("first line\n\nsecond line\n"),
+            sink,
+        );
+        let got = captured.lock().unwrap();
+        assert_eq!(&*got, &["first line".to_string(), "second line".to_string()]);
     }
 
     #[test]

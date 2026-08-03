@@ -10,6 +10,7 @@ mod mic;
 mod os_caps;
 mod presence;
 mod presence_health;
+mod presence_log;
 mod presence_mic;
 mod presence_speaking;
 mod secret_store;
@@ -969,6 +970,19 @@ fn assistant_audit_tail(
     audit_log.tail(n)
 }
 
+/// Tail the presence-runtime stderr capture. Useful for triage
+/// after the audit log shows a `presence-stalled` event —
+/// callers pass the same `limit` shape (default 100, clamped
+/// 1..=1000).
+#[tauri::command]
+fn presence_log_tail(
+    presence_log: State<'_, std::sync::Arc<presence_log::PresenceLog>>,
+    limit: Option<usize>,
+) -> Result<Vec<String>, String> {
+    let n = limit.unwrap_or(100).clamp(1, 1000);
+    presence_log.tail(n)
+}
+
 #[tauri::command]
 fn presence_mic_stop(pump: State<'_, MicPumpState>) -> Result<PresenceMicStatus, String> {
     let mut guard = pump.lock().map_err(|e| e.to_string())?;
@@ -1226,7 +1240,30 @@ pub fn run() {
                 }
             };
             app.manage(audit_log);
-            let presence = Presence::spawn_from_env(presence_event_listener(handle.clone()));
+            // Capture the runtime's stderr into a rotated file so
+            // a stall event has a correlation trail. Open before
+            // spawn so the sink is available for the first line
+            // the runtime writes.
+            let presence_log = std::sync::Arc::new(presence_log::PresenceLog::open(&handle));
+            if let Some(path) = presence_log.active_path() {
+                log::info!("presence-log: capturing runtime stderr to {}", path.display());
+            }
+            let log_sink = presence_log.clone();
+            let stderr_sink: presence::StderrSink = std::sync::Arc::new(move |line: &str| {
+                if let Err(e) = log_sink.write_line(line) {
+                    // Fail-open: never lose a line just because
+                    // the file is unavailable. `debug` (not
+                    // `warn`) because a broken log while stderr
+                    // is high-volume would otherwise flood the
+                    // shell's own log.
+                    log::debug!("presence-log: write failed ({e}); line: {line}");
+                }
+            });
+            app.manage(presence_log);
+            let presence = Presence::spawn_from_env_with_log(
+                presence_event_listener(handle.clone()),
+                Some(stderr_sink),
+            );
             restore_presence_state(&handle, &presence);
             // Liveness monitor. Reads the same `Liveness` handle the
             // stdout reader stamps on each incoming event, and
@@ -1340,6 +1377,7 @@ pub fn run() {
             assistant_test_backend,
             assistant_save_backend,
             assistant_audit_tail,
+            presence_log_tail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
