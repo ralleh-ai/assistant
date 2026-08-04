@@ -10,6 +10,7 @@
 //! repo for the design and rationale, and `docs/PRESENCE_INTEGRATION_PLAN.md`
 //! for how this crate fits into the overall roadmap.
 
+pub mod behavior;
 pub mod palette;
 pub mod render;
 pub mod scene;

@@ -161,6 +161,19 @@ fn signals_from_wire(w: &Signals) -> PresenceSignals {
     }
 }
 
+/// Mode-activation level at or above which the [`Command::SetPresenceState`]
+/// adapter engages the corresponding boolean mode on `ModeLayer`. Below this,
+/// the mode is released. Kept at the midpoint so the mapping is symmetric and a
+/// Brain that ramps a level through the threshold produces the same engagement
+/// point in both directions.
+///
+/// This threshold bridges the continuous mode *levels* onto the mode layer's
+/// boolean engagement. The cognitive fields on `PresenceState` no longer ride
+/// unused — as of M3 they feed the Behavior Graph's cognition layer. A future
+/// milestone that consumes the continuous mode levels directly retires this
+/// threshold.
+const PRESENCE_STATE_ENGAGE_LEVEL: f32 = 0.5;
+
 impl SceneDirector {
     /// Applies a single [`Command`] from the shell. Every command is a
     /// small, idempotent mutation — a stream of duplicates has the same
@@ -211,6 +224,35 @@ impl SceneDirector {
                     audio_level: sanitize(audio_level, 0.0, 1.0),
                     progress: sanitize(progress, 0.0, 1.0),
                 };
+            }
+            Command::SetPresenceState(state) => {
+                // Authoritative snapshot, like SetSignals but richer. Clamp on
+                // receipt so NaN / out-of-range from a misbehaving Brain cannot
+                // reach the simulation (PresenceState::clamped folds NaN to the
+                // low bound). The scalars + boolean modes drive the mode layer;
+                // the cognitive fields feed the Behavior Graph's cognition
+                // layer (M3), which modulates the mode output.
+                let state = state.clamped();
+                self.signals = PresenceSignals {
+                    intensity: state.intensity,
+                    audio_level: state.audio_level,
+                    progress: state.progress,
+                };
+                for (mode, level) in state.mode_levels() {
+                    self.modes
+                        .set(mode.into(), level >= PRESENCE_STATE_ENGAGE_LEVEL);
+                }
+                self.cognition = crate::behavior::CognitiveState {
+                    confidence: state.confidence,
+                    curiosity: state.curiosity,
+                    uncertainty: state.uncertainty,
+                    focus: state.focus,
+                    task_complexity: state.task_complexity,
+                    memory_activity: state.memory_activity,
+                    emotional_tone: state.emotional_tone,
+                };
+                // Cursor awareness → the shell's look-at lean (M7).
+                self.set_cursor(state.cursor_dir, state.cursor_proximity);
             }
             Command::SetMode { mode, engaged } => {
                 self.modes.set(mode.into(), engaged);
@@ -447,6 +489,57 @@ mod tests {
         });
         assert_eq!(director.take_pending_palette(), Some(PaletteId::Ember));
         assert!(director.take_pending_palette().is_none());
+    }
+
+    #[test]
+    fn set_presence_state_maps_scalars_and_thresholds_modes() {
+        use presence_ipc::PresenceState;
+
+        let mut director = SceneDirector::new();
+        director.set_mode(PresenceMode::Speaking, true);
+
+        // Thinking is above threshold, Speaking below -> Thinking engages,
+        // Speaking releases (authoritative snapshot semantics).
+        director.apply_command(Command::SetPresenceState(PresenceState {
+            thinking: 0.9,
+            speaking: 0.2,
+            intensity: 0.6,
+            audio_level: 0.4,
+            progress: 0.1,
+            confidence: 0.8,
+            curiosity: 0.3,
+            uncertainty: 0.2,
+            ..PresenceState::default()
+        }));
+
+        assert!(director.modes.is_engaged(PresenceMode::Thinking));
+        assert!(!director.modes.is_engaged(PresenceMode::Speaking));
+        assert!((director.signals.intensity - 0.6).abs() < 1e-6);
+        assert!((director.signals.audio_level - 0.4).abs() < 1e-6);
+        // Cognitive fields now land on the director's cognition snapshot for
+        // the Behavior Graph to modulate with (M3), rather than being dropped.
+        assert!((director.cognition.confidence - 0.8).abs() < 1e-6);
+        assert!((director.cognition.curiosity - 0.3).abs() < 1e-6);
+        assert!((director.cognition.uncertainty - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_presence_state_clamps_nan_and_out_of_range() {
+        use presence_ipc::PresenceState;
+
+        let mut director = SceneDirector::new();
+        director.apply_command(Command::SetPresenceState(PresenceState {
+            intensity: 99.0,
+            audio_level: f32::NAN,
+            progress: -5.0,
+            thinking: f32::NAN, // NaN < threshold -> released, never panics
+            ..PresenceState::default()
+        }));
+        assert!(director.signals.intensity <= 1.5);
+        assert!(!director.signals.audio_level.is_nan());
+        assert_eq!(director.signals.audio_level, 0.0);
+        assert!(director.signals.progress >= 0.0);
+        assert!(!director.modes.is_engaged(PresenceMode::Thinking));
     }
 
     #[test]

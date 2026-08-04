@@ -11,6 +11,7 @@ mod diagnostics;
 mod mic;
 mod os_caps;
 mod presence;
+mod presence_brain;
 mod presence_health;
 mod presence_log;
 mod presence_mic;
@@ -153,8 +154,8 @@ fn run_voice_smoke(
             // When real streaming TTS lands, both consumers move to
             // tapping a shared ringbuffer instead of holding copies.
             if let Ok(audio) = MockTts::new().synthesize(&r.transcript) {
-                if let Some(tx) = presence.sender_clone() {
-                    presence_speaking::spawn(audio.samples.clone(), audio.sample_rate_hz, tx);
+                if let Some(brain) = presence.brain_handle() {
+                    presence_speaking::spawn(audio.samples.clone(), audio.sample_rate_hz, brain);
                 }
                 #[cfg(feature = "playback")]
                 if let Some(state) = playback {
@@ -493,13 +494,13 @@ fn presence_mic_start(
             mic_feature: mic_feature_enabled(),
         });
     }
-    let Some(sender) = presence.sender_clone() else {
+    let Some(brain) = presence.brain_handle() else {
         return Err(
             "presence renderer is not running (set RALLEH_PRESENCE_BIN before starting the shell)"
                 .into(),
         );
     };
-    let started = MicPump::start(sender)?;
+    let started = MicPump::start(brain)?;
     *guard = Some(started);
     Ok(PresenceMicStatus {
         running: true,
@@ -545,7 +546,12 @@ async fn assistant_think(
     let _hold = presence.hold_mode(PresenceMode::Thinking);
 
     match router.route(&request).await {
-        CompletionOutcome::Succeeded(CompletionResponse { text, .. }) => Ok(text),
+        CompletionOutcome::Succeeded(CompletionResponse { text, .. }) => {
+            // A completed request is a positive outcome — the Brain raises
+            // confidence. The `_hold` guard releases `thinking` at scope end.
+            presence.note_request_success();
+            Ok(text)
+        }
         CompletionOutcome::Denied => {
             presence.pulse_error();
             Err("policy denied the completion request".into())
@@ -619,6 +625,10 @@ async fn assistant_think_stream(
     }
     if errored {
         presence.pulse_error();
+    } else {
+        // A clean stream is a positive outcome — raise confidence, same as the
+        // non-streaming path.
+        presence.note_request_success();
     }
     Ok(())
 }
@@ -645,7 +655,10 @@ fn assistant_tool_ping(
         serde_json::json!({ "source": "assistant_tool_ping" }),
     );
     match event.outcome {
-        ToolCallOutcome::Succeeded { result_summary } => Ok(result_summary),
+        ToolCallOutcome::Succeeded { result_summary } => {
+            presence.note_request_success();
+            Ok(result_summary)
+        }
         ToolCallOutcome::Denied
         | ToolCallOutcome::ApprovalRequired
         | ToolCallOutcome::ApprovalRejected
@@ -1330,16 +1343,11 @@ fn spawn_scan_sweep(
         Some(v) => v.max(MIN_INTERVAL_MS),
     };
 
-    // The sweep only needs a `Sender<Envelope>` to fire pulses, but
-    // `Presence::pulse_attention` already knows how to spawn its own
-    // detached release thread — so we clone the whole `Presence` by
-    // pulling out its sender through a public shim. Rather than
-    // widen the API for one caller, use the existing `pulse_attention`
-    // method by cloning the `Presence` reference via a lightweight
-    // handle: `Presence` itself is not Clone, so instead we grab a
-    // `Sender<Envelope>` and reconstruct the two-envelope sequence
-    // here. This keeps `Presence` opaque to the scan sweep.
-    let Some(tx) = presence.sender_clone() else {
+    // The sweep drives the Presence Brain directly (ADR-014): a clone of the
+    // handle is `Send`, so the sweep thread engages / releases `Attention`
+    // through it and the Brain emits the authoritative snapshot. This keeps the
+    // sweep off the raw wire so it can't fight the Brain's snapshot.
+    let Some(brain) = presence.brain_handle() else {
         // Presence disabled — nothing to sweep against.
         log::debug!("scan sweep skipped: presence disabled");
         return;
@@ -1354,7 +1362,6 @@ fn spawn_scan_sweep(
     std::thread::Builder::new()
         .name("presence-scan-sweep".into())
         .spawn(move || {
-            use presence_ipc::{Command, Envelope};
             let interval = std::time::Duration::from_millis(interval_ms);
             let pulse_hold = std::time::Duration::from_millis(PULSE_MS);
             loop {
@@ -1364,22 +1371,9 @@ fn spawn_scan_sweep(
                     // rather than layering attention on top of it.
                     continue;
                 }
-                let engage = Envelope::wrap(Command::SetMode {
-                    mode: presence_ipc::PresenceMode::Attention,
-                    engaged: true,
-                });
-                if tx.send(engage).is_err() {
-                    log::info!("scan sweep exiting: presence pipe closed");
-                    return;
-                }
+                brain.set_engaged(presence_ipc::PresenceMode::Attention, true);
                 std::thread::sleep(pulse_hold);
-                let release = Envelope::wrap(Command::SetMode {
-                    mode: presence_ipc::PresenceMode::Attention,
-                    engaged: false,
-                });
-                if tx.send(release).is_err() {
-                    return;
-                }
+                brain.set_engaged(presence_ipc::PresenceMode::Attention, false);
             }
         })
         .expect("spawn presence-scan-sweep thread");

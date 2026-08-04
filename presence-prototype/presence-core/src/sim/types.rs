@@ -13,33 +13,115 @@ use glam::Vec3;
 /// density, motion, and material gradient the spec describes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layer {
+    // --- Density gradient of a *surface* entity (§3.3). These three form a
+    // continuous 0..2 ramp the point shader reads for its core→halo material.
     /// Denser, slower, more coherent. Carries the visual centre of mass.
     Core,
     /// The main volume.
     Body,
     /// Sparse outer points that expand and contract more freely.
     Halo,
+
+    // --- Effect / free-space material classes (ADR-014 M6). These are *not*
+    // part of the density ramp: each is its own material a template can mix in
+    // (a nebula with sparks, a shell with an aura). Encoded past the ramp
+    // (`as_f32` ≥ 3) so the shader can branch on them without disturbing the
+    // core→halo interpolation. Surface generators never emit these.
+    /// A large, faint outer glow — atmosphere around an entity.
+    Aura,
+    /// Bright, tight points — the "charged" look for high activity.
+    Energy,
+    /// Tiny, very bright motes — transient emphasis.
+    Sparks,
+    /// Soft medium points meant to read as motion streaks.
+    Trails,
+}
+
+/// How a point of a given [`Layer`] is sized and lit relative to the base,
+/// independent of the density ramp. Lets a template mix effect layers without
+/// the shader needing a per-entity uniform for each.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerMaterial {
+    /// Point size multiplier.
+    pub size: f32,
+    /// Brightness multiplier.
+    pub brightness: f32,
 }
 
 impl Layer {
     /// Encoded for the instance buffer. Kept as a float rather than a `u32`
-    /// so the shader can also use it to interpolate material properties.
+    /// so the shader can also use it to interpolate material properties. The
+    /// density layers occupy `0..2` (a ramp); the effect layers take discrete
+    /// values from `3` up.
     pub fn as_f32(self) -> f32 {
         match self {
             Layer::Core => 0.0,
             Layer::Body => 1.0,
             Layer::Halo => 2.0,
+            Layer::Aura => 3.0,
+            Layer::Energy => 4.0,
+            Layer::Sparks => 5.0,
+            Layer::Trails => 6.0,
         }
     }
 
     /// Multiplier on how strongly a layer follows its spring anchor. The
-    /// core is stiff and coherent; the halo is loose and free.
+    /// core is stiff and coherent; the halo is loose and free. The effect
+    /// layers are free-space (field-driven, not spring-anchored), so their
+    /// values are only a sensible fallback for any surface use.
     pub fn spring_scale(self) -> f32 {
         match self {
             Layer::Core => 1.35,
             Layer::Body => 1.0,
             Layer::Halo => 0.55,
+            Layer::Aura => 0.4,
+            Layer::Energy => 0.85,
+            Layer::Sparks => 0.3,
+            Layer::Trails => 0.5,
         }
+    }
+
+    /// Size / brightness multipliers for this layer's material — the
+    /// "independent params" the effect layers carry. A generator applies these
+    /// at birth so the point already reads as its class before the shader's own
+    /// per-class falloff.
+    pub fn material(self) -> LayerMaterial {
+        match self {
+            Layer::Core => LayerMaterial {
+                size: 0.6,
+                brightness: 1.0,
+            },
+            Layer::Body => LayerMaterial {
+                size: 0.8,
+                brightness: 0.85,
+            },
+            Layer::Halo => LayerMaterial {
+                size: 1.0,
+                brightness: 0.6,
+            },
+            Layer::Aura => LayerMaterial {
+                size: 1.6,
+                brightness: 0.35,
+            },
+            Layer::Energy => LayerMaterial {
+                size: 0.7,
+                brightness: 1.4,
+            },
+            Layer::Sparks => LayerMaterial {
+                size: 0.35,
+                brightness: 1.8,
+            },
+            Layer::Trails => LayerMaterial {
+                size: 0.9,
+                brightness: 0.7,
+            },
+        }
+    }
+
+    /// True for the density-gradient layers that surface entities seed and the
+    /// point shader ramps between; false for the effect classes.
+    pub fn is_surface(self) -> bool {
+        matches!(self, Layer::Core | Layer::Body | Layer::Halo)
     }
 }
 
@@ -212,6 +294,14 @@ pub struct EntityParams {
     /// 0.0 (just spawned / fully dissolved) to 1.0 (fully present). Used by
     /// the transition system to fade entities in/out without popping.
     pub presence: f32,
+    /// Cognitive focus, `0.0` diffuse .. `1.0` concentrated. Mirrors the
+    /// Behavior Graph's `CognitiveState::focus`; the director copies it onto
+    /// free-space entities each frame so their force fields (the SDF morph
+    /// attractor, M5) can read it. Surface entities ignore it.
+    pub focus: f32,
+    /// Cognitive confidence, `0.0` unsure .. `0.5` neutral .. `1.0` certain.
+    /// Same provenance as `focus`; a more confident presence morphs tighter.
+    pub confidence: f32,
 }
 
 /// Deterministic `[0, 1)` hash of a spatial input, used to derive stable
@@ -238,6 +328,11 @@ impl EntityParams {
             drive: ShellDrive::IDLE,
             core_density_bias: 0.5,
             presence: 1.0,
+            // Neutral cognition — matches `behavior::CognitiveState::default`,
+            // so an entity that never receives cognition morphs at its resting
+            // coherence rather than snapping to or dissolving from a shape.
+            focus: 0.0,
+            confidence: 0.5,
         }
     }
 }
@@ -260,5 +355,58 @@ mod tests {
         let a = hash01(Vec3::new(0.1, 0.2, 0.3));
         let b = hash01(Vec3::new(9.4, -3.2, 1.1));
         assert_ne!(a, b);
+    }
+
+    /// Every layer must encode to a distinct float — the shader branches on
+    /// these, so a collision would render two classes identically.
+    #[test]
+    fn layer_encodings_are_distinct_and_ordered() {
+        let layers = [
+            Layer::Core,
+            Layer::Body,
+            Layer::Halo,
+            Layer::Aura,
+            Layer::Energy,
+            Layer::Sparks,
+            Layer::Trails,
+        ];
+        let codes: Vec<f32> = layers.iter().map(|l| l.as_f32()).collect();
+        for (i, a) in codes.iter().enumerate() {
+            for b in &codes[i + 1..] {
+                assert_ne!(a, b, "two layers share an encoding");
+            }
+        }
+        // Density layers occupy the 0..2 ramp; effect layers sit past it.
+        assert!(Layer::Halo.as_f32() < Layer::Aura.as_f32());
+    }
+
+    #[test]
+    fn only_the_density_layers_are_surface_layers() {
+        assert!(Layer::Core.is_surface());
+        assert!(Layer::Body.is_surface());
+        assert!(Layer::Halo.is_surface());
+        for effect in [Layer::Aura, Layer::Energy, Layer::Sparks, Layer::Trails] {
+            assert!(
+                !effect.is_surface(),
+                "{effect:?} should not be a surface layer"
+            );
+        }
+    }
+
+    /// The effect classes carry their intended character: sparks are the
+    /// smallest and brightest, aura the largest and faintest.
+    #[test]
+    fn effect_layer_materials_have_their_intended_character() {
+        let halo = Layer::Halo.material();
+        let sparks = Layer::Sparks.material();
+        let aura = Layer::Aura.material();
+
+        assert!(sparks.size < halo.size, "sparks should be tiny");
+        assert!(
+            sparks.brightness > halo.brightness,
+            "sparks should be bright"
+        );
+        assert!(aura.size > halo.size, "aura should be large");
+        assert!(aura.brightness < halo.brightness, "aura should be faint");
     }
 }

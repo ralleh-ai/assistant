@@ -174,7 +174,10 @@ fn layer_counts(entity: &EntityInstance) -> (usize, usize, usize) {
         match p.layer {
             Layer::Core => counts.0 += 1,
             Layer::Body => counts.1 += 1,
-            Layer::Halo => counts.2 += 1,
+            // Effect layers (aura/energy/sparks/trails) are free-space
+            // materials, not part of the surface density split this panel
+            // tracks; fold them into the outer count.
+            _ => counts.2 += 1,
         }
     }
     counts

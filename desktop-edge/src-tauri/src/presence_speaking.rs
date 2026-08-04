@@ -31,11 +31,10 @@
 //! low-level `idle-ish` scalars that the speaking pump immediately
 //! stomps for the duration of the utterance.
 
-use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use presence_ipc::{Command, Envelope};
+use crate::presence_brain::PresenceBrainHandle;
 
 /// Target scalar-update rate. Matches `MicPump` so the presence
 /// runtime sees one consistent cadence across all scalar sources.
@@ -80,17 +79,17 @@ const IDLE_INTENSITY: f32 = 0.15;
 /// pathological-length utterance: after 30 s, the pump exits
 /// regardless. Real speech longer than that has bigger problems
 /// than scalar cadence.
-pub fn spawn(samples: Vec<f32>, sample_rate_hz: u32, tx: Sender<Envelope>) {
+pub fn spawn(samples: Vec<f32>, sample_rate_hz: u32, brain: PresenceBrainHandle) {
     if samples.is_empty() || sample_rate_hz == 0 {
         return;
     }
     thread::Builder::new()
         .name("presence-speaking-pump".into())
-        .spawn(move || pump(samples, sample_rate_hz, tx))
+        .spawn(move || pump(samples, sample_rate_hz, brain))
         .expect("spawn presence-speaking-pump thread");
 }
 
-fn pump(samples: Vec<f32>, sample_rate_hz: u32, tx: Sender<Envelope>) {
+fn pump(samples: Vec<f32>, sample_rate_hz: u32, brain: PresenceBrainHandle) {
     let chunk_samples = ((sample_rate_hz / TARGET_HZ) as usize).max(1);
     let chunk_dur = Duration::from_millis((1_000 / TARGET_HZ) as u64);
     // Wall-clock cap. See fn docs.
@@ -103,25 +102,19 @@ fn pump(samples: Vec<f32>, sample_rate_hz: u32, tx: Sender<Envelope>) {
         }
         let level = rms_scaled(chunk);
         ema += (level - ema) * EMA_ALPHA;
-        let env = Envelope::wrap(Command::SetSignalsScalars {
-            intensity: SPEAKING_INTENSITY,
-            audio_level: ema.clamp(0.0, 1.0),
-            progress: 0.0,
-        });
-        if tx.send(env).is_err() {
-            return;
-        }
+        // Drive the audio envelope through the Brain, which folds it into the
+        // authoritative `SetPresenceState` snapshot. The speaking *mode* is
+        // engaged separately by `Presence::pulse_speaking` on the same
+        // wall-clock, so this pump only owns the level (§ADR-012 D2:
+        // brightness/level is instant, geometry is sprung).
+        brain.set_audio_envelope(SPEAKING_INTENSITY, ema.clamp(0.0, 1.0));
         thread::sleep(chunk_dur);
     }
 
     // Final zero — otherwise the last EMA sample lingers as a
     // constant `audio_level` after the mode releases, which reads
     // as the assistant still speaking silently.
-    let _ = tx.send(Envelope::wrap(Command::SetSignalsScalars {
-        intensity: IDLE_INTENSITY,
-        audio_level: 0.0,
-        progress: 0.0,
-    }));
+    brain.set_audio_envelope(IDLE_INTENSITY, 0.0);
 }
 
 fn rms_scaled(chunk: &[f32]) -> f32 {
@@ -163,20 +156,22 @@ mod tests {
     #[test]
     fn spawn_is_a_noop_on_empty_samples() {
         // No panic, no thread — the caller should not need to
-        // guard around this. `sender_disconnected` isn't observed
-        // because no thread ever starts.
+        // guard around this. Nothing is emitted because no thread
+        // ever starts.
         let (tx, _rx) = std::sync::mpsc::channel();
-        spawn(vec![], 16_000, tx);
+        spawn(vec![], 16_000, PresenceBrainHandle::new(tx));
     }
 
     #[test]
     fn spawn_is_a_noop_on_zero_sample_rate() {
         let (tx, _rx) = std::sync::mpsc::channel();
-        spawn(vec![0.1, 0.2, 0.3], 0, tx);
+        spawn(vec![0.1, 0.2, 0.3], 0, PresenceBrainHandle::new(tx));
     }
 
     #[test]
-    fn pump_emits_scalars_and_a_final_zero() {
+    fn pump_emits_snapshots_and_a_final_zero() {
+        use presence_ipc::Command;
+
         // Short synthetic buffer: 3 chunks worth at 30 Hz / 16 kHz.
         // That's 3 * (16_000 / 30) ≈ 1600 samples. Use 2000 to
         // guarantee at least 3 sends plus the terminal zero.
@@ -185,30 +180,26 @@ mod tests {
             .collect();
         let (tx, rx) = std::sync::mpsc::channel();
         // Run the pump inline rather than spawning so the test does
-        // not depend on thread scheduling — `pump` is pub(crate)
-        // via the module boundary and takes ownership of `samples`
-        // the same way `spawn` does.
-        pump(samples, 16_000, tx);
+        // not depend on thread scheduling — `pump` takes ownership of
+        // `samples` the same way `spawn` does.
+        pump(samples, 16_000, PresenceBrainHandle::new(tx));
 
-        let envs: Vec<Envelope> = rx.into_iter().collect();
+        let states: Vec<presence_ipc::PresenceState> = rx
+            .into_iter()
+            .filter_map(|env| match env.payload {
+                Command::SetPresenceState(s) => Some(s),
+                _ => None,
+            })
+            .collect();
         assert!(
-            envs.len() >= 4,
-            "expected at least 3 scalar sends + 1 terminal zero, got {}",
-            envs.len()
+            states.len() >= 4,
+            "expected at least 3 envelope updates + 1 terminal zero, got {}",
+            states.len()
         );
-        // Final envelope must zero audio_level so the visual does
-        // not linger on the last EMA sample.
-        let last = envs.last().unwrap();
-        match &last.payload {
-            Command::SetSignalsScalars {
-                audio_level,
-                intensity,
-                ..
-            } => {
-                assert_eq!(*audio_level, 0.0, "final audio_level must be 0");
-                assert_eq!(*intensity, IDLE_INTENSITY);
-            }
-            other => panic!("expected SetSignalsScalars, got {other:?}"),
-        }
+        // Final snapshot must zero audio_level so the visual does
+        // not linger on the last EMA sample, and settle intensity to idle.
+        let last = states.last().unwrap();
+        assert_eq!(last.audio_level, 0.0, "final audio_level must be 0");
+        assert_eq!(last.intensity, IDLE_INTENSITY);
     }
 }

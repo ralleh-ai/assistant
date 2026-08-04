@@ -36,6 +36,11 @@ ralleh-tool-gateway = { path = "../../crates/ralleh-tool-gateway" }
 # runtime consumes; keeping the two in lockstep is why it lives in the
 # root workspace's `crates/`.
 presence-ipc = { path = "../../crates/presence-ipc" }
+# Shell-side cognition layer (ADR-014). Pure state machine that maps AI /
+# audio / cursor lifecycle into a bounded presence_ipc::PresenceState; the
+# glue that gives it a writer channel + timed pulses lives in
+# src/presence_brain.rs. Headless, so it also builds/tests in root CI.
+presence-brain = { path = "../../crates/presence-brain" }
 log = "0.4"
 # OS-native secret storage: Windows Credential Manager, macOS
 # Keychain, Linux Secret Service (GNOME Keyring / KWallet). We keep

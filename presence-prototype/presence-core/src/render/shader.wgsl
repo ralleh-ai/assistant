@@ -48,7 +48,8 @@ struct InstanceInput {
     @location(2) size: f32,
     @location(3) brightness: f32,
     @location(4) color_bias: f32,
-    /// 0 = core, 1 = body, 2 = halo (docs/PRESENCE_VISUAL_ENTITY.md §3.3).
+    /// Density ramp 0 = core, 1 = body, 2 = halo (§3.3); effect material
+    /// classes past it: 3 = aura, 4 = energy, 5 = sparks, 6 = trails (ADR-014).
     @location(5) layer: f32,
     /// 0..1 fold-crease intensity from the surface shape.
     @location(6) crease: f32,
@@ -143,11 +144,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // thousands of them overlap additively.
     let base = 1.0 - smoothstep(0.0, 1.0, d);
 
-    // §3.3's layers differ in material, not just density: the core is a tight
-    // concentrated point, the halo a soft diffuse one.
+    // §3.3's density layers differ in material, not just count: the core is a
+    // tight concentrated point, the halo a soft diffuse one. The effect classes
+    // (layer >= 3, ADR-014 M6) are their own materials and branch off the ramp
+    // so this interpolation is untouched for surface entities.
     let core_to_body = clamp(in.layer, 0.0, 1.0);
     let body_to_halo = clamp(in.layer - 1.0, 0.0, 1.0);
-    let sharpness = mix(mix(1.5, 1.0, core_to_body), 0.55, body_to_halo);
+    var sharpness = mix(mix(1.5, 1.0, core_to_body), 0.55, body_to_halo);
+    if (in.layer > 2.5) {
+        // Nearest effect class. Sharpness alone distinguishes them here; size
+        // and brightness are already applied per-point via Layer::material.
+        // aura: very soft glow; energy: tight; sparks: pinpoint; trails: soft.
+        if (in.layer < 3.5) {
+            sharpness = 0.35;      // aura
+        } else if (in.layer < 4.5) {
+            sharpness = 1.2;       // energy
+        } else if (in.layer < 5.5) {
+            sharpness = 2.5;       // sparks
+        } else {
+            sharpness = 0.7;       // trails
+        }
+    }
 
     let falloff = pow(base, sharpness);
     if (falloff <= 0.001) {

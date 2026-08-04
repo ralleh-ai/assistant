@@ -1,0 +1,15 @@
+[package]
+name = "presence-brain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shell-side cognition layer (ADR-014): maps abstract AI/audio/cursor lifecycle events into a bounded presence_ipc::PresenceState. Pure logic — no GPU, no windowing, no threads — so it builds and is tested headless in CI. Consumed by desktop-edge; see docs/PRESENCE_ENGINE_ROADMAP.md."
+publish = false
+
+[lib]
+name = "presence_brain"
+path = "src/lib.rs"
+
+[dependencies]
+presence-ipc = { path = "../presence-ipc" }

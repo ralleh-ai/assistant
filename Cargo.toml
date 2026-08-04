@@ -9,6 +9,7 @@ members = [
     "crates/ralleh-ai-router",
     "crates/ralleh-audit-store",
     "crates/presence-ipc",
+    "crates/presence-brain",
 ]
 # Tauri edge app is its own Cargo project (needs WebView; not headless CI).
 # presence-prototype needs a GPU/window surface (winit + wgpu); same rule.

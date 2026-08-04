@@ -41,7 +41,10 @@ use serde::{Deserialize, Serialize};
 /// semantic meaning changes; additive optional fields do not require a
 /// bump. Peers that receive a version they don't recognise should treat
 /// the message as unrecoverable and log rather than guess.
-pub const VERSION: u32 = 2;
+///
+/// - v2: added `PresentScene`/`DismissScene`.
+/// - v3: added [`Command::SetPresenceState`] and [`PresenceState`] (ADR-014).
+pub const VERSION: u32 = 3;
 
 /// Oldest wire version this build can still parse. Peers within
 /// `[MIN_SUPPORTED_VERSION, VERSION]` are accepted by [`Envelope::is_compatible`];
@@ -172,6 +175,129 @@ pub struct Signals {
     pub active_modes: Vec<PresenceMode>,
 }
 
+/// The assistant's cognitive state as a bounded, immutable snapshot — the
+/// richer successor to [`Signals`] introduced by ADR-014. The shell-side
+/// Presence Brain maps real AI/audio/cursor lifecycle into this; the presence
+/// engine's Behavior Graph consumes it.
+///
+/// # Privacy invariant (T9/T14)
+///
+/// Every field is a derived scalar or direction, never raw audio, transcript,
+/// or prompt/completion content. This is enforced *by the type*: there is no
+/// field capable of holding that data, so the constraint cannot be violated by
+/// a careless sender. Keep it that way — see
+/// `../../docs/adr/adr-014-presence-engine-architecture.md`.
+///
+/// # Ranges
+///
+/// All scalars are `[0.0, 1.0]` except `intensity` (`[0.0, 1.5]`, matching the
+/// debug slider) and `cursor_dir` (each component `[-1.0, 1.0]`). Senders
+/// should stay in range; receivers must not panic on out-of-range or NaN input
+/// — call [`PresenceState::clamped`] on receipt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PresenceState {
+    // --- Visual-mode activation levels (continuous, richer than the boolean
+    // `active_modes` set on `Signals`). A receiver that only understands the
+    // engaged/released model thresholds these; a Behavior Graph reads the level.
+    #[serde(default)]
+    pub thinking: f32,
+    #[serde(default)]
+    pub speaking: f32,
+    #[serde(default)]
+    pub tool_use: f32,
+    #[serde(default)]
+    pub listening: f32,
+    #[serde(default)]
+    pub attention: f32,
+    #[serde(default)]
+    pub error: f32,
+
+    // --- Cognitive scalars. These have no analogue in `Signals`; they exist
+    // so emotion/thought can drive *physics* rather than colour (ADR-014).
+    #[serde(default)]
+    pub confidence: f32,
+    #[serde(default)]
+    pub curiosity: f32,
+    #[serde(default)]
+    pub uncertainty: f32,
+    #[serde(default)]
+    pub focus: f32,
+    #[serde(default)]
+    pub task_complexity: f32,
+    #[serde(default)]
+    pub memory_activity: f32,
+    /// Overall affective energy, `0.0` calm .. `1.0` excited.
+    #[serde(default)]
+    pub emotional_tone: f32,
+
+    // --- Continuous signals (same meaning as `Signals`' scalars).
+    #[serde(default)]
+    pub intensity: f32,
+    #[serde(default)]
+    pub audio_level: f32,
+    #[serde(default)]
+    pub progress: f32,
+
+    // --- Cursor awareness. `cursor_dir` is a screen-space bias from the
+    // droplet toward the cursor (x right, y down), each component `[-1, 1]`;
+    // `cursor_proximity` is `1.0` when the cursor is on top of the droplet and
+    // falls to `0.0` far away.
+    #[serde(default)]
+    pub cursor_dir: [f32; 2],
+    #[serde(default)]
+    pub cursor_proximity: f32,
+}
+
+impl PresenceState {
+    /// Returns a copy with every field folded to a safe range: NaN becomes the
+    /// lower bound, and each scalar is clamped to its documented interval. The
+    /// receiver calls this on the hot path so a misbehaving sender can only
+    /// fail to command the presence, never corrupt it.
+    pub fn clamped(self) -> Self {
+        let unit = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+        let signed = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(-1.0, 1.0) };
+        let intensity = if self.intensity.is_nan() {
+            0.0
+        } else {
+            self.intensity.clamp(0.0, 1.5)
+        };
+        Self {
+            thinking: unit(self.thinking),
+            speaking: unit(self.speaking),
+            tool_use: unit(self.tool_use),
+            listening: unit(self.listening),
+            attention: unit(self.attention),
+            error: unit(self.error),
+            confidence: unit(self.confidence),
+            curiosity: unit(self.curiosity),
+            uncertainty: unit(self.uncertainty),
+            focus: unit(self.focus),
+            task_complexity: unit(self.task_complexity),
+            memory_activity: unit(self.memory_activity),
+            emotional_tone: unit(self.emotional_tone),
+            intensity,
+            audio_level: unit(self.audio_level),
+            progress: unit(self.progress),
+            cursor_dir: [signed(self.cursor_dir[0]), signed(self.cursor_dir[1])],
+            cursor_proximity: unit(self.cursor_proximity),
+        }
+    }
+
+    /// The six visual-mode activation levels paired with their [`PresenceMode`],
+    /// in a stable order. A receiver mapping onto the boolean engagement model
+    /// engages a mode when its level clears a threshold.
+    pub fn mode_levels(&self) -> [(PresenceMode, f32); 6] {
+        [
+            (PresenceMode::Thinking, self.thinking),
+            (PresenceMode::Speaking, self.speaking),
+            (PresenceMode::ToolUse, self.tool_use),
+            (PresenceMode::Listening, self.listening),
+            (PresenceMode::Attention, self.attention),
+            (PresenceMode::Error, self.error),
+        ]
+    }
+}
+
 /// Hard cap on scene id length on the wire (bounded deserialization).
 pub const MAX_SCENE_ID_LEN: usize = 64;
 
@@ -265,6 +391,13 @@ pub enum Command {
         audio_level: f32,
         progress: f32,
     },
+    /// Replaces the presence's cognitive state wholesale with a bounded
+    /// [`PresenceState`] (ADR-014). This is the richer successor to
+    /// [`Command::SetSignals`]: it is authoritative on every field, and it
+    /// carries the cognitive scalars (confidence, curiosity, uncertainty, …)
+    /// that `Signals` cannot. A build old enough not to understand it rejects
+    /// the envelope on version (`VERSION` >= 3), so it never partially applies.
+    SetPresenceState(PresenceState),
     /// Engages or disengages a single mode. The presence handles fades on
     /// its own timeline (`docs/adr/adr-012-additive-mode-composition.md`);
     /// this message just flips the "wanted" state.
@@ -538,6 +671,18 @@ mod tests {
             payload: Command::SetReducedMotion { enabled: true },
         };
         assert!(!future.is_compatible());
+        // Back-compat: an older peer (v2, pre-PresenceState) is still within
+        // the supported range, so a mixed-version rollout keeps working.
+        let older = Envelope {
+            version: 2,
+            payload: Command::SetReducedMotion { enabled: true },
+        };
+        assert!(older.is_compatible());
+        assert!(!older.is_current());
+        // v2 (the pre-PresenceState wire) sits strictly inside the supported
+        // range, pinned at compile time so a future MIN/VERSION bump that would
+        // drop it has to update this test deliberately.
+        const _: () = assert!(MIN_SUPPORTED_VERSION <= 2 && 2 < VERSION);
     }
 
     #[test]
@@ -652,6 +797,92 @@ mod tests {
         // false-positive stalls on healthy runtimes.
         const _: () = assert!(STALL_THRESHOLD_MS >= 2 * HEARTBEAT_INTERVAL_MS);
         const _: () = assert!(HEARTBEAT_INTERVAL_MS > 0);
+    }
+
+    #[test]
+    fn presence_state_round_trips_through_the_envelope() {
+        let state = PresenceState {
+            thinking: 0.8,
+            speaking: 0.2,
+            confidence: 0.9,
+            curiosity: 0.4,
+            uncertainty: 0.1,
+            focus: 0.7,
+            emotional_tone: 0.6,
+            intensity: 0.5,
+            audio_level: 0.3,
+            progress: 0.25,
+            cursor_dir: [0.5, -0.5],
+            cursor_proximity: 0.8,
+            ..PresenceState::default()
+        };
+        let env = Envelope::wrap(Command::SetPresenceState(state));
+        assert!(env.is_current());
+        let encoded = serde_json::to_string(&env).expect("serialize");
+        assert!(
+            encoded.contains(r#""kind":"set_presence_state""#),
+            "tag: {encoded}"
+        );
+        let decoded: Envelope = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn presence_state_field_omissions_deserialize_to_default() {
+        // Every field is `#[serde(default)]`, so a partial object is valid and
+        // fills the rest with zeros — the additive-compat story for v3.
+        let empty: PresenceState = serde_json::from_str("{}").expect("empty object");
+        assert_eq!(empty, PresenceState::default());
+
+        let partial: PresenceState =
+            serde_json::from_str(r#"{"thinking":0.5,"confidence":0.9}"#).expect("partial");
+        assert_eq!(partial.thinking, 0.5);
+        assert_eq!(partial.confidence, 0.9);
+        assert_eq!(partial.speaking, 0.0);
+    }
+
+    #[test]
+    fn presence_state_clamped_folds_out_of_range_and_nan() {
+        let wild = PresenceState {
+            thinking: 5.0,
+            confidence: -3.0,
+            intensity: 9.0,
+            audio_level: f32::NAN,
+            cursor_dir: [4.0, -4.0],
+            emotional_tone: f32::NAN,
+            ..PresenceState::default()
+        }
+        .clamped();
+        assert_eq!(wild.thinking, 1.0);
+        assert_eq!(wild.confidence, 0.0);
+        assert_eq!(wild.intensity, 1.5);
+        assert_eq!(wild.audio_level, 0.0);
+        assert_eq!(wild.cursor_dir, [1.0, -1.0]);
+        assert_eq!(wild.emotional_tone, 0.0);
+    }
+
+    #[test]
+    fn presence_state_mode_levels_are_in_a_stable_order() {
+        let state = PresenceState {
+            thinking: 0.1,
+            speaking: 0.2,
+            tool_use: 0.3,
+            listening: 0.4,
+            attention: 0.5,
+            error: 0.6,
+            ..PresenceState::default()
+        };
+        assert_eq!(
+            state.mode_levels(),
+            [
+                (PresenceMode::Thinking, 0.1),
+                (PresenceMode::Speaking, 0.2),
+                (PresenceMode::ToolUse, 0.3),
+                (PresenceMode::Listening, 0.4),
+                (PresenceMode::Attention, 0.5),
+                (PresenceMode::Error, 0.6),
+            ]
+        );
     }
 
     #[test]

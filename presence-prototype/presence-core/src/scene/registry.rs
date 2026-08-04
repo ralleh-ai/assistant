@@ -10,7 +10,9 @@ use crate::scene::quality::QualityTier;
 use crate::scene::realize;
 use crate::scene::spec::SceneSpec;
 use crate::scene::surface_seed::SurfaceSeed;
-use crate::scene::templates::builtins::{build_idle, build_loading, IDLE_ID, LOADING_ID};
+use crate::scene::templates::builtins::{
+    build_field_cloud, build_idle, build_loading, FIELD_CLOUD_ID, IDLE_ID, LOADING_ID,
+};
 
 pub type SceneId = &'static str;
 
@@ -113,10 +115,30 @@ impl SceneRegistry {
             base_scale: 1.5,
             source: SceneSource::Builtin(build_loading),
         });
+        // The first free-space (force-field) entity. Registered but not
+        // `default_active`: it is presented on demand, so the resting app is
+        // still just the idle shell and loading plate. It is the proof that the
+        // `sim::field` substrate drives a real entity end-to-end (ADR-014 M4).
+        registry.register(SceneTemplate {
+            id: FIELD_CLOUD_ID,
+            label: "Field Cloud — Morphing Nebula",
+            summary: "Free-space entity. A volume of points carried by a \
+                      composite force field (SDF morph attractor + curl + \
+                      drift); no surface. Condenses onto a sphere as focus \
+                      rises. Presented on demand.",
+            entity_kind: EntityKind::Scene,
+            priority: 2,
+            default_active: false,
+            param_schema: ParamSchema::empty(),
+            default_disposition: Disposition::Overlay,
+            default_placement: Placement::default(),
+            base_scale: 1.0,
+            source: SceneSource::Builtin(build_field_cloud),
+        });
         // Data-defined scene *presets* (precipitation, fog, aura, aurora, …) are
-        // intentionally not registered: only the idle shell and loading plate
-        // ship for now. The spec/term realizer above stays wired so scenes can
-        // still be selected/created at runtime — a preset is data, not code.
+        // intentionally not registered: no ambient presets ship for now. The
+        // spec/term realizer above stays wired so scenes can still be
+        // selected/created at runtime — a preset is data, not code.
         // Tests register a single generic spec scene to exercise that path.
         #[cfg(test)]
         registry.register(test_scene_template());
@@ -209,10 +231,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtins_expose_only_idle_and_loading() {
+    fn only_idle_is_active_at_rest_and_no_ambient_presets_ship() {
         let registry = SceneRegistry::with_builtin_scenes();
-        // idle + loading + the cfg(test) generic scene.
-        assert_eq!(registry.len(), 3);
+        // idle + loading + field_cloud + the cfg(test) generic scene.
+        assert_eq!(registry.len(), 4);
         let idle = registry.get(IDLE_ID).expect("idle scene missing");
         assert_eq!(idle.entity_kind, EntityKind::AssistantCloud);
         assert!(idle.default_active);
@@ -220,6 +242,13 @@ mod tests {
         assert_eq!(loading.entity_kind, EntityKind::LoadingRing);
         assert!(!loading.default_active);
         assert!(loading.priority > idle.priority);
+        // The free-space entity is registered but presented on demand — it must
+        // never be one of the entities the resting app shows.
+        let field = registry.get(FIELD_CLOUD_ID).expect("field cloud missing");
+        assert_eq!(field.entity_kind, EntityKind::Scene);
+        assert!(!field.default_active);
+        // Idle is the only entity active at rest.
+        assert_eq!(registry.default_active().count(), 1);
         // No preset ambient scenes ship.
         assert!(registry.get("precipitation").is_none());
         assert!(registry.get("fog").is_none());

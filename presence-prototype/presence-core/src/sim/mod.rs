@@ -1,4 +1,5 @@
 pub mod behaviors;
+pub mod field;
 pub mod generators;
 pub mod noise;
 pub mod shapes;

@@ -8,6 +8,7 @@ use crate::scene::params::SceneParams;
 use crate::scene::placement::Placement;
 use crate::scene::provenance::Provenance;
 use crate::scene::quality::QualityTier;
+use crate::sim::field::{FieldBehavior, FieldCloudGenerator, MorphTarget};
 use crate::sim::shapes::{
     PresenceShell, ResonancePlate, SurfaceBehavior, SurfaceGenerator, SurfaceShape,
 };
@@ -20,6 +21,13 @@ const IDLE_COOL: f32 = 0.0;
 
 pub const IDLE_ID: &str = "idle";
 pub const LOADING_ID: &str = "loading";
+/// First free-space (force-field) entity — a nebula. Not `default_active`; it
+/// ships as the end-to-end proof of the M4 field substrate and the base the
+/// morph milestone (M5) builds on, presented on demand rather than at rest.
+pub const FIELD_CLOUD_ID: &str = "field_cloud";
+
+const FIELD_CLOUD_SEED: u32 = 0x0FF5E7;
+const FIELD_CLOUD_RADIUS: f32 = 1.0;
 
 pub fn build_idle(params: SceneParams, point_budget: usize, tier: QualityTier) -> EntityInstance {
     let _ = params;
@@ -79,6 +87,52 @@ pub fn build_loading(
         ring_params,
     );
     entity.scene_id = Some(LOADING_ID);
+    entity.active = false;
+    entity.presence = 0.0;
+    entity.disposition = Disposition::Overlay;
+    entity.placement = Placement::default();
+    entity.provenance = Provenance::default();
+    entity
+}
+
+/// A free-space nebula driven by the force-field substrate (`sim::field`).
+///
+/// Unlike the shell and plate, this entity has no surface: its points are a
+/// volume the composite field carries. It is the first consumer of the curl
+/// noise ADR-011 left dead. Its SDF morph attractor (M5) condenses it onto a
+/// sphere as cognitive focus rises and lets it relax to a loose, suggestive
+/// cloud at rest. Presented on demand (never `default_active`), so the running
+/// app is still just the idle shell and loading plate until something asks.
+pub fn build_field_cloud(
+    params: SceneParams,
+    point_budget: usize,
+    tier: QualityTier,
+) -> EntityInstance {
+    let _ = params;
+    let _ = tier;
+    let cloud_params = {
+        let mut p = EntityParams::new(Vec3::ZERO, 1.0);
+        p.intensity = 0.5;
+        p.cool = 0.6;
+        p.core_density_bias = 0.0;
+        p
+    };
+
+    let mut entity = EntityInstance::new(
+        EntityKind::Scene,
+        Box::new(FieldCloudGenerator::new(
+            FIELD_CLOUD_SEED,
+            FIELD_CLOUD_RADIUS,
+        )),
+        Box::new(FieldBehavior::morph(
+            FIELD_CLOUD_SEED,
+            MorphTarget::Sphere { radius: 1.0 },
+        )),
+        point_budget,
+        2,
+        cloud_params,
+    );
+    entity.scene_id = Some(FIELD_CLOUD_ID);
     entity.active = false;
     entity.presence = 0.0;
     entity.disposition = Disposition::Overlay;

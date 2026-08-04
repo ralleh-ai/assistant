@@ -217,7 +217,9 @@ impl PointGenerator for SurfaceGenerator {
             let size = match layer {
                 Layer::Core => rng.gen_range(0.45..0.75),
                 Layer::Body => rng.gen_range(0.5..0.9),
-                Layer::Halo => rng.gen_range(0.6..1.1),
+                // The surface generator only ever seeds the density layers; the
+                // outermost is the safe fallback for any effect layer.
+                _ => rng.gen_range(0.6..1.1),
             };
 
             let rest = self.domain.rest_position(seed);
@@ -247,8 +249,9 @@ fn shell_offset(layer: Layer, seed: Vec3) -> f32 {
         Layer::Core => (h - 0.5) * 2.0 * CORE_SHELL,
         Layer::Body => (h - 0.5) * 2.0 * BODY_SHELL,
         // Halo sits outside only. Inside the skin it would be occluded by the
-        // surface it is meant to be the atmosphere around.
-        Layer::Halo => HALO_SHELL_NEAR + h * (HALO_SHELL_FAR - HALO_SHELL_NEAR),
+        // surface it is meant to be the atmosphere around. Effect layers never
+        // reach the surface generator, so they take the same outside band.
+        _ => HALO_SHELL_NEAR + h * (HALO_SHELL_FAR - HALO_SHELL_NEAR),
     }
 }
 
@@ -327,8 +330,8 @@ impl<S: SurfaceShape> SurfaceBehavior<S> {
             Layer::Body => 0.060 + lift * 0.07 + voice * 0.045,
             // Barely lit by voice. The halo's job is atmosphere, and driving it
             // at syllable rate makes the whole entity flicker rather than
-            // making its skin articulate.
-            Layer::Halo => 0.022 + lift * 0.03 + voice * 0.012,
+            // making its skin articulate. Effect layers do not reach here.
+            _ => 0.022 + lift * 0.03 + voice * 0.012,
         }
     }
 }
@@ -374,7 +377,7 @@ impl<S: SurfaceShape> PointBehavior for SurfaceBehavior<S> {
                 p.crease = match p.layer {
                     Layer::Core => deform.crease,
                     Layer::Body => deform.crease * 0.4,
-                    Layer::Halo => 0.0,
+                    _ => 0.0,
                 };
             }
 

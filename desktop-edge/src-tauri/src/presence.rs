@@ -32,7 +32,6 @@
 //!   EOF and exits), the child's stdin closes (its reader thread sees
 //!   EOF), and the child is killed if it hasn't already exited.
 
-use std::collections::HashSet;
 use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command as ProcessCommand, Stdio};
@@ -43,19 +42,7 @@ use std::time::Instant;
 
 use presence_ipc::{Command, Envelope, Event, EventEnvelope, PresenceMode};
 
-/// Shared, thread-safe set of currently-engaged modes. Every code
-/// path that engages or releases a mode on the wire also updates
-/// this set, so the shell has a truthful answer to
-/// "what's on air right now?" without needing a reverse-channel
-/// event from the runtime. Consumed by the aria-live status line
-/// (Phase 4 accessibility) and by future observers (telemetry).
-///
-/// `Arc<Mutex<_>>` (not `RwLock`) because the write side fires far
-/// more often than the read side (every mode change vs. one poll
-/// every 200 ms), and the critical sections are two-line
-/// `HashSet::insert`/`remove` — a spinny `RwLock` would cost more
-/// than it saves.
-type ModeSet = Arc<Mutex<HashSet<PresenceMode>>>;
+use crate::presence_brain::PresenceBrainHandle;
 
 /// Liveness snapshot for the presence runtime. Shared between the
 /// stdout reader (which stamps `last_event_at` on every incoming
@@ -147,38 +134,26 @@ pub enum PresenceHealth {
 pub type EventListener = Box<dyn Fn(Event) + Send + 'static>;
 
 /// RAII guard returned by [`Presence::hold_mode`]. Engages a
-/// [`presence_ipc::PresenceMode`] on construction (via the caller)
-/// and releases it on drop. `Send` because `Sender<Envelope>` is,
-/// which is what makes it safe to hold across `.await` points inside
-/// Tauri async command handlers.
+/// [`presence_ipc::PresenceMode`] on the Presence Brain at construction (via
+/// the caller) and releases it on drop. `Send` because [`PresenceBrainHandle`]
+/// is (`Arc` + `Sender`), which is what makes it safe to hold across `.await`
+/// points inside Tauri async command handlers.
+///
+/// Release goes through the Brain's reference count, so nested holds of the
+/// same mode compose correctly: the mode only leaves the wire when the last
+/// guard drops.
 pub struct ModeHold {
-    tx: Option<Sender<Envelope>>,
+    /// `None` on an inert guard (disabled presence). Some means "call
+    /// `release(mode)` on drop".
+    brain: Option<PresenceBrainHandle>,
     mode: PresenceMode,
-    /// Cloned handle to `Presence::engaged_modes` so `Drop` can
-    /// update the shell-side tracker in the same critical path
-    /// that sends the release envelope. `None` on an inert guard
-    /// (disabled presence or dead writer) — mirrors `tx`.
-    tracker: Option<ModeSet>,
 }
 
 impl Drop for ModeHold {
     fn drop(&mut self) {
-        let Some(tx) = self.tx.take() else {
-            return;
-        };
-        if let Some(tracker) = self.tracker.take() {
-            if let Ok(mut set) = tracker.lock() {
-                set.remove(&self.mode);
-            }
+        if let Some(brain) = self.brain.take() {
+            brain.release(self.mode);
         }
-        // Best-effort release. If the writer thread has since exited,
-        // the send fails silently — the runtime will lose the mode
-        // engagement on its next crossfade tick, which is the same
-        // failure mode every other command has on a dead pipe.
-        let _ = tx.send(Envelope::wrap(Command::SetMode {
-            mode: self.mode,
-            engaged: false,
-        }));
     }
 }
 
@@ -203,12 +178,13 @@ pub struct Presence {
     /// `Mutex` for interior mutability — `Presence` lives inside
     /// Tauri's `State`, which hands out shared references.
     child: Mutex<Option<Child>>,
-    /// Shell-side truth for currently-engaged modes. Populated by
-    /// every path that flips a mode on the wire (`send(SetMode)`,
-    /// `hold_mode` + `ModeHold::drop`, `pulse_mode` engage +
-    /// delayed release). Read by [`Presence::current_modes`] for
-    /// the aria-live status line.
-    engaged_modes: ModeSet,
+    /// The shell-side cognition layer (ADR-014). `None` when presence is
+    /// disabled. Owns the single source of truth for engaged modes + cognitive
+    /// state; every cognition path (`send(SetMode/SetSignals)`, `hold_mode`,
+    /// `pulse_*`, the mic/TTS pumps) routes through it and it emits one
+    /// authoritative [`Command::SetPresenceState`] per change. Read by
+    /// [`Presence::current_modes`] for the aria-live status line.
+    brain: Option<PresenceBrainHandle>,
     /// Reverse-channel liveness. Reader thread stamps this on
     /// every event; the stall monitor and the debug UI both read
     /// snapshots from it. Cloned into `Arc` so the monitor thread
@@ -265,7 +241,7 @@ impl Presence {
         Self {
             tx: None,
             child: Mutex::new(None),
-            engaged_modes: Arc::new(Mutex::new(HashSet::new())),
+            brain: None,
             liveness: Arc::new(Mutex::new(LivenessSnapshot::new())),
         }
     }
@@ -357,10 +333,11 @@ impl Presence {
         }
 
         log::info!("desktop-edge: presence renderer spawned from {bin:?}");
+        let brain = PresenceBrainHandle::new(tx.clone());
         Ok(Self {
             tx: Some(tx),
             child: Mutex::new(Some(child)),
-            engaged_modes: Arc::new(Mutex::new(HashSet::new())),
+            brain: Some(brain),
             liveness,
         })
     }
@@ -390,16 +367,42 @@ impl Presence {
         let Some(tx) = &self.tx else {
             return;
         };
-        // Update the shell-side tracker *before* the send so a poll
-        // that lands in between here and the child ACK still returns
-        // an accurate on-air set. The runtime treats a duplicate
-        // engage/release as idempotent, so the local set can lead
-        // the wire by a few microseconds without visual consequence.
-        if let Command::SetMode { mode, engaged } = &command {
-            self.record_mode(*mode, *engaged);
-        }
-        if tx.send(Envelope::wrap(command)).is_err() {
-            log::warn!("desktop-edge: presence writer thread has exited; dropping command");
+        // Cognition travels the wire as one authoritative `SetPresenceState`
+        // snapshot (ADR-014). Intercept the three legacy cognition commands and
+        // fold them into the Brain rather than forwarding them raw — otherwise a
+        // stray `SetMode`/`SetSignals` would fight the Brain's snapshot on the
+        // runtime. Everything else (palette, quality, position, scenes, …) is
+        // orthogonal to cognition and forwarded unchanged.
+        match command {
+            Command::SetMode { mode, engaged } => {
+                if let Some(brain) = &self.brain {
+                    brain.set_engaged(mode, engaged);
+                }
+            }
+            Command::SetSignals(sig) => {
+                if let Some(brain) = &self.brain {
+                    brain.apply_signals(
+                        sig.intensity,
+                        sig.audio_level,
+                        sig.progress,
+                        &sig.active_modes,
+                    );
+                }
+            }
+            Command::SetSignalsScalars {
+                intensity,
+                audio_level,
+                progress,
+            } => {
+                if let Some(brain) = &self.brain {
+                    brain.set_scalars(intensity, audio_level, progress);
+                }
+            }
+            other => {
+                if tx.send(Envelope::wrap(other)).is_err() {
+                    log::warn!("desktop-edge: presence writer thread has exited; dropping command");
+                }
+            }
         }
     }
 
@@ -409,30 +412,27 @@ impl Presence {
     /// `PresenceStatusLine.tsx`), and shuffling the set on every
     /// poll would produce spurious re-announcements.
     pub fn current_modes(&self) -> Vec<PresenceMode> {
-        let set = self.engaged_modes.lock();
-        let Ok(set) = set else {
-            return Vec::new();
-        };
-        let mut out: Vec<PresenceMode> = set.iter().copied().collect();
-        out.sort_by_key(|m| m.label());
-        out
-    }
-
-    fn record_mode(&self, mode: PresenceMode, engaged: bool) {
-        if let Ok(mut set) = self.engaged_modes.lock() {
-            if engaged {
-                set.insert(mode);
-            } else {
-                set.remove(&mode);
-            }
+        match &self.brain {
+            Some(brain) => brain.current_modes(),
+            None => Vec::new(),
         }
     }
 
-    /// Shared handle to the tracker for background paths (the pulse
-    /// release thread most notably) that need to update it without
-    /// holding a `&Presence` across a `.sleep`.
-    fn tracker_clone(&self) -> ModeSet {
-        self.engaged_modes.clone()
+    /// A clone of the Presence Brain handle for background pumps (mic, TTS,
+    /// scan sweep) that need to update cognition without holding a `&Presence`
+    /// across a sleep/await. `None` when presence is disabled — the caller
+    /// treats the absence as "no pump, no error".
+    pub fn brain_handle(&self) -> Option<PresenceBrainHandle> {
+        self.brain.clone()
+    }
+
+    /// Records a successful request outcome on the Brain (confidence up).
+    /// The failure counterpart is folded into [`pulse_error`](Self::pulse_error),
+    /// which every failing command already calls.
+    pub fn note_request_success(&self) {
+        if let Some(brain) = &self.brain {
+            brain.note_success();
+        }
     }
 
     /// True iff the child was successfully spawned and the writer
@@ -461,8 +461,15 @@ impl Presence {
         // (three Tauri command handlers today, more later). ~600 ms
         // sits inside the runtime's 300–900 ms transition window
         // and reads as one deliberate flash rather than a stutter.
+        //
+        // Beyond the visual flash, an error is a *failed outcome*: the Brain
+        // lowers confidence and raises uncertainty. `pulse_error` is the one
+        // call every failing command already makes, so routing the outcome
+        // note through it keeps the cognition honest without new call sites.
         const ERROR_HOLD_MS: u64 = 600;
-        self.pulse_mode(presence_ipc::PresenceMode::Error, ERROR_HOLD_MS);
+        if let Some(brain) = &self.brain {
+            brain.pulse_error(ERROR_HOLD_MS);
+        }
     }
 
     /// Fires `PresenceMode::Speaking` for `duration_ms` then releases.
@@ -479,7 +486,9 @@ impl Presence {
     /// visually indistinguishable from noise).
     pub fn pulse_speaking(&self, duration_ms: u64) {
         let hold = duration_ms.max(200);
-        self.pulse_mode(presence_ipc::PresenceMode::Speaking, hold);
+        if let Some(brain) = &self.brain {
+            brain.pulse(presence_ipc::PresenceMode::Speaking, hold);
+        }
     }
 
     /// Fires `PresenceMode::Attention` for `duration_ms` then
@@ -496,7 +505,9 @@ impl Presence {
     /// top of `speaking` reads as loud rather than as one event.
     pub fn pulse_attention(&self, duration_ms: u64) {
         let hold = duration_ms.max(200);
-        self.pulse_mode(presence_ipc::PresenceMode::Attention, hold);
+        if let Some(brain) = &self.brain {
+            brain.pulse(presence_ipc::PresenceMode::Attention, hold);
+        }
     }
 
     /// Engages `mode` and returns a guard that releases it on drop.
@@ -516,87 +527,16 @@ impl Presence {
     /// No-op on a disabled `Presence`: the returned guard's `Drop`
     /// is inert. Callers do not need to check `is_enabled` first.
     pub fn hold_mode(&self, mode: PresenceMode) -> ModeHold {
-        let Some(tx) = &self.tx else {
-            return ModeHold {
-                tx: None,
-                mode,
-                tracker: None,
-            };
-        };
-        self.record_mode(mode, true);
-        if tx
-            .send(Envelope::wrap(Command::SetMode {
-                mode,
-                engaged: true,
-            }))
-            .is_err()
-        {
-            // Writer thread has exited — roll back the tracker so we
-            // don't advertise a mode that's not actually on air, and
-            // return an inert guard. Result on drop is the same
-            // either way (nothing happens), but the tracker rollback
-            // matters for the status-line poll.
-            self.record_mode(mode, false);
-            return ModeHold {
-                tx: None,
-                mode,
-                tracker: None,
-            };
-        }
-        ModeHold {
-            tx: Some(tx.clone()),
-            mode,
-            tracker: Some(self.tracker_clone()),
-        }
-    }
-
-    /// Shared implementation for the two `pulse_*` helpers above.
-    /// Engage → sleep on a detached thread → release. Detached
-    /// because the caller (a Tauri command handler) has no reason to
-    /// wait, and joining would either block the UI or need an async
-    /// runtime this crate does not otherwise use.
-    fn pulse_mode(&self, mode: PresenceMode, hold_ms: u64) {
-        let Some(tx) = &self.tx else {
-            return;
-        };
-        self.record_mode(mode, true);
-        if tx
-            .send(Envelope::wrap(Command::SetMode {
-                mode,
-                engaged: true,
-            }))
-            .is_err()
-        {
-            self.record_mode(mode, false);
-            return;
-        }
-        let release_tx = tx.clone();
-        let tracker = self.tracker_clone();
-        // A shell shutdown drops the writer's channel, which makes
-        // the send below a no-op. Safe on either side.
-        thread::Builder::new()
-            .name(format!("presence-{:?}-pulse", mode))
-            .spawn(move || {
-                thread::sleep(std::time::Duration::from_millis(hold_ms));
-                if let Ok(mut set) = tracker.lock() {
-                    set.remove(&mode);
-                }
-                let _ = release_tx.send(Envelope::wrap(Command::SetMode {
+        match &self.brain {
+            Some(brain) => {
+                brain.engage(mode);
+                ModeHold {
+                    brain: Some(brain.clone()),
                     mode,
-                    engaged: false,
-                }));
-            })
-            .ok();
-    }
-
-    /// A clone of the envelope sender, for background pumps that need
-    /// to push commands without going through a `send()` call per
-    /// packet. `None` when presence is disabled — the caller must
-    /// treat the absence as "no pump, no error". `Sender<Envelope>` is
-    /// `Clone` so multiple pumps can hold their own copy without
-    /// contention on a mutex.
-    pub fn sender_clone(&self) -> Option<Sender<Envelope>> {
-        self.tx.clone()
+                }
+            }
+            None => ModeHold { brain: None, mode },
+        }
     }
 }
 
@@ -826,6 +766,31 @@ mod tests {
     use super::*;
     use std::io::BufRead;
 
+    /// A `Presence` wired to an in-memory channel (no child process) plus the
+    /// receiver, so a test can inspect the `SetPresenceState` snapshots the
+    /// Brain emits. Both `tx` and the Brain share the one channel.
+    fn wired() -> (Presence, Receiver<Envelope>) {
+        let (tx, rx) = mpsc::channel::<Envelope>();
+        let p = Presence {
+            tx: Some(tx.clone()),
+            child: Mutex::new(None),
+            brain: Some(PresenceBrainHandle::new(tx)),
+            liveness: Arc::new(Mutex::new(LivenessSnapshot::new())),
+        };
+        (p, rx)
+    }
+
+    /// Latest `SetPresenceState` snapshot on the channel, or `None`.
+    fn latest_state(rx: &Receiver<Envelope>) -> Option<presence_ipc::PresenceState> {
+        let mut last = None;
+        while let Ok(env) = rx.try_recv() {
+            if let Command::SetPresenceState(s) = env.payload {
+                last = Some(s);
+            }
+        }
+        last
+    }
+
     #[test]
     fn a_disabled_presence_swallows_sends_and_reports_disabled() {
         // The "no env var" path must never panic and must never block.
@@ -844,50 +809,25 @@ mod tests {
 
     #[test]
     fn hold_mode_engages_on_construction_and_releases_on_drop() {
-        // Wire a Presence to an in-memory receiver so we can inspect
-        // exactly which envelopes the guard emits. `Sender<Envelope>`
-        // does not need the child process for this to work.
-        let (tx, rx) = mpsc::channel::<Envelope>();
-        let p = Presence {
-            tx: Some(tx),
-            child: Mutex::new(None),
-            engaged_modes: Arc::new(Mutex::new(HashSet::new())),
-            liveness: Arc::new(Mutex::new(LivenessSnapshot::new())),
-        };
+        // The guard now drives the Presence Brain, which emits one
+        // authoritative `SetPresenceState` snapshot per change. Engage raises
+        // `thinking` to 1.0; drop returns it to 0.0.
+        let (p, rx) = wired();
 
         {
             let _hold = p.hold_mode(presence_ipc::PresenceMode::Thinking);
-            let engage = rx.recv().expect("engage envelope");
-            assert!(matches!(
-                engage.payload,
-                Command::SetMode {
-                    mode: presence_ipc::PresenceMode::Thinking,
-                    engaged: true,
-                }
-            ));
+            let engaged = latest_state(&rx).expect("engage snapshot");
+            assert_eq!(engaged.thinking, 1.0);
         }
 
-        // Guard dropped at end of block — release must be next on the
-        // wire, with the same mode and `engaged: false`.
-        let release = rx.recv().expect("release envelope");
-        assert!(matches!(
-            release.payload,
-            Command::SetMode {
-                mode: presence_ipc::PresenceMode::Thinking,
-                engaged: false,
-            }
-        ));
+        // Guard dropped at end of block — the release snapshot zeroes thinking.
+        let released = latest_state(&rx).expect("release snapshot");
+        assert_eq!(released.thinking, 0.0);
     }
 
     #[test]
     fn current_modes_reflects_hold_and_release() {
-        let (tx, _rx) = mpsc::channel::<Envelope>();
-        let p = Presence {
-            tx: Some(tx),
-            child: Mutex::new(None),
-            engaged_modes: Arc::new(Mutex::new(HashSet::new())),
-            liveness: Arc::new(Mutex::new(LivenessSnapshot::new())),
-        };
+        let (p, _rx) = wired();
         assert!(p.current_modes().is_empty());
         {
             let _thinking = p.hold_mode(PresenceMode::Thinking);
@@ -916,21 +856,13 @@ mod tests {
 
     #[test]
     fn rapid_mode_flips_stay_balanced_and_never_leak_tracker_state() {
-        // Phase 4 stress test. The failure mode this guards against
-        // is asymmetric bookkeeping — an engage that skips the
-        // tracker update, or a drop path that doesn't decrement —
-        // which would leave `current_modes()` reporting a stuck
-        // engagement after all real work has ended. 5,000 iterations
-        // is well past the settle time of any realistic burst
-        // (voice_smoke fires ~10 SetMode messages per pulse, so
-        // this is ~500 pulses of load compressed into microseconds).
-        let (tx, rx) = mpsc::channel::<Envelope>();
-        let p = Presence {
-            tx: Some(tx),
-            child: Mutex::new(None),
-            engaged_modes: Arc::new(Mutex::new(HashSet::new())),
-            liveness: Arc::new(Mutex::new(LivenessSnapshot::new())),
-        };
+        // Phase 4 stress test, now against the Brain's reference count. The
+        // failure mode it guards against is asymmetric bookkeeping — an engage
+        // that skips the count, or a drop that doesn't decrement — which would
+        // leave `current_modes()` reporting a stuck engagement after all real
+        // work has ended. 5,000 balanced hold/drop pairs must net to zero, and
+        // the final snapshot on the wire must have every mode at 0.
+        let (p, rx) = wired();
 
         for i in 0..5_000_u32 {
             // Alternate between three sustained modes so the set
@@ -945,30 +877,20 @@ mod tests {
         }
 
         // Every guard was scope-owned above, so on entry to this
-        // assertion the tracker MUST be empty regardless of channel
-        // health. If it isn't, the engage/release paths have drifted
-        // out of sync somewhere.
+        // assertion the count MUST be empty. If it isn't, the
+        // engage/release paths have drifted out of sync somewhere.
         assert!(
             p.current_modes().is_empty(),
             "tracker leaked: {:?} still engaged after 5000 balanced flips",
             p.current_modes()
         );
 
-        // Also drain the channel and confirm we see exactly
-        // 5000 engages + 5000 releases — no dropped sends and no
-        // duplicates. This is the wire-level counterpart to the
-        // tracker check above.
-        let mut engages = 0_u32;
-        let mut releases = 0_u32;
-        while let Ok(env) = rx.try_recv() {
-            match env.payload {
-                Command::SetMode { engaged: true, .. } => engages += 1,
-                Command::SetMode { engaged: false, .. } => releases += 1,
-                other => panic!("unexpected envelope in stress stream: {other:?}"),
-            }
-        }
-        assert_eq!(engages, 5_000, "engage count mismatch");
-        assert_eq!(releases, 5_000, "release count mismatch");
+        // Wire-level counterpart: the last authoritative snapshot must show
+        // every reference-counted mode fully released.
+        let last = latest_state(&rx).expect("at least one snapshot emitted");
+        assert_eq!(last.thinking, 0.0);
+        assert_eq!(last.tool_use, 0.0);
+        assert_eq!(last.listening, 0.0);
     }
 
     #[test]

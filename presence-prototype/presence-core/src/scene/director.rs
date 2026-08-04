@@ -1,5 +1,6 @@
 //! Scene Director — registry-driven stack with TTL overlays (`PRESENCE_ADAPTIVE_SCENES` P0).
 
+use crate::behavior::{audio_response, cursor_aim, CognitiveState};
 use crate::scene::disposition::Disposition;
 use crate::scene::entity::EntityInstance;
 use crate::scene::mode::{step_toward, ModeLayer, PresenceMode};
@@ -20,6 +21,10 @@ const LOADING_ACTIVITY_SCALE: f32 = 0.55;
 const REDUCED_MOTION_TIME_SCALE: f32 = 0.12;
 const REDUCED_MOTION_ACTIVITY_SCALE: f32 = 0.4;
 const PRESENCE_EPSILON: f32 = 0.01;
+/// Time constant for easing the cursor look-at lean. Inside the transition
+/// window so the presence turns toward the pointer at the product's cadence
+/// rather than snapping to it.
+const CURSOR_LEAN_SECONDS: f32 = 0.25;
 
 pub struct SceneDirector {
     pub registry: SceneRegistry,
@@ -29,6 +34,18 @@ pub struct SceneDirector {
     pub signals: PresenceSignals,
     pub ring_wanted: bool,
     pub modes: ModeLayer,
+    /// The cognitive snapshot the Behavior Graph modulates the mode output
+    /// with. Defaults to neutral, so a director that has never received a
+    /// `PresenceState` behaves exactly as it did before the graph existed.
+    pub cognition: CognitiveState,
+    /// Latest cursor bias from the shell (`[x right, y down]`, each `[-1, 1]`)
+    /// and its proximity, from `SetPresenceState`. Drives the shell's look-at
+    /// lean (M7).
+    cursor_dir: [f32; 2],
+    cursor_proximity: f32,
+    /// Eased lean applied to the shell centre — a translation toward the
+    /// cursor, smoothed so the pointer never yanks the presence.
+    cursor_lean: glam::Vec3,
     cloud_resting: EntityParams,
     activity_scale: f32,
     pub reduced_motion: bool,
@@ -65,6 +82,10 @@ impl SceneDirector {
             signals: PresenceSignals::default(),
             ring_wanted: false,
             modes: ModeLayer::new(),
+            cognition: CognitiveState::default(),
+            cursor_dir: [0.0, 0.0],
+            cursor_proximity: 0.0,
+            cursor_lean: glam::Vec3::ZERO,
             cloud_resting,
             activity_scale: 1.0,
             reduced_motion: false,
@@ -136,6 +157,16 @@ impl SceneDirector {
 
     pub fn set_mode(&mut self, mode: PresenceMode, engaged: bool) {
         self.modes.set(mode, engaged);
+    }
+
+    /// Records the latest cursor bias + proximity that drives the shell's
+    /// look-at lean (M7). Clamped on receipt (NaN → neutral), so a misbehaving
+    /// sender can only fail to aim the presence, never send it off-screen.
+    pub fn set_cursor(&mut self, dir: [f32; 2], proximity: f32) {
+        let clamp_signed = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(-1.0, 1.0) };
+        let clamp_unit = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+        self.cursor_dir = [clamp_signed(dir[0]), clamp_signed(dir[1])];
+        self.cursor_proximity = clamp_unit(proximity);
     }
 
     pub fn toggle_mode(&mut self, mode: PresenceMode) {
@@ -369,7 +400,30 @@ impl SceneDirector {
             time: carried.time,
             ..self.cloud_resting
         };
+        // Behavior Graph composition (ADR-014 M3): the mode layer establishes
+        // the activity baseline, then cognition modulates it. Cognition is a
+        // no-op while neutral, so the resting shell is unchanged.
         self.modes.apply(&mut self.assistant_cloud.params);
+        self.cognition.apply(&mut self.assistant_cloud.params);
+
+        // Speech & cursor as physics (ADR-014 M7). Both are no-ops at rest
+        // (silence + centred/absent cursor), so the resting shell is unchanged.
+        // Expansion is a bounded uniform scale swell riding the slow phrase
+        // envelope — geometry the surface spring can carry — while the fast
+        // brightness channel is already applied inside the shell shape. The
+        // cursor lean is a translation of the whole shell toward the pointer,
+        // eased here so the pointer never yanks it, and never a deformation.
+        let voice = audio_response(
+            self.assistant_cloud.params.drive.pulse,
+            self.assistant_cloud.params.audio_envelope,
+            self.signals.audio_level,
+        );
+        self.assistant_cloud.params.scale *= 1.0 + voice.expansion;
+
+        let aim = cursor_aim(self.cursor_dir, self.cursor_proximity);
+        let lean_alpha = (dt / CURSOR_LEAN_SECONDS.max(1e-4)).clamp(0.0, 1.0);
+        self.cursor_lean += (aim.lean - self.cursor_lean) * lean_alpha;
+        self.assistant_cloud.params.center += self.cursor_lean * self.assistant_cloud.params.scale;
 
         let mut scale_target = if self.loading_ring.active || self.overlay_scene_active() {
             LOADING_ACTIVITY_SCALE
@@ -411,6 +465,11 @@ impl SceneDirector {
         }
         for scene in &mut self.live_scenes {
             if scene.presence > PRESENCE_EPSILON || scene.active {
+                // Hand free-space entities the current cognition so their force
+                // fields (the SDF morph attractor, M5) can read focus/confidence.
+                // Surface entities ignore these fields.
+                scene.params.focus = self.cognition.focus;
+                scene.params.confidence = self.cognition.confidence;
                 scene.update(dt, &self.signals);
             }
         }
@@ -618,6 +677,75 @@ mod tests {
         let before = director.loading_ring.presence;
         director.tick(0.0);
         assert_eq!(director.loading_ring.presence, before);
+    }
+
+    #[test]
+    fn the_shell_leans_toward_the_cursor_and_returns_to_centre() {
+        use crate::behavior::response::MAX_CURSOR_LEAN;
+
+        let mut director = SceneDirector::new();
+        let resting_center = director.assistant_cloud.params.center;
+
+        // Cursor to the right, right on top of the droplet.
+        director.set_cursor([1.0, 0.0], 1.0);
+        for _ in 0..120 {
+            director.tick(1.0 / 60.0);
+        }
+        let leaned = director.assistant_cloud.params.center;
+        assert!(
+            leaned.x > resting_center.x + 1e-3,
+            "shell did not lean toward the cursor: {leaned:?}"
+        );
+        // Bounded: the lean never exceeds its cap (scaled by the shell scale).
+        let cap = MAX_CURSOR_LEAN * director.assistant_cloud.params.scale + 1e-3;
+        assert!(
+            (leaned - resting_center).length() <= cap,
+            "lean exceeded its cap"
+        );
+
+        // Cursor leaves → the shell eases back to centre.
+        director.set_cursor([0.0, 0.0], 0.0);
+        for _ in 0..240 {
+            director.tick(1.0 / 60.0);
+        }
+        let recovered = director.assistant_cloud.params.center;
+        assert!(
+            (recovered - resting_center).length() < 1e-3,
+            "shell did not return to centre: {recovered:?}"
+        );
+    }
+
+    #[test]
+    fn speech_swells_the_shell_within_bounds_and_silence_leaves_it_at_rest() {
+        use crate::behavior::response::MAX_VOICE_EXPANSION;
+
+        let mut director = SceneDirector::new();
+        let rest_scale = director.assistant_cloud.params.scale;
+
+        // Silence: even after ticking, the shell keeps its resting scale.
+        for _ in 0..60 {
+            director.tick(1.0 / 60.0);
+        }
+        assert!(
+            (director.assistant_cloud.params.scale - rest_scale).abs() < 1e-4,
+            "silence changed the shell scale"
+        );
+
+        // Speaking with a loud phrase swells the shell, bounded by the cap.
+        director.set_mode(PresenceMode::Speaking, true);
+        director.signals.audio_level = 1.0;
+        for _ in 0..180 {
+            director.tick(1.0 / 60.0);
+        }
+        let swelled = director.assistant_cloud.params.scale;
+        assert!(
+            swelled > rest_scale + 1e-3,
+            "speech did not swell the shell"
+        );
+        assert!(
+            swelled <= rest_scale * (1.0 + MAX_VOICE_EXPANSION) + 1e-3,
+            "speech swell exceeded its cap: {swelled} vs {rest_scale}"
+        );
     }
 
     #[test]

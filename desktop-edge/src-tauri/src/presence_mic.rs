@@ -22,12 +22,8 @@
 //! that check). This module itself is signal-plumbing — the same
 //! separation as `run_mic_smoke` uses.
 
-use std::sync::mpsc::Sender;
+use crate::presence_brain::PresenceBrainHandle;
 
-use presence_ipc::{Command, Envelope};
-
-#[cfg(feature = "mic")]
-use presence_ipc::PresenceMode;
 #[cfg(feature = "mic")]
 use ralleh_audio_core::{AudioSource, CpalMicSource, VadConfig, VadState, VoiceActivityDetector};
 #[cfg(feature = "mic")]
@@ -81,7 +77,7 @@ impl MicPump {
     /// `mic` feature disabled at compile time, or the input backend
     /// failed to build the stream.
     #[cfg(feature = "mic")]
-    pub fn start(sender: Sender<Envelope>) -> Result<Self, String> {
+    pub fn start(brain: PresenceBrainHandle) -> Result<Self, String> {
         // `CpalMicSource` owns a `cpal::Stream`, which is `!Send` on
         // Windows (WASAPI) and on macOS. That means the device has to
         // be opened *inside* the pump thread, not before spawning it.
@@ -107,7 +103,7 @@ impl MicPump {
                         return;
                     }
                 };
-                pump_loop(source, sender, stop_thread);
+                pump_loop(source, brain, stop_thread);
             })
             .map_err(|e| format!("presence mic: spawn: {e}"))?;
 
@@ -133,7 +129,7 @@ impl MicPump {
     }
 
     #[cfg(not(feature = "mic"))]
-    pub fn start(_sender: Sender<Envelope>) -> Result<Self, String> {
+    pub fn start(_brain: PresenceBrainHandle) -> Result<Self, String> {
         Err(
             "presence mic: this shell was built without the `mic` feature — \
              rebuild with scripts/tauri-dev.cmd (mic is default there)"
@@ -161,7 +157,7 @@ impl Drop for MicPump {
 }
 
 #[cfg(feature = "mic")]
-fn pump_loop(mut source: CpalMicSource, sender: Sender<Envelope>, stop: Arc<AtomicBool>) {
+fn pump_loop(mut source: CpalMicSource, brain: PresenceBrainHandle, stop: Arc<AtomicBool>) {
     // Two-timescale smoother: attack fast (level rises quickly on a
     // spoken syllable), release slow (falls gently so the shell does not
     // strobe on gaps between words). Distinct constants matter — a
@@ -214,43 +210,21 @@ fn pump_loop(mut source: CpalMicSource, sender: Sender<Envelope>, stop: Arc<Atom
             let vad_state = vad.process_frame(&frame);
             let now_listening = matches!(vad_state, VadState::Speech);
             if now_listening != last_listening {
-                let env = Envelope::wrap(Command::SetMode {
-                    mode: PresenceMode::Listening,
-                    engaged: now_listening,
-                });
-                if sender.send(env).is_err() {
-                    log::warn!(
-                        "desktop-edge: presence writer disconnected; \
-                         mic pump exiting mid-VAD transition"
-                    );
-                    return;
-                }
+                // Feed the debounced verdict to the Brain, which folds it into
+                // the authoritative `SetPresenceState` snapshot. Best-effort:
+                // if the child has exited the emit is a no-op, and the pump is
+                // torn down explicitly by the shell rather than on pipe error.
+                brain.set_listening(now_listening);
                 last_listening = now_listening;
             }
         }
 
         let now = Instant::now();
         if now.duration_since(last_sent) >= SEND_INTERVAL {
-            let env = Envelope::wrap(Command::SetSignalsScalars {
-                // `intensity` and `progress` are not the mic's business
-                // — leaving them at 0.0 would clobber whatever the UI
-                // or a future subscriber has set. But the scalars-only
-                // command is atomic on all three fields on the wire, so
-                // we forward the current-audio-level with the other two
-                // reset to *idle-ish* values only if no other source is
-                // writing them. In the current build there is no other
-                // source of `intensity` at this cadence, so mirroring
-                // the shell's idle default here keeps the presence at
-                // its resting brightness. Revisit when a second scalar
-                // pump lands.
-                intensity: 0.15,
-                audio_level: level.clamp(0.0, 1.0),
-                progress: 0.0,
-            });
-            if sender.send(env).is_err() {
-                log::warn!("desktop-edge: presence writer disconnected; mic pump exiting");
-                return;
-            }
+            // Audio envelope for the listening side. `intensity` mirrors the
+            // shell's idle brightness so the presence has a term to modulate
+            // against; the Brain owns `progress` and leaves it untouched here.
+            brain.set_audio_envelope(0.15, level.clamp(0.0, 1.0));
             last_sent = now;
         }
 
@@ -258,15 +232,10 @@ fn pump_loop(mut source: CpalMicSource, sender: Sender<Envelope>, stop: Arc<Atom
     }
 
     // Graceful stop: release Listening if we were holding it. Without
-    // this the runtime would keep the mode engaged after the user
-    // clicked "Mic pump" off, and it would only clear on the next
-    // shell-authored `SetSignals` snapshot — which might not arrive
-    // for a while.
+    // this the presence would keep the mode engaged after the user
+    // clicked "Mic pump" off.
     if last_listening {
-        let _ = sender.send(Envelope::wrap(Command::SetMode {
-            mode: PresenceMode::Listening,
-            engaged: false,
-        }));
+        brain.set_listening(false);
     }
     log::info!("desktop-edge: presence mic pump stopped");
 }
@@ -282,7 +251,8 @@ mod tests {
         // that a developer can act on rather than a silent no-op or a
         // link error.
         let (tx, _rx) = std::sync::mpsc::channel();
-        let err = MicPump::start(tx).unwrap_err();
+        let brain = PresenceBrainHandle::new(tx);
+        let err = MicPump::start(brain).unwrap_err();
         assert!(err.contains("mic"), "{err}");
     }
 }

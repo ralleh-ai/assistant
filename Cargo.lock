@@ -1477,6 +1477,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "presence-brain"
+version = "0.1.0"
+dependencies = [
+ "presence-ipc",
+]
+
+[[package]]
 name = "presence-ipc"
 version = "0.1.0"
 dependencies = [
