@@ -29,6 +29,21 @@ pub const FIELD_CLOUD_ID: &str = "field_cloud";
 const FIELD_CLOUD_SEED: u32 = 0x0FF5E7;
 const FIELD_CLOUD_RADIUS: f32 = 1.0;
 
+/// Point ceiling for the free-space cloud, per tier — deliberately far below
+/// the surface budgets. A field point integrates the composite field (an
+/// 18-tap curl plus drift and the SDF pull) every step and, unlike a surface
+/// point, never caches that work behind the deform stride, so it costs many
+/// times what a shell point does. A morphing nebula also reads well far
+/// sparser than a scanned skin. Left uncapped the director hands this half the
+/// global budget (~40k on Balanced), which both stalls on generation and drags
+/// the frame; these caps keep it cheap to present and cheap to run.
+fn field_cloud_budget(tier: QualityTier) -> usize {
+    match tier {
+        QualityTier::Balanced => 10_000,
+        QualityTier::Low => 5_000,
+    }
+}
+
 pub fn build_idle(params: SceneParams, point_budget: usize, tier: QualityTier) -> EntityInstance {
     let _ = params;
     let cloud_params = {
@@ -109,7 +124,6 @@ pub fn build_field_cloud(
     tier: QualityTier,
 ) -> EntityInstance {
     let _ = params;
-    let _ = tier;
     let cloud_params = {
         let mut p = EntityParams::new(Vec3::ZERO, 1.0);
         p.intensity = 0.5;
@@ -117,6 +131,12 @@ pub fn build_field_cloud(
         p.core_density_bias = 0.0;
         p
     };
+
+    // Cap the request up front so the very first generation is already cheap,
+    // then carry the cap on the entity so the director's later reallocations
+    // cannot grow it back past what a free-space cloud should cost.
+    let cap = field_cloud_budget(tier);
+    let budget = point_budget.min(cap);
 
     let mut entity = EntityInstance::new(
         EntityKind::Scene,
@@ -128,10 +148,11 @@ pub fn build_field_cloud(
             FIELD_CLOUD_SEED,
             MorphTarget::Sphere { radius: 1.0 },
         )),
-        point_budget,
+        budget,
         2,
         cloud_params,
     );
+    entity.max_budget = Some(cap);
     entity.scene_id = Some(FIELD_CLOUD_ID);
     entity.active = false;
     entity.presence = 0.0;

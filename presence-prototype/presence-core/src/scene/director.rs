@@ -899,6 +899,48 @@ mod tests {
     }
 
     #[test]
+    fn a_field_cloud_is_capped_far_below_its_budget_share() {
+        use crate::scene::templates::builtins::FIELD_CLOUD_ID;
+
+        let mut director = SceneDirector::new();
+        assert!(director.present_scene(
+            FIELD_CLOUD_ID,
+            SceneParams::default(),
+            Disposition::Overlay,
+            Placement::default(),
+            None,
+            Provenance {
+                source: ProvenanceSource::Builtin,
+            },
+        ));
+        let cloud = &director.live_scenes[0];
+        let cap = cloud.max_budget.expect("field cloud carries a budget cap");
+        assert!(
+            cloud.particles.len() <= cap,
+            "field cloud exceeded its cap on present: {} > {cap}",
+            cloud.particles.len(),
+        );
+        // Its raw budget share on Balanced is ~40k; the free-space cap must
+        // hold it far under that, or the curl integration drags the frame.
+        assert!(
+            cloud.particles.len() < 20_000,
+            "field cloud was not capped below its budget share: {}",
+            cloud.particles.len(),
+        );
+
+        // A later reallocation (loading appears and re-divides the budget) must
+        // not grow it back past the cap.
+        director.toggle_ring();
+        director.tick(1.0 / 60.0);
+        let cloud = &director.live_scenes[0];
+        assert!(
+            cloud.particles.len() <= cap,
+            "reallocation grew the field cloud past its cap: {} > {cap}",
+            cloud.particles.len(),
+        );
+    }
+
+    #[test]
     fn ttl_auto_dismisses_a_scene() {
         let mut director = SceneDirector::new();
         director.present_scene(
