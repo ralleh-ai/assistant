@@ -27,6 +27,7 @@ bytemuck = { workspace = true }
 glam = { workspace = true }
 noise = { workspace = true }
 rand = { workspace = true }
+rayon = { workspace = true }
 log = { workspace = true }
 
 # `presence-ipc` lives in the root workspace (headless-safe). Depending on

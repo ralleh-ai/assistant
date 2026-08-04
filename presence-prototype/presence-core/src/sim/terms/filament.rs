@@ -90,6 +90,7 @@ pub fn generate(count: usize, _density: f32, lift: f32, ctx: &TermCtx, out: &mut
             size: rng.gen_range(0.5..0.85),
             brightness: BRIGHT,
             color_bias: ctx.color_bias,
+            ..Default::default()
         });
     }
 }

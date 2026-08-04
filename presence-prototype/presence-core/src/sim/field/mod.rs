@@ -34,6 +34,15 @@ pub use sdf::{MorphTarget, SdfAttractor};
 pub struct FieldSample<'a> {
     pub position: Vec3,
     pub velocity: Vec3,
+    /// A stable `[0, 1)` value unique to this particle, derived from its
+    /// generation seed and therefore constant for its whole life.
+    ///
+    /// Fields are otherwise purely spatial, which means every particle at a
+    /// given point is pulled identically — and a population that agrees on
+    /// everything collapses onto a surface. This is the one channel that lets a
+    /// field give each point a *different* answer, which is what the difference
+    /// between a shell and a volume comes down to. See [`VolumetricCloud`].
+    pub seed01: f32,
     /// The behavior's own accumulated, time-scaled clock — the 4th dimension
     /// the noise fields drift along, so the whole field evolves coherently.
     pub time: f32,
@@ -42,7 +51,11 @@ pub struct FieldSample<'a> {
 }
 
 /// A contribution to a free-space particle's acceleration.
-pub trait ForceField {
+///
+/// `Sync` so a composite can be sampled from the parallel particle loops. Every
+/// field is plain data — centres, strengths, frequencies — so this is free, and
+/// it is the same property that makes them portable to a compute shader.
+pub trait ForceField: Sync {
     /// Acceleration at `sample`, in world units per second squared.
     fn force(&self, sample: &FieldSample) -> Vec3;
 }
@@ -62,6 +75,51 @@ pub struct Attractor {
 impl ForceField for Attractor {
     fn force(&self, sample: &FieldSample) -> Vec3 {
         (self.target - sample.position) * self.strength
+    }
+}
+
+/// Holds a population in a *filled ball* rather than on a surface, by giving
+/// every particle its own radius to sit at.
+///
+/// # Why this is not just a weak sphere attractor
+///
+/// A nebula built from [`SdfAttractor`] with a sphere target is a hollow shell,
+/// because every particle is pulled to the same surface — weakening the pull
+/// only makes it a fuzzy shell. Viewed head-on that is indistinguishable from
+/// the sphere form, which is exactly how this shape read before.
+///
+/// Spreading the target radius across the population by
+/// [`FieldSample::seed01`] fills the interior instead. The assignment is
+/// deterministic and permanent, so the cloud has a stable internal structure
+/// that the ambient drift stirs, rather than a soup that reshuffles every
+/// frame.
+pub struct VolumetricCloud {
+    /// Radius the innermost particles settle at, in entity-local units.
+    pub inner: f32,
+    /// Radius the outermost settle at.
+    pub outer: f32,
+    /// Spring constant toward a particle's own radius (1/s²).
+    pub strength: f32,
+}
+
+impl ForceField for VolumetricCloud {
+    fn force(&self, sample: &FieldSample) -> Vec3 {
+        let center = sample.params.center;
+        let scale = sample.params.scale.max(1e-4);
+        let local = (sample.position - center) / scale;
+
+        let radius = local.length();
+        if radius <= 1e-6 {
+            return Vec3::ZERO;
+        }
+        // Cube-rooted so the radii distribute by *volume* rather than by
+        // length. Spreading them linearly packs most of the population into
+        // the middle, since a thin shell at large r holds far more space than
+        // one at small r — the cloud would read as a dense core with a haze.
+        let t = sample.seed01.clamp(0.0, 1.0).cbrt();
+        let target = self.inner + (self.outer - self.inner) * t;
+
+        -(local / radius) * (radius - target) * (self.strength * scale)
     }
 }
 
@@ -287,6 +345,7 @@ impl PointBehavior for FieldBehavior {
             let sample = FieldSample {
                 position: particle.position,
                 velocity: particle.velocity,
+                seed01: hash01(particle.base_offset),
                 time: self.time,
                 params,
                 signals,
@@ -385,6 +444,7 @@ mod tests {
         field.force(&FieldSample {
             position,
             velocity: Vec3::ZERO,
+            seed01: 0.5,
             time: 0.0,
             params: &params,
             signals: &signals,

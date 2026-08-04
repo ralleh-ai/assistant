@@ -6,6 +6,8 @@
 
 use glam::Vec3;
 
+use crate::sim::form::FormWeights;
+
 /// Which density/behavior gradient within an entity a point belongs to —
 /// `docs/PRESENCE_VISUAL_ENTITY.md` §3.3. These are explicitly *not*
 /// separate meshes or entities: one population carries a layer tag, and
@@ -151,6 +153,13 @@ pub struct Particle {
     /// is what makes tens of thousands of points affordable.
     pub local: Vec3,
     pub shell_offset: f32,
+    /// Cached free-space field acceleration, refreshed on a stagger exactly as
+    /// `local` is — see `MorphBehavior::field_stride`. The noise that produces
+    /// it costs twenty-odd samples per particle and varies far more slowly than
+    /// the shell's folds do, so evaluating it every step for every point is the
+    /// single most expensive thing the simulation can be asked to do and the
+    /// least necessary.
+    pub field_force: Vec3,
     /// Which density gradient this point belongs to (§3.3).
     pub layer: Layer,
     pub size: f32,
@@ -178,6 +187,7 @@ impl Default for Particle {
             crease: 0.0,
             local: Vec3::ZERO,
             shell_offset: 0.0,
+            field_force: Vec3::ZERO,
             layer: Layer::Body,
             size: 1.0,
             brightness: 0.0,
@@ -302,6 +312,13 @@ pub struct EntityParams {
     /// Cognitive confidence, `0.0` unsure .. `0.5` neutral .. `1.0` certain.
     /// Same provenance as `focus`; a more confident presence morphs tighter.
     pub confidence: f32,
+    /// Which shapes the body is holding and how strongly (ADR-015). The
+    /// director eases these over time and copies them here each step, and
+    /// `MorphBehavior` blends its two substrates by them. Carried on the params
+    /// rather than set on the behavior so the director does not have to know
+    /// which kind of behavior an entity happens to own — the same reason
+    /// `focus`/`confidence` travel this way.
+    pub form: FormWeights,
 }
 
 /// Deterministic `[0, 1)` hash of a spatial input, used to derive stable
@@ -333,6 +350,10 @@ impl EntityParams {
             // coherence rather than snapping to or dissolving from a shape.
             focus: 0.0,
             confidence: 0.5,
+            // The resting body is the scanned droplet and nothing else, so a
+            // behavior that is never handed a form behaves exactly as it did
+            // before form existed.
+            form: FormWeights::default(),
         }
     }
 }

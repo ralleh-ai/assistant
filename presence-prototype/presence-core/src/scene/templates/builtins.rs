@@ -12,7 +12,12 @@ use crate::sim::field::{FieldBehavior, FieldCloudGenerator, MorphTarget};
 use crate::sim::shapes::{
     PresenceShell, ResonancePlate, SurfaceBehavior, SurfaceGenerator, SurfaceShape,
 };
-use crate::sim::EntityParams;
+use crate::sim::{EntityParams, MorphBehavior, PointBehavior};
+
+/// Seeds the shell's noise and, through `MorphBehavior`, the ambient field the
+/// body drifts in once it leaves the droplet. One seed for both so a given
+/// presence is one deterministic thing across its whole shape vocabulary.
+const SHELL_SEED: u32 = 0x1DEE;
 
 const IDLE_INTENSITY: f32 = 0.15;
 const IDLE_SWIRL: f32 = 0.0;
@@ -55,10 +60,16 @@ pub fn build_idle(params: SceneParams, point_budget: usize, tier: QualityTier) -
         p
     };
 
-    let shell = PresenceShell::new(0x1DEE);
+    // `MorphBehavior` rather than a bare `SurfaceBehavior`: this is the one
+    // body ADR-015 is about, and it has to be able to leave the droplet without
+    // a second entity being born to take over. At the resting form it *is* a
+    // `SurfaceBehavior` — see `the_resting_body_is_bit_identical_to_the_surface
+    // _behavior` — so nothing about the idle shell changes by adopting it.
+    let shell = PresenceShell::new(SHELL_SEED);
     let shell_domain = shell.domain();
-    let mut shell_behavior = SurfaceBehavior::new(shell);
-    shell_behavior.deform_stride = tier.deform_stride();
+    let mut shell_behavior = MorphBehavior::new(shell, SHELL_SEED);
+    shell_behavior.set_deform_stride(tier.deform_stride());
+    shell_behavior.field_stride = tier.field_stride();
 
     let mut entity = EntityInstance::new(
         EntityKind::AssistantCloud,

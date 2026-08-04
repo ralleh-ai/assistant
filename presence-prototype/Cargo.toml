@@ -28,6 +28,10 @@ bytemuck = { version = "1", features = ["derive"] }
 glam = "0.29"
 noise = "0.9"
 rand = { version = "0.8", features = ["small_rng"] }
+# Data-parallel particle updates. Every particle's step depends only on itself,
+# so this is a straight fan-out with no synchronisation and no effect on
+# determinism — see `sim::morph`.
+rayon = "1.12"
 egui = "0.29"
 egui-wgpu = "0.29"
 egui-winit = "0.29"

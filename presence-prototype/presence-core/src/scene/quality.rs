@@ -69,6 +69,23 @@ impl QualityTier {
         }
     }
 
+    /// Steps between refreshes of a particle's cached ambient field force (see
+    /// `MorphBehavior::field_stride`).
+    ///
+    /// Wider than [`deform_stride`](Self::deform_stride) at both tiers because
+    /// the field it caches is slower than the folds: the ambient drift runs at
+    /// spatial frequency 0.35 evolving at 0.25× real time, so a stride of 16 on
+    /// a 60-FPS frame still resamples it several times faster than it can
+    /// visibly change. This is the knob that decides whether a morph is
+    /// affordable at all — see the measurements in
+    /// `morph_cost_at_the_real_shell_budget`.
+    pub fn field_stride(self) -> usize {
+        match self {
+            QualityTier::Balanced => 16,
+            QualityTier::Low => 32,
+        }
+    }
+
     /// The next lower tier, if any. Used by the adaptive downshifter.
     /// Global point ceiling across all live entities (`PRESENCE_ADAPTIVE_SCENES` §3.0).
     pub fn global_ceiling(self) -> usize {

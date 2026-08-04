@@ -17,7 +17,7 @@ use presence_core::scene::params::SceneParams;
 use presence_core::scene::provenance::{Provenance, ProvenanceSource};
 use presence_core::scene::templates::builtins::{IDLE_ID, LOADING_ID};
 use presence_core::scene::{Anchor, Disposition, Placement, SceneDirector, SceneRegistry};
-use presence_core::sim::Layer;
+use presence_core::sim::{FormTarget, FormWeights, Layer};
 
 /// Persistent debug-panel state for the dynamic scene selector. Lives on the
 /// `App` (see `crate::app`) so choices survive across frames.
@@ -41,6 +41,21 @@ impl Default for SceneSelector {
             replace: false,
             scale: 0.7,
         }
+    }
+}
+
+/// Debug-panel state for the single presence's form (ADR-015).
+///
+/// Only the transition duration lives here — the weights are read back off the
+/// director, so the panel always shows what the body is actually being asked to
+/// hold rather than a copy that can drift out of step with it.
+pub struct FormPanel {
+    pub seconds: f32,
+}
+
+impl Default for FormPanel {
+    fn default() -> Self {
+        Self { seconds: 1.5 }
     }
 }
 
@@ -76,6 +91,7 @@ pub struct PanelState<'a> {
     pub director: &'a mut SceneDirector,
     pub registry: &'a SceneRegistry,
     pub selector: &'a mut SceneSelector,
+    pub form: &'a mut FormPanel,
     pub material: &'a mut PointMaterial,
     pub post: &'a mut PostSettings,
     pub palette: &'a mut PresencePalette,
@@ -183,11 +199,26 @@ fn layer_counts(entity: &EntityInstance) -> (usize, usize, usize) {
     counts
 }
 
+/// "droplet 60% · ring 40%", skipping shapes the body is barely holding.
+fn form_summary(weights: FormWeights) -> String {
+    let parts: Vec<String> = FormTarget::ALL
+        .into_iter()
+        .filter(|t| weights.get(*t) > 0.005)
+        .map(|t| format!("{} {:.0}%", t.label(), weights.get(t) * 100.0))
+        .collect();
+    if parts.is_empty() {
+        "—".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
     let PanelState {
         director,
         registry,
         selector,
+        form,
         material,
         post,
         palette,
@@ -208,6 +239,71 @@ fn build_panel(ctx: &egui::Context, panel: &mut PanelState) {
         .resizable(false)
         .show(ctx, |ui| {
             ui.label(format!("fps: {fps:.0}"));
+            ui.separator();
+
+            // The single presence (ADR-015). Weights are read off the director
+            // rather than mirrored here, so the sliders show what the body is
+            // actually being asked to hold. Dragging one re-aims the transition
+            // from wherever the morph currently is — which is the property
+            // worth checking by hand, since it is what makes an interrupted
+            // morph continuous rather than a snap.
+            ui.heading("Form — one body");
+            ui.label(format!(
+                "holding: {}{}",
+                form_summary(director.form()),
+                if director.form_is_settled() {
+                    ""
+                } else {
+                    " (morphing)"
+                }
+            ));
+
+            let mut target = director.form_target();
+            let mut form_changed = false;
+
+            // Buttons first, and one per row, because going to a single shape
+            // is what anyone reaches for and the blend sliders below read as a
+            // selector when they are not one. Clicking a shape here *replaces*
+            // the form; the sliders add to it.
+            for t in FormTarget::ALL {
+                let held = target.get(t);
+                let label = if held > 0.995 {
+                    format!("● {}", t.label())
+                } else if held > 0.005 {
+                    format!("◐ {} ({:.0}%)", t.label(), held * 100.0)
+                } else {
+                    format!("○ {}", t.label())
+                };
+                if ui.button(label).clicked() {
+                    target = FormWeights::single(t);
+                    form_changed = true;
+                }
+            }
+            ui.add(egui::Slider::new(&mut form.seconds, 0.5..=6.0).text("morph seconds"));
+
+            // The additive model, exposed for what it is. Half droplet and half
+            // ring is a legal shape (ADR-015), not a transition artifact — but
+            // it is not what someone clicking through shapes is asking for, so
+            // it lives behind a header that says so.
+            egui::CollapsingHeader::new("Blend two or more (advanced)")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label("Weights add. Raising one does not lower the others.");
+                    for t in FormTarget::ALL {
+                        let mut w = target.get(t);
+                        if ui
+                            .add(egui::Slider::new(&mut w, 0.0..=1.0).text(t.label()))
+                            .changed()
+                        {
+                            target.set(t, w);
+                            form_changed = true;
+                        }
+                    }
+                });
+
+            if form_changed {
+                director.set_form(target, form.seconds);
+            }
             ui.separator();
 
             egui::CollapsingHeader::new("Scenes")

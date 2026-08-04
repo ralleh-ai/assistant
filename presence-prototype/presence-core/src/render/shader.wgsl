@@ -112,6 +112,12 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     // there: a volume has no normal to take this angle against.
     //
     // A zero normal means the entity is volume-based, and the term drops out.
+    // The length in between is how much skin the point still has: a body part
+    // way through a morph is part way onto its surface, and the silhouette has
+    // to arrive and leave with it. Renormalizing and ignoring the length would
+    // hold the term at full strength all the way down and then switch it off in
+    // one frame at the cutoff, which reads as a brightness flick across the
+    // whole body rather than as a fade.
     let normal_length = length(inst.normal);
     var surface_gain = 1.0;
     if (normal_length > 1e-4) {
@@ -121,7 +127,8 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
         // the last few degrees before the limb, and a linear ramp spreads the
         // lift across the whole face where it just looks like extra exposure.
         let grazing = 1.0 - facing;
-        surface_gain = 1.0 + camera.material.z * grazing * grazing;
+        let skin = min(normal_length, 1.0);
+        surface_gain = 1.0 + camera.material.z * grazing * grazing * skin;
     }
 
     var out: VertexOutput;

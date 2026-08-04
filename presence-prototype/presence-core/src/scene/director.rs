@@ -10,7 +10,7 @@ use crate::scene::provenance::{Provenance, ProvenanceSource};
 use crate::scene::quality::QualityTier;
 use crate::scene::registry::SceneRegistry;
 use crate::scene::templates::builtins::{IDLE_ID, LOADING_ID};
-use crate::sim::{EntityParams, PresenceSignals};
+use crate::sim::{EntityParams, FormTransition, FormWeights, PresenceSignals};
 
 /// Maximum simultaneous dynamic scenes (excludes cloud + loading builtins).
 pub const MAX_LIVE_SCENES: usize = 4;
@@ -43,6 +43,12 @@ pub struct SceneDirector {
     /// lean (M7).
     cursor_dir: [f32; 2],
     cursor_proximity: f32,
+    /// Which shape the one body is holding, and the eased journey to whatever
+    /// it has been asked to hold next (ADR-015). The director owns the
+    /// interpolator rather than the behavior so that *when* a form changes is a
+    /// scene-level decision, while *how* the change is carried out stays a
+    /// property of the physics.
+    form: FormTransition,
     /// Eased lean applied to the shell centre — a translation toward the
     /// cursor, smoothed so the pointer never yanks the presence.
     cursor_lean: glam::Vec3,
@@ -85,6 +91,7 @@ impl SceneDirector {
             cognition: CognitiveState::default(),
             cursor_dir: [0.0, 0.0],
             cursor_proximity: 0.0,
+            form: FormTransition::default(),
             cursor_lean: glam::Vec3::ZERO,
             cloud_resting,
             activity_scale: 1.0,
@@ -167,6 +174,30 @@ impl SceneDirector {
         let clamp_unit = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
         self.cursor_dir = [clamp_signed(dir[0]), clamp_signed(dir[1])];
         self.cursor_proximity = clamp_unit(proximity);
+    }
+
+    /// Asks the body to hold a new set of shapes, reaching them over `seconds`
+    /// (floored at the spring's rate — see `sim::form`).
+    ///
+    /// This is the whole of ADR-015's "a scene is a target parameter state":
+    /// nothing is presented, nothing is dismissed, and the particle set is not
+    /// touched. The body is simply somewhere else a second and a half later.
+    pub fn set_form(&mut self, weights: FormWeights, seconds: f32) {
+        self.form.set_target(weights, seconds);
+    }
+
+    /// The shapes the body is being asked to hold.
+    pub fn form_target(&self) -> FormWeights {
+        self.form.target()
+    }
+
+    /// The shapes it is holding right now, mid-morph included.
+    pub fn form(&self) -> FormWeights {
+        self.form.current()
+    }
+
+    pub fn form_is_settled(&self) -> bool {
+        self.form.is_settled()
     }
 
     pub fn toggle_mode(&mut self, mode: PresenceMode) {
@@ -405,6 +436,11 @@ impl SceneDirector {
         // no-op while neutral, so the resting shell is unchanged.
         self.modes.apply(&mut self.assistant_cloud.params);
         self.cognition.apply(&mut self.assistant_cloud.params);
+
+        // Form is advanced and published after the params are rebuilt from
+        // rest, because that rebuild would otherwise reset it to the resting
+        // droplet every step. `MorphBehavior` reads it off the params.
+        self.assistant_cloud.params.form = self.form.tick(dt);
 
         // Speech & cursor as physics (ADR-014 M7). Both are no-ops at rest
         // (silence + centred/absent cursor), so the resting shell is unchanged.
@@ -659,6 +695,105 @@ mod tests {
             director.assistant_cloud.params.time_scale, 1.0,
             "time_scale did not recover when reduced_motion was cleared",
         );
+    }
+
+    #[test]
+    fn the_resting_body_holds_the_droplet_and_nothing_else() {
+        let mut director = SceneDirector::new();
+        for _ in 0..120 {
+            director.tick(1.0 / 60.0);
+        }
+        let form = director.assistant_cloud.params.form;
+        assert_eq!(
+            form.field_weight(),
+            0.0,
+            "the resting body left the droplet"
+        );
+        assert!(director.form_is_settled());
+    }
+
+    /// The director's half of ADR-015: asking for a form changes the *one*
+    /// entity's parameters over time. Nothing is presented and no second
+    /// population appears — `live_scenes` stays empty throughout.
+    #[test]
+    fn setting_a_form_morphs_the_one_entity_without_adding_another() {
+        let mut director = SceneDirector::new();
+        let points_before = director.assistant_cloud.particles.len();
+
+        director.set_form(FormWeights::single(crate::sim::FormTarget::Ring), 1.5);
+        assert!(!director.form_is_settled(), "the morph completed instantly");
+
+        // Mid-flight: partway there, and the entity is seeing it.
+        for _ in 0..45 {
+            director.tick(1.0 / 60.0);
+        }
+        let midway = director.assistant_cloud.params.form.field_weight();
+        assert!(
+            midway > 0.05 && midway < 0.95,
+            "expected a body caught mid-morph: {midway}"
+        );
+
+        for _ in 0..120 {
+            director.tick(1.0 / 60.0);
+        }
+        assert!(director.form_is_settled(), "the morph never settled");
+        assert!(
+            (director.assistant_cloud.params.form.field_weight() - 1.0).abs() < 1e-3,
+            "the ring never fully took"
+        );
+
+        assert!(
+            director.live_scenes.is_empty(),
+            "a morph should not present a scene"
+        );
+        assert_eq!(
+            director.assistant_cloud.particles.len(),
+            points_before,
+            "the particle set was rebuilt for a morph"
+        );
+    }
+
+    /// Driving the director the way the dev panel and the brain do: hold one
+    /// shape until it has fully settled, then ask for a different one. Every
+    /// shape has to be reachable from every other, not just from the droplet.
+    #[test]
+    fn any_settled_form_can_morph_into_any_other() {
+        use crate::sim::FormTarget;
+
+        for from in FormTarget::ALL {
+            for to in FormTarget::ALL {
+                if from == to {
+                    continue;
+                }
+                let mut director = SceneDirector::new();
+
+                director.set_form(FormWeights::single(from), 1.5);
+                for _ in 0..600 {
+                    director.tick(1.0 / 60.0);
+                }
+                assert!(director.form_is_settled(), "{} never settled", from.label());
+
+                director.set_form(FormWeights::single(to), 1.5);
+                for _ in 0..600 {
+                    director.tick(1.0 / 60.0);
+                }
+
+                let held = director.assistant_cloud.params.form;
+                assert!(
+                    director.form_is_settled(),
+                    "{} -> {} never settled",
+                    from.label(),
+                    to.label()
+                );
+                assert!(
+                    (held.get(to) - 1.0).abs() < 1e-3,
+                    "{} -> {} left the body holding {:?}",
+                    from.label(),
+                    to.label(),
+                    held
+                );
+            }
+        }
     }
 
     #[test]

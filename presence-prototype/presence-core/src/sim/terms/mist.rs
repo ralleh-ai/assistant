@@ -88,6 +88,7 @@ pub fn generate(count: usize, coverage: f32, _rise: f32, ctx: &TermCtx, out: &mu
             size: rng.gen_range(2.0..3.6),
             brightness: BRIGHT * jitter * coverage,
             color_bias: ctx.color_bias,
+            ..Default::default()
         });
     }
 }

@@ -35,6 +35,7 @@
 use glam::{Mat3, Vec3};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
 
 use super::behaviors::PointBehavior;
 use super::generators::PointGenerator;
@@ -76,9 +77,12 @@ pub struct SurfaceDeform {
 /// the point budget at roughly a quarter of what the references need, because
 /// it forces the noise to be re-evaluated at the frame rate for motion that
 /// takes seconds to develop.
-pub trait SurfaceShape {
+/// The `Sync` bounds are what let the per-particle loops fan out across cores
+/// (see [`SurfaceBehavior::update`]). Every implementation is plain data with
+/// no interior mutability, so they cost nothing to satisfy.
+pub trait SurfaceShape: Sync {
     /// Values shared by every particle this frame.
-    type Frame;
+    type Frame: Sync;
 
     /// The parameter space this shape's seeds are drawn from.
     fn domain(&self) -> SurfaceDomain;
@@ -323,7 +327,7 @@ impl<S: SurfaceShape> SurfaceBehavior<S> {
     /// in the geometry, because the spring that carries every other kind of
     /// motion cannot pass a 4-7 Hz signal — see `PulseTerm`. Brightness is
     /// assigned outright rather than integrated, so it lands within one step.
-    fn layer_brightness(layer: Layer, energy: f32, voice: f32) -> f32 {
+    pub(crate) fn layer_brightness(layer: Layer, energy: f32, voice: f32) -> f32 {
         let lift = 0.5 * energy.min(1.0);
         match layer {
             Layer::Core => 0.105 + lift * 0.12 + voice * 0.085,
@@ -333,6 +337,81 @@ impl<S: SurfaceShape> SurfaceBehavior<S> {
             // making its skin articulate. Effect layers do not reach here.
             _ => 0.022 + lift * 0.03 + voice * 0.012,
         }
+    }
+
+    /// Folds the live signal overrides into a local copy of the params, and
+    /// returns the two brightness drivers alongside it.
+    ///
+    /// Shapes see a single resolved `intensity` rather than each having to
+    /// remember to add the two sources together (§5.2). Split out of `update`
+    /// so `MorphBehavior` (ADR-015) lights and drives the body identically
+    /// however it is being moved, instead of restating this resolution.
+    pub(crate) fn resolve(
+        params: &EntityParams,
+        signals: &PresenceSignals,
+    ) -> (EntityParams, f32, f32) {
+        let mut params = *params;
+        params.intensity = (params.intensity + signals.intensity).clamp(0.0, 2.0);
+        params.progress = (params.progress + signals.progress).clamp(0.0, 1.0);
+        let energy = params.intensity;
+        // Gated by the speaking weight so the raw level only lights the shell
+        // while it is actually talking. Read straight off `signals` rather than
+        // off the phrase envelope in `params` — the whole point of this channel
+        // is that it is the unsmoothed one.
+        let voice = params.drive.pulse * signals.audio_level.clamp(0.0, 1.0);
+        (params, energy, voice)
+    }
+
+    /// Advances the staggered-refresh cursor one step and returns this step's
+    /// shared frame, the stride, and the stride class refreshing now.
+    pub(crate) fn begin_step(&mut self, params: &EntityParams) -> (S::Frame, usize, usize) {
+        let frame = self.shape.frame(params);
+        let stride = self.deform_stride.max(1);
+        let phase = self.refresh_phase % stride;
+        self.refresh_phase = (self.refresh_phase + 1) % stride;
+        (frame, stride, phase)
+    }
+
+    /// Refreshes this particle's cached deform when its stride class comes up,
+    /// then returns the point on the skin it should be sprung toward.
+    pub(crate) fn skin_target(
+        &self,
+        p: &mut Particle,
+        i: usize,
+        stride: usize,
+        phase: usize,
+        frame: &S::Frame,
+        params: &EntityParams,
+    ) -> SurfaceSample {
+        if i % stride == phase {
+            let deform = self.shape.deform(p.base_offset, frame);
+            p.local = deform.local;
+            // Only the skin carries creases. Off-skin layers reporting them
+            // would smear the filaments into a glow and lose the structure
+            // they exist to draw. Folded in here rather than at render time
+            // because the layer never changes.
+            p.crease = match p.layer {
+                Layer::Core => deform.crease,
+                Layer::Body => deform.crease * 0.4,
+                _ => 0.0,
+            };
+        }
+
+        let sample = self.shape.place(p.base_offset, p.local, frame, params);
+        SurfaceSample {
+            position: sample.position + sample.normal * p.shell_offset * params.scale,
+            normal: sample.normal,
+        }
+    }
+
+    /// Acceleration the skin spring applies to this particle toward `target`.
+    pub(crate) fn spring_accel(&self, p: &Particle, target: Vec3) -> Vec3 {
+        (target - p.position) * self.spring_k * p.layer.spring_scale()
+    }
+
+    /// Per-step velocity retention factor for the skin spring.
+    pub(crate) fn damp_factor(&self, dt: f32) -> f32 {
+        1.0 - (self.damping * dt).min(0.95)
     }
 }
 
@@ -348,50 +427,26 @@ impl<S: SurfaceShape> PointBehavior for SurfaceBehavior<S> {
         params: &EntityParams,
         signals: &PresenceSignals,
     ) {
-        // The live signal override is folded into a local copy so shapes see a
-        // single resolved `intensity` and don't each have to remember to add
-        // the two sources together (§5.2).
-        let mut params = *params;
-        params.intensity = (params.intensity + signals.intensity).clamp(0.0, 2.0);
-        params.progress = (params.progress + signals.progress).clamp(0.0, 1.0);
-        let energy = params.intensity;
-        // Gated by the speaking weight so the raw level only lights the shell
-        // while it is actually talking. Read straight off `signals` rather than
-        // off the phrase envelope in `params` — the whole point of this channel
-        // is that it is the unsmoothed one.
-        let voice = params.drive.pulse * signals.audio_level.clamp(0.0, 1.0);
+        let (params, energy, voice) = Self::resolve(params, signals);
+        let (frame, stride, phase) = self.begin_step(&params);
+        let damp = self.damp_factor(dt);
 
-        let frame = self.shape.frame(&params);
-        let stride = self.deform_stride.max(1);
-        let phase = self.refresh_phase % stride;
-        self.refresh_phase = (self.refresh_phase + 1) % stride;
+        // Fanned out across cores. A particle's step reads only itself and the
+        // shared frame, so there is nothing to synchronise and the result does
+        // not depend on how the work is divided — the determinism tests hold
+        // that. This is the single biggest lever on the point budget after the
+        // deform stride, and unlike the stride it costs no fidelity.
+        particles.par_iter_mut().enumerate().for_each(|(i, p)| {
+            let sample = self.skin_target(p, i, stride, phase, &frame, &params);
 
-        for (i, p) in particles.iter_mut().enumerate() {
-            if i % stride == phase {
-                let deform = self.shape.deform(p.base_offset, &frame);
-                p.local = deform.local;
-                // Only the skin carries creases. Off-skin layers reporting them
-                // would smear the filaments into a glow and lose the structure
-                // they exist to draw. Folded in here rather than at render time
-                // because the layer never changes.
-                p.crease = match p.layer {
-                    Layer::Core => deform.crease,
-                    Layer::Body => deform.crease * 0.4,
-                    _ => 0.0,
-                };
-            }
-
-            let sample = self.shape.place(p.base_offset, p.local, &frame, &params);
-            let target = sample.position + sample.normal * p.shell_offset * params.scale;
-
-            let accel = (target - p.position) * self.spring_k * p.layer.spring_scale();
-            p.velocity = (p.velocity + accel * dt) * (1.0 - (self.damping * dt).min(0.95));
+            let accel = self.spring_accel(p, sample.position);
+            p.velocity = crate::sim::flush_to_rest((p.velocity + accel * dt) * damp);
             p.position += p.velocity * dt;
 
             p.normal = sample.normal;
             p.brightness = Self::layer_brightness(p.layer, energy, voice) * params.presence;
             p.color_bias = params.cool.clamp(0.0, 1.0);
-        }
+        });
     }
 }
 

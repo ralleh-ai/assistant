@@ -29,3 +29,4 @@ This folder holds ADRs in two categories:
 | [ADR-012](./adr-012-additive-mode-composition.md) | Modes Compose Additively On One Shell, Rather Than Selecting Exclusive Shapes | Accepted, **implemented** (Phase 1 prototype) |
 | [ADR-013](./adr-013-presence-window-and-process-model.md) | The Presence Runs In Its Own Process, As A Frameless Always-On-Top Droplet | Accepted (decision only; Phase 2 will implement) |
 | [ADR-014](./adr-014-presence-engine-architecture.md) | The Presence Is An Engine — Shell-Side Brain Emits Bounded State, A Generic Behavior/Simulation/Render Pipeline Consumes It | Accepted (incremental implementation) |
+| [ADR-015](./adr-015-single-continuous-presence.md) | One Continuous Presence — A Scene Is A Blended Parameter State Of A Single Persistent Entity, Not A Stack Of Entities | Proposed (pending review) |

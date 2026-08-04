@@ -15,7 +15,7 @@ use presence_core::scene::mode::PresenceMode;
 use presence_core::scene::{SceneDirector, ViewportExtent};
 
 #[cfg(feature = "dev")]
-use crate::ui::{EguiLayer, PanelState, SceneSelector};
+use crate::ui::{EguiLayer, FormPanel, PanelState, SceneSelector};
 #[cfg(feature = "dev")]
 use egui_wgpu::ScreenDescriptor;
 #[cfg(feature = "dev")]
@@ -49,6 +49,9 @@ pub struct App {
     /// scale to present). Dev-only, like the panel that drives it.
     #[cfg(feature = "dev")]
     scene_sel: SceneSelector,
+    /// Debug-panel form state — the transition duration the panel morphs at.
+    #[cfg(feature = "dev")]
+    form_panel: FormPanel,
     last_frame: Instant,
     sim_accumulator: f32,
     fps: f32,
@@ -177,6 +180,8 @@ impl App {
             registry: SceneRegistry::with_builtin_scenes(),
             #[cfg(feature = "dev")]
             scene_sel: SceneSelector::default(),
+            #[cfg(feature = "dev")]
+            form_panel: FormPanel::default(),
             last_frame: Instant::now(),
             sim_accumulator: 0.0,
             fps: 0.0,
@@ -406,6 +411,7 @@ impl App {
                     director: &mut self.director,
                     registry: &self.registry,
                     selector: &mut self.scene_sel,
+                    form: &mut self.form_panel,
                     material: &mut live.renderer.material,
                     post: &mut live.renderer.post.settings,
                     palette: &mut live.renderer.palette,
